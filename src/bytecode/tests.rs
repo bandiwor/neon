@@ -634,6 +634,42 @@ fn captured_registers_are_never_dead() {
 }
 
 #[test]
+fn rotates_loops_with_a_single_compare_header() {
+    // r0 = i, r1 = n; while i < n { i += 1 }
+    let (head, exit) = (Label(0), Label(1));
+    let lt = FusedKind::LtS;
+    let (out, stats) = opt(
+        vec![
+            Insn::Label(head),
+            Insn::CmpJmp { kind: lt, a: 0, b: 1, to: exit },
+            Insn::AddImm { ty: NumTy::I64, dst: 0, src: 0, imm: 1 },
+            Insn::Jmp { to: head },
+            Insn::Label(exit),
+            Insn::Ret { src: 0 },
+        ],
+        &[],
+    );
+    assert_eq!(stats.rotated, 1);
+    assert!(!out.iter().any(|i| matches!(i, Insn::Jmp { .. })), "{out:?}");
+    // the back edge is the inverted compare (`n <= i` is false -> `i < n`)
+    assert!(out.iter().any(|i| matches!(i, Insn::CmpJmp { kind: FusedKind::LeS, a: 1, b: 0, .. })), "{out:?}");
+
+    // a header with more than the compare, or float compares, are left alone
+    let (out, stats) = opt(
+        vec![
+            Insn::Label(head),
+            Insn::CmpJmp { kind: FusedKind::LtF64, a: 0, b: 1, to: exit },
+            Insn::Jmp { to: head },
+            Insn::Label(exit),
+            Insn::Ret { src: 0 },
+        ],
+        &[],
+    );
+    assert_eq!(stats.rotated, 0);
+    assert!(out.iter().any(|i| matches!(i, Insn::Jmp { .. })));
+}
+
+#[test]
 fn fuses_compare_and_branch() {
     let l = Label(0);
     let (out, stats) = opt(

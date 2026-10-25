@@ -25,6 +25,8 @@ fn configs() -> Vec<(&'static str, OptConfig)> {
     vec![
         ("fold", OptConfig { fold: true, ..base }),
         ("dce", OptConfig { dce: true, ..base }),
+        ("simplify", OptConfig { simplify: true, ..base }),
+        ("licm", OptConfig { licm: true, ..base }),
         ("inline", OptConfig { inline: true, ..base }),
         ("inline-aggressive", OptConfig { fold: true, dce: true, inline: true, inline_threshold: 200, ..base }),
         ("all", OptConfig::default()),
@@ -498,4 +500,151 @@ fn optimization_reduces_work() {
     assert!(size(&opt) < size(&plain), "{} !< {}\n{opt}", size(&opt), size(&plain));
     assert!(stats.removed_funcs > 0);
     assert_eq!(run(src), "345\n");
+}
+
+use super::{Inst, Term};
+
+// ---- simplify pass ---------------------------------------------------------------------------
+
+fn only_simplify() -> OptConfig {
+    OptConfig { simplify: true, dce: true, fold: true, ..OptConfig::none() }
+}
+
+fn is_intrinsic(i: &Inst, which: crate::builtin::Builtin) -> bool {
+    matches!(i, Inst::Intrinsic { b, .. } if *b == which)
+}
+
+#[test]
+fn common_subexpressions_are_computed_once() {
+    let src = "fn f(a: i64, b: i64) -> i64 { a * b + a * b }\nprintln(f(3, 4));";
+    let (ir, _) = optimized(src, only_simplify());
+    let muls = fn_named(&ir, "f").blocks.iter().flat_map(|b| &b.insts).filter(|i| matches!(i, Inst::Arith { op: crate::runtime::numeric::ArithOp::Mul, .. })).count();
+    assert_eq!(muls, 1);
+    assert_eq!(run(src), "24\n");
+}
+
+#[test]
+fn a_repeated_trapping_operation_still_traps() {
+    let src = "fn f(a: i64, b: i64) -> i64 { let x = a / b; let y = a / b; x + y }\nprintln(f(1, 0));";
+    assert_eq!(trap_of(src), Trap::DivideByZero);
+    assert_eq!(trap_of("fn f(a: i64) -> i64 { a * 2 }\nprintln(f(9223372036854775807));"), Trap::Overflow);
+}
+
+#[test]
+fn memory_reads_are_not_reused_across_writes() {
+    // the second read must see the write
+    let src = "struct P { x: i64 }\nfn f(var p: P) -> i64 { let a = p.x; p.x = 7; let b = p.x; a + b }\nprintln(f(P { x: 1 }));";
+    assert_eq!(run(src), "8\n");
+    let src = "fn f(var xs: [i64]) -> i64 { let a = xs.len(); xs.push(1); let b = xs.len(); a * 10 + b }\nvar v = [5]; println(f(v));";
+    assert_eq!(run(src), "12\n");
+    // aliasing through a call
+    let src = "struct P { x: i64 }\nfn bump(var p: P) { p.x += 1; }\nfn f(var p: P) -> i64 { let a = p.x; bump(p); a * 10 + p.x }\nprintln(f(P { x: 1 }));";
+    assert_eq!(run(src), "12\n");
+}
+
+#[test]
+fn fields_of_fresh_structs_and_enums_are_forwarded() {
+    let src = "struct P { x: i64, y: i64 }\nfn f(a: i64, b: i64) -> i64 { let p = P { x: a, y: b }; p.x + p.y }\nprintln(f(1, 2));";
+    let (ir, _) = optimized(src, only_simplify());
+    let f = fn_named(&ir, "f");
+    assert!(f.blocks.iter().flat_map(|b| &b.insts).all(|i| !matches!(i, Inst::NewStruct { .. } | Inst::GetField { .. })), "{ir}");
+    assert_eq!(run(src), "3\n");
+    // a write to the struct is seen
+    let src = "struct P { x: i64 }\nfn f() -> i64 { var p = P { x: 1 }; p.x = 5; p.x }\nprintln(f());";
+    assert_eq!(run(src), "5\n");
+    // the forwarded register changes after the construction
+    let src = "struct P { x: i64 }\nfn f() -> i64 { var a = 1; let p = P { x: a }; a = 9; p.x * 10 + a }\nprintln(f());";
+    assert_eq!(run(src), "19\n");
+}
+
+#[test]
+fn matching_on_a_fresh_enum_is_decided_statically() {
+    let src = "fn f(a: i64) -> i64 { match Option::Some(a) { Option::Some(x) => x + 1, Option::None => 0 } }\nprintln(f(4)); println(f(5));";
+    let (ir, _) = optimized(src, OptConfig::default());
+    assert_eq!(count(&ir, |i| matches!(i, Inst::NewEnum { .. })), 0, "{ir}");
+    assert_eq!(run(src), "5\n6\n");
+}
+
+#[test]
+fn integer_identities() {
+    let src = "fn f(x: i64) -> i64 { (x + 0) * 1 - 0 + (x * 0) + (x % 1) + x / 1 }\nprintln(f(7)); println(f(-3));";
+    let (ir, _) = optimized(src, only_simplify());
+    let f = fn_named(&ir, "f");
+    let arith = f.blocks.iter().flat_map(|b| &b.insts).filter(|i| matches!(i, Inst::Arith { .. })).count();
+    assert!(arith <= 1, "{ir}");
+    assert_eq!(run(src), "14\n-6\n");
+    // floats are left alone (-0.0)
+    assert_eq!(run("let z = -0.0; println(z + 0.0); println(z * 1.0);"), "0.0\n-0.0\n");
+}
+
+#[test]
+fn print_of_a_concatenation_prints_the_pieces() {
+    let src = "let who = \"world\"; print(\"hello \" + who + \"!\"); println(\"\");";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count(&ir, |i| is_intrinsic(i, crate::builtin::Builtin::StrConcat)), 0, "{ir}");
+    assert_eq!(run(src), "hello world!\n");
+    // a piece that changes in between keeps its old value
+    let src = "var s = \"a\"; let t = s + \"b\"; s = \"c\"; println(t); println(s);";
+    assert_eq!(run(src), "ab\nc\n");
+    // used twice: not split
+    let src = "let t = \"x\" + \"y\"; println(t); println(t);";
+    assert_eq!(run(src), "xy\nxy\n");
+}
+
+#[test]
+fn unused_elements_of_for_loops_are_not_loaded() {
+    let src = "var n = 0; for x in [1, 2, 3] { n += 1; } println(n);";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count(&ir, |i| matches!(i, Inst::ArrayGet { .. })), 0, "{ir}");
+    assert_eq!(run(src), "3\n");
+    // used elements stay, and so does their bounds check
+    let src = "var n = 0; for x in [1, 2, 3] { n += x; } println(n);";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count(&ir, |i| matches!(i, Inst::ArrayGet { .. })), 1, "{ir}");
+    // an array that shrinks while iterating is still handled by the loop condition
+    assert_eq!(run("var a = [1, 2, 3, 4]; var n = 0; for x in a { a.pop(); n += 1; } println(n);"), "2\n");
+    // a user-written index loop with a possibly negative start must keep its trap
+    assert_eq!(trap_of("fn f(i: i64) { let a = [1]; if i < a.len() { let x = a[i]; } }\nf(-1);"), Trap::IndexOutOfBounds { index: -1, len: 1 });
+}
+
+// ---- loop-invariant code motion ---------------------------------------------------------------
+
+#[test]
+fn invariants_leave_the_loop() {
+    let src = "fn f(a: [i64]) -> i64 { var s = 0; var i = 0; while i < a.len() { s += a[i] * 3; i += 1; } s }\nprintln(f([1, 2, 3]));";
+    let (ir, stats) = optimized(src, OptConfig { licm: true, ..only_simplify() });
+    assert!(stats.hoisted > 0, "{ir}");
+    assert_eq!(run(src), "18\n");
+    // `len` is read once, before the loop
+    let f = fn_named(&ir, "f");
+    let in_loop_len = f.blocks.iter().skip(1).filter(|b| matches!(b.term, Term::Branch { .. })).flat_map(|b| &b.insts).filter(|i| is_intrinsic(i, crate::builtin::Builtin::ArrLen)).count();
+    assert_eq!(in_loop_len, 0, "{ir}");
+}
+
+#[test]
+fn a_loop_that_changes_the_array_keeps_reading_its_length() {
+    let src = "var a = [1]; var i = 0; while i < a.len() { if i < 4 { a.push(0); } i += 1; } println(a.len());";
+    assert_eq!(run(src), "5\n");
+    // calls may change anything, too
+    let src = "var a = [1];\nfn grow() { a.push(0); }\nvar i = 0; while i < a.len() { if i < 3 { grow(); } i += 1; } println(a.len());";
+    assert_eq!(run(src), "4\n");
+    // field reads in loops that write fields
+    let src = "struct C { n: i64 }\nvar c = C { n: 0 }; var i = 0; while c.n < 5 { c.n += 1; i += 1; } println(i);";
+    assert_eq!(run(src), "5\n");
+}
+
+#[test]
+fn trapping_work_is_not_hoisted_out_of_loops_that_may_not_run() {
+    let src = "fn f(n: i64, k: i64) -> i64 { var i = 0; var s = 0; while i < n { s += 100 / k; i += 1; } s }\nprintln(f(0, 0));";
+    assert_eq!(run(src), "0\n");
+    assert_eq!(trap_of("fn f(n: i64, k: i64) -> i64 { var i = 0; var s = 0; while i < n { s += 100 / k; i += 1; } s }\nprintln(f(1, 0));"), Trap::DivideByZero);
+    // a payload read guarded by the tag check must stay behind the check
+    let src = "fn f(o: Option<i64>, n: i64) -> i64 { var s = 0; var i = 0; while i < n { match o { Option::Some(x) => { s += x; } Option::None => {} } i += 1; } s }\nprintln(f(Option::None, 3)); println(f(Option::Some(2), 3));";
+    assert_eq!(run(src), "0\n6\n");
+}
+
+#[test]
+fn nested_loops_hoist_outward() {
+    let src = "fn f(a: [i64]) -> i64 { var s = 0; var i = 0; while i < a.len() { var j = 0; while j < a.len() { s += a[i] * a[j]; j += 1; } i += 1; } s }\nprintln(f([1, 2, 3]));";
+    assert_eq!(run(src), "36\n");
 }

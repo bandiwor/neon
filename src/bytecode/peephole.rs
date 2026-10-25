@@ -8,6 +8,8 @@
 //! * fuse `cmp t, a, b; jmpifnot t, L` into one compare-and-branch
 //!   (and `jmpif`, by inverting the integer comparison)
 //! * fold `loadi t, k; add/sub r, a, t` into an immediate form
+//! * rotate loops: `L: cmpjmp ..exit; body; jmp L; exit:` becomes `cmpjmp ..exit; B: body;
+//!   inverted-cmpjmp ..B; exit:`, one dispatch fewer per iteration
 //! * remove jumps to the next instruction, thread jumps through jumps,
 //!   drop unreachable code and unused labels
 //!
@@ -29,11 +31,12 @@ pub struct PeepholeStats {
     pub fused: usize,
     pub immediates: usize,
     pub jumps_removed: usize,
+    pub rotated: usize,
 }
 
 impl PeepholeStats {
     pub fn total(&self) -> usize {
-        self.moves_removed + self.dead_removed + self.coalesced + self.fused + self.immediates + self.jumps_removed
+        self.moves_removed + self.dead_removed + self.coalesced + self.fused + self.immediates + self.jumps_removed + self.rotated
     }
 }
 
@@ -44,6 +47,7 @@ pub fn peephole(items: &mut Vec<Item>, always_live: &BitSet) -> PeepholeStats {
         let before = stats.total();
         local_rules(items, always_live, &mut stats);
         control_flow(items, &mut stats);
+        rotate_loops(items, &mut stats);
         if stats.total() == before {
             break;
         }
@@ -283,6 +287,58 @@ fn control_flow(items: &mut Vec<Item>, stats: &mut PeepholeStats) {
             }
         }
         i += 1;
+    }
+}
+
+/// Replaces the back edge `jmp head` of a loop whose header is a single integer compare-and-branch
+/// (and whose exit directly follows the jump) by the inverted compare, jumping straight to the body.
+fn rotate_loops(items: &mut Vec<Item>, stats: &mut PeepholeStats) {
+    let used = items.iter().filter_map(|it| match it.insn {
+        Insn::Label(l) => Some(l.0),
+        _ => it.insn.target().map(|l| l.0),
+    });
+    let mut next_label = used.max().map_or(0, |m| m + 1);
+    let mut i = 0;
+    while i < items.len() {
+        let Insn::Jmp { to: head } = items[i].insn else {
+            i += 1;
+            continue;
+        };
+        let Some(h) = items.iter().position(|it| matches!(it.insn, Insn::Label(l) if l == head)) else {
+            i += 1;
+            continue;
+        };
+        // the header's first real instruction
+        let mut k = h + 1;
+        while k < items.len() && matches!(items[k].insn, Insn::Label(_)) {
+            k += 1;
+        }
+        let rotation = match items.get(k).map(|x| &x.insn) {
+            Some(&Insn::CmpJmp { kind, a, b, to: exit }) if h < i && k < i => {
+                // the loop exit must be what follows the jump
+                let mut j = i + 1;
+                let mut exit_follows = false;
+                while let Some(Insn::Label(l)) = items.get(j).map(|x| &x.insn) {
+                    if *l == exit {
+                        exit_follows = true;
+                        break;
+                    }
+                    j += 1;
+                }
+                if exit_follows { invert(kind.cmp(), a, b).and_then(|(k2, a2, b2)| k2.fused().map(|f| (f, a2, b2))) } else { None }
+            }
+            _ => None,
+        };
+        let Some((kind, a, b)) = rotation else {
+            i += 1;
+            continue;
+        };
+        let body = Label(next_label);
+        next_label += 1;
+        items.insert(k + 1, Item { insn: Insn::Label(body), ref_result: false });
+        items[i + 1] = Item { insn: Insn::CmpJmp { kind, a, b, to: body }, ref_result: false };
+        stats.rotated += 1;
+        i += 2;
     }
 }
 

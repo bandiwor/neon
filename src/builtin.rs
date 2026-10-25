@@ -9,6 +9,69 @@ macro_rules! builtins {
         pub enum Builtin { $($variant,)* }
 
         impl Builtin {
+    /// Reads heap objects but never writes, traps, allocates or does I/O: removable when its result
+    /// is unused, and reusable while no memory is written in between.
+    pub fn reads_memory_only(self) -> bool {
+        use Builtin::*;
+        matches!(self, ArrLen | ArrIsEmpty | MapLen | MapIsEmpty | SetLen | SetIsEmpty)
+    }
+
+    /// Deterministic computation on primitives and immutable strings: no memory writes, no traps,
+    /// no I/O. Removable when unused and reusable freely.
+    pub fn is_pure(self) -> bool {
+        use Builtin::*;
+        matches!(
+            self,
+            StrLen
+                | StrIsEmpty
+                | IsNan
+                | CharIsDigit
+                | CharIsAlphabetic
+                | CharIsWhitespace
+                | CharToUpper
+                | CharToLower
+                | Sqrt
+                | Sin
+                | Cos
+                | Tan
+                | Floor
+                | Ceil
+                | Round
+                | Ln
+                | Exp
+        )
+    }
+
+    /// Writes to an existing array, map or set. Everything else (printing, string and number
+    /// functions, reads) leaves existing heap objects as they are.
+    pub fn mutates_heap(self) -> bool {
+        use Builtin::*;
+        matches!(
+            self,
+            ArrPush
+                | ArrPop
+                | ArrClear
+                | ArrInsert
+                | ArrRemove
+                | ArrReverse
+                | ArrSort
+                | ArrTryPop
+                | ArrTryRemove
+                | MapInsert
+                | MapRemove
+                | MapClear
+                | SetInsert
+                | SetRemove
+                | SetClear
+        )
+    }
+
+    /// Builds a fresh string and nothing else; removable when its result is unused (like any
+    /// allocation).
+    pub fn only_allocates(self) -> bool {
+        matches!(self, Builtin::StrConcat | Builtin::ToString)
+    }
+
             pub const ALL: &'static [Builtin] = &[$(Builtin::$variant,)*];
 
             /// Source-level name (method or function name).
