@@ -190,17 +190,20 @@ pub fn allocate(f: &IrFunc) -> Result<Allocation, OutOfRegisters> {
     let live = block_liveness(f, &order);
     let nr = f.regs.len();
 
-    // number every instruction (terminators included) in layout order
+    // Number every instruction (terminators included) in layout order, two
+    // apart: instruction k sits at 2k+2, the odd positions in between mean
+    // "just before / just after", and 0 is before everything (so a parameter
+    // is live across even the first instruction).
     let mut block_start = vec![0u32; f.blocks.len()];
     let mut block_end = vec![0u32; f.blocks.len()];
-    let mut pos = 0u32;
+    let mut pos = 2u32;
     for &b in &order {
         block_start[b.index()] = pos;
-        pos += f.blocks[b.index()].insts.len() as u32;
+        pos += 2 * f.blocks[b.index()].insts.len() as u32;
         block_end[b.index()] = pos;
-        pos += 1;
+        pos += 2;
     }
-    let last_pos = pos.saturating_sub(1);
+    let last_pos = pos - 1;
 
     let mut intervals: Vec<Option<(u32, u32)>> = vec![None; nr];
     fn touch(intervals: &mut [Option<(u32, u32)>], v: usize, p: u32) {
@@ -213,10 +216,10 @@ pub fn allocate(f: &IrFunc) -> Result<Allocation, OutOfRegisters> {
         let bi = b.index();
         let blk = &f.blocks[bi];
         for r in live.live_in[bi].iter() {
-            touch(&mut intervals, r, block_start[bi]);
+            touch(&mut intervals, r, block_start[bi] - 1);
         }
         for r in live.live_out[bi].iter() {
-            touch(&mut intervals, r, block_end[bi]);
+            touch(&mut intervals, r, block_end[bi] + 1);
         }
         let mut p = block_start[bi];
         for inst in &blk.insts {
@@ -224,7 +227,7 @@ pub fn allocate(f: &IrFunc) -> Result<Allocation, OutOfRegisters> {
             if let Some(d) = inst.def() {
                 touch(&mut intervals, d.index(), p);
             }
-            p += 1;
+            p += 2;
         }
         blk.term.for_each_use(|r| touch(&mut intervals, r.index(), p));
     }
@@ -383,8 +386,10 @@ mod tests {
             vec![Block { insts: vec![add(1, 0, 0), add(2, 0, 0), add(2, 1, 2)], term: Term::Return(VReg(2)) }],
         );
         let a = allocate(&f).unwrap();
-        assert!(a.floor_at(1) > a.slots[1]);
-        assert_eq!(a.floor_at(0), 0, "nothing starts before the first instruction");
+        // instructions sit at positions 2, 4, 6
+        assert!(a.floor_at(4) > a.slots[1]);
+        assert!(a.floor_at(2) > a.slots[0], "a parameter is live across the very first instruction");
+        assert_eq!(a.floor_at(2), a.slots[0] + 1);
     }
 
     #[test]
@@ -396,7 +401,7 @@ mod tests {
         );
         f.pinned[0] = true;
         let a = allocate(&f).unwrap();
-        assert_eq!(a.intervals[0], Some((0, 3)));
+        assert_eq!(a.intervals[0], Some((0, 9)), "from before the first instruction to after the terminator");
         assert_ne!(a.slots[0], a.slots[1]);
         assert_ne!(a.slots[0], a.slots[2]);
     }

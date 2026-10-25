@@ -92,7 +92,7 @@ impl<'a> FuncEmitter<'a> {
             let blk = &self.f.blocks[b.index()];
             for inst in &blk.insts {
                 self.emit_inst(inst)?;
-                self.pos += 1;
+                self.pos += 2;
             }
             self.emit_term(&blk.term)?;
         }

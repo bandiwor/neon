@@ -1,0 +1,25 @@
+// Nested arrays, loops and a generic helper.
+fn matmul(a: [[i64]], b: [[i64]]) -> [[i64]] {
+    let n = a.len();
+    let m = b[0].len();
+    let k = b.len();
+    let mut out: [[i64]] = [];
+    for i in 0..n {
+        let mut row: [i64] = [];
+        for j in 0..m {
+            let mut acc = 0;
+            for t in 0..k { acc += a[i][t] * b[t][j]; }
+            row.push(acc);
+        }
+        out.push(row);
+    }
+    out
+}
+let a = [[1, 2], [3, 4]];
+let b = [[5, 6], [7, 8]];
+let c = matmul(a, b);
+println(c);
+let id = [[1, 0], [0, 1]];
+let same = matmul(c, id);
+println(same);
+println(same[1][1] == c[1][1]);

@@ -272,9 +272,7 @@ fn int_arith(op: ArithOp, ty: NumTy, a: u64, b: u64) -> Result<u64, Trap> {
             if y == 0 {
                 return Err(Trap::DivideByZero);
             }
-            if ty.is_signed() && x == ty.min_value() && y == -1 {
-                return Err(Trap::Overflow);
-            }
+            // `MIN % -1` is mathematically 0, so unlike `MIN / -1` it does not overflow
             x.checked_rem(y)
         }
         _ => unreachable!("bitwise handled above"),
@@ -494,7 +492,8 @@ mod tests {
         assert_eq!(arith(ArithOp::Div, NumTy::I32, i(1), i(0)), Err(Trap::DivideByZero));
         assert_eq!(arith(ArithOp::Rem, NumTy::I32, i(1), i(0)), Err(Trap::DivideByZero));
         assert_eq!(arith(ArithOp::Div, NumTy::I32, i(i32::MIN as i128), i(-1)), Err(Trap::Overflow));
-        assert_eq!(arith(ArithOp::Rem, NumTy::I32, i(i32::MIN as i128), i(-1)), Err(Trap::Overflow));
+        assert_eq!(arith(ArithOp::Rem, NumTy::I32, i(i32::MIN as i128), i(-1)), Ok(i(0)));
+        assert_eq!(arith(ArithOp::Rem, NumTy::I64, i64::MIN as u64, -1i64 as u64), Ok(0));
         assert_eq!(arith(ArithOp::Div, NumTy::U64, u64::MAX, 2), Ok(u64::MAX / 2));
         assert_eq!(arith(ArithOp::Rem, NumTy::U8, 200, 7), Ok(200 % 7));
         assert_eq!(arith(ArithOp::Div, NumTy::U8, 5, 0), Err(Trap::DivideByZero));

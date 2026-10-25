@@ -35,8 +35,15 @@ fn peephole_shrinks_a_loop_and_the_result_still_round_trips() {
     let decoded = decode(&asm.code).unwrap();
     assert!(decoded.iter().any(|i| matches!(i, Insn::CmpJmp { .. })));
     assert!(decoded.iter().any(|i| matches!(i, Insn::AddImm { imm: 1, .. })));
-    let chunk =
-        Chunk { name: "loop".into(), code: asm.code, params: 1, frame_size: 6, upvals: vec![], stack_maps: vec![] };
+    let chunk = Chunk {
+        name: "loop".into(),
+        code: asm.code,
+        params: 1,
+        frame_size: 6,
+        param_refs: vec![false],
+        upvals: vec![],
+        stack_maps: vec![],
+    };
     let text = disassemble_chunk(&chunk).unwrap();
     assert!(text.contains("lt.s.jf") && text.contains("addi.i64"), "{text}");
 }

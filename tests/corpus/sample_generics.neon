@@ -1,0 +1,26 @@
+// Generic functions and structs with trait bounds.
+trait Describe { fn describe(self) -> string; }
+struct Dog { name: string }
+struct Num { v: i64 }
+impl Describe for Dog { fn describe(self) -> string { "dog " + self.name } }
+impl Describe for Num { fn describe(self) -> string { "number " + self.v.to_string() } }
+fn announce<T: Describe>(x: T) -> string { "<" + x.describe() + ">" }
+struct Pair<A, B> { first: A, second: B }
+impl<A, B> Pair<A, B> {
+    fn new(a: A, b: B) -> Pair<A, B> { Pair { first: a, second: b } }
+    fn swap(self) -> Pair<B, A> { Pair { first: self.second, second: self.first } }
+}
+fn largest<T: Ord>(xs: [T]) -> T {
+    let mut best = xs[0];
+    for x in xs { if best < x { best = x; } }
+    best
+}
+println(announce(Dog { name: "rex" }));
+println(announce(Num { v: 7 }));
+let p = Pair::new(1, "one");
+let q = p.swap();
+println(q.first + "!");
+println(q.second + 1);
+println(largest([3, 9, 2]));
+println(largest([1.5, -2.0]));
+println(largest(["pear", "apple", "zebra"]));

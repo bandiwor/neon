@@ -113,6 +113,7 @@ fn compile_function(f: &IrFunc, consts: &mut func::ConstPool, opts: &CompileOpti
         params: f.params as u8,
         frame_size,
         upvals: f.upvals.iter().map(|t| t.is_ref()).collect(),
+        param_refs,
         stack_maps,
     })
 }

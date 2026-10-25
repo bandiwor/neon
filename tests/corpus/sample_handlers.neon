@@ -1,0 +1,16 @@
+// Closures stored in collections, sharing and mutating captured state.
+let mut log: [string] = [];
+let mut total = 0;
+let add = |n: i64| => { total += n; log.push("add " + n.to_string()); };
+let reset = || => { total = 0; log.push("reset"); };
+let handlers = [add, add, add];
+let mut i = 1;
+for h in handlers { h(i * 10); i += 1; }
+println(total);
+reset();
+add(7);
+println(total);
+println(log);
+let table = { "double": |x: i64| => x * 2, "square": |x: i64| => x * x };
+println(table["double"](21));
+println(table["square"](12));

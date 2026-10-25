@@ -1,0 +1,6 @@
+ada has 20 after 3 successful transactions
+  deposit 100
+  withdraw 30
+  denied 500
+  sent 50 to bob
+  denied transfer to eve

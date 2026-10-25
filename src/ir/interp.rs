@@ -357,13 +357,15 @@ impl Interp<'_> {
             }
             Inst::ArrayGet { dst, arr, idx, idx_ty } => {
                 let a = self.array_of(r!(arr));
-                let i = mathfn::checked_index(*idx_ty, r!(idx), a.len())?;
+                let _ = idx_ty; // the register is read as an i64, like the VM does
+                let i = mathfn::checked_index(NumTy::I64, r!(idx), a.len())?;
                 r!(dst) = a[i];
             }
             Inst::ArraySet { arr, idx, idx_ty, src } => {
                 let (h, v) = (r!(arr), r!(src));
                 let len = self.array_of(h).len();
-                let i = mathfn::checked_index(*idx_ty, r!(idx), len)?;
+                let _ = idx_ty;
+                let i = mathfn::checked_index(NumTy::I64, r!(idx), len)?;
                 match &mut self.heap[h as usize] {
                     Obj::Array(a) => a[i] = v,
                     other => panic!("ArraySet on {other:?}"),

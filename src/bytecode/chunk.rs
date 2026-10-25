@@ -12,6 +12,9 @@ pub struct Chunk {
     pub params: u8,
     /// Registers the function uses (at most 256).
     pub frame_size: u16,
+    /// For each parameter: is it a heap reference? (The collector roots these
+    /// when a call has just transferred control and no stack map applies yet.)
+    pub param_refs: Vec<bool>,
     /// For each upvalue of a closure: does it hold a heap reference?
     pub upvals: Vec<bool>,
     /// Sorted by `pc`; one entry per safe-point instruction.

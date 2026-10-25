@@ -185,7 +185,8 @@ impl Heap {
             layouts,
             cfg,
             bytes: 0,
-            threshold: cfg.initial_threshold,
+            // with a hard limit, start collecting well before reaching it
+            threshold: cfg.limit.map_or(cfg.initial_threshold, |l| cfg.initial_threshold.min(l / 2)),
             stats: HeapStats::default(),
         }
     }
@@ -417,6 +418,12 @@ impl Heap {
         let m = self.map_obj(h);
         let bucket = m.index.get(&self.hash_key(m.key_kind, key))?;
         bucket.iter().map(|&i| i as usize).find(|&i| self.keys_equal(m.key_kind, m.entries[i].0, key))
+    }
+
+    /// Whether the keys / values of a map or set are references.
+    pub fn map_flags(&self, h: Handle) -> (bool, bool) {
+        let m = self.map_obj(h);
+        (m.key_ref, m.val_ref)
     }
 
     pub fn map_entries_ref(&self, h: Handle) -> &[(u64, u64)] {

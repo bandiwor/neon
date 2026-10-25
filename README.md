@@ -1,56 +1,145 @@
 # Neon
 
-A statically typed language with a register bytecode VM, written in pure Rust
-(edition 2021, **standard library only** — no third-party crates).
+A small, statically typed language with a register bytecode VM and a precise
+mark-and-sweep garbage collector, written in pure Rust — edition 2021,
+**standard library only**, no third-party crates.
 
-Status: **Phase 8 of 10** — front end, optimizing IR, bytecode format and compiler complete (lexer, parser, sema, monomorphizing IR, folding/inlining/DCE, reference interpreter, 32/64-bit bytecode, disassembler, peephole optimizer, register allocation, stack maps, bytecode verifier, GC heap with mark-and-sweep over stack maps). The VM arrives in Phase 9.
+```neon
+enum Shape { Circle(f64), Rect(f64, f64), Empty }
 
-## Design constraints
+fn area(s: Shape) -> f64 {
+    match s {
+        Shape::Circle(r) => 3.14159 * r * r,
+        Shape::Rect(w, h) => w * h,
+        Shape::Empty => 0.0,
+    }
+}
 
-* **Leak-free, UB-free** VM and runtime; every test binary must pass Valgrind
-  (see below).
-* **LSP-ready**: all positions are `Span`s resolved by one `SourceMap`; the
-  parser (Phase 3) recovers from errors so partial ASTs survive.
-* **WASM-ready**: the engine builds for `wasm32-unknown-unknown`. It never
-  touches `std::fs` or stdin/stdout directly — files go through the `Vfs`
-  trait (`OsVfs` for the CLI, `MemVfs` in memory), VM I/O through `VmIo`.
-
-## Layout
-
-```
-src/
-  vfs/    Vfs trait, OsVfs (non-wasm only), MemVfs, lexical path helpers
-  diag/   FileId/Span, SourceMap (offset -> line/col), Diagnostic, DiagBag, ASCII Emitter
-  syntax/ Interner/Symbol, LitPool, tokens, streaming Lexer, flat Ast, resilient Parser, S-expr printer
-  sema/   module DAG loader, collection, type inference/checking, traits, exhaustiveness, def-use table, prelude.neon
-  ir/     TAC/CFG IR, AST->IR lowering with monomorphization, optimizer (fold, DCE, inline), verifier, reference interpreter
-  compiler/ IR -> bytecode: block layout, linear-scan slot allocation with call windows, stack maps
-  bytecode/ opcode table, Insn (assembler-level IR), 32-bit/64-bit encoder + decoder, disassembler, liveness, peephole, verifier
-  gc/     object heap (1-based handles, upvalue cells), exact mark-and-sweep, Roots, stack-map root scanning
-  runtime/ typed numeric semantics, value formatting, math builtins shared by every engine
-  driver.rs  source -> IR pipeline
-  builtin.rs  intrinsic operations shared by sema, IR and VM
-  main.rs CLI entry point
-tests/    integration tests
-scripts/  valgrind_test.sh, valgrind.supp
+let mut counter = 0;
+let bump = || => { counter += 1; counter };
+bump(); bump();
+println(counter);                        // 2
+println(area(Shape::Rect(3.0, 4.0)));    // 12.0
 ```
 
-Later phases add `vm/`.
-
-`tests/corpus/*.neon` + `.out` are programs with known output, shared by the
-compiler tests and (later) the VM differential tests.
-
-## Checks
+## Quick start
 
 ```sh
-cargo test
-cargo build --lib --target wasm32-unknown-unknown   # rustup target add wasm32-unknown-unknown
-scripts/valgrind_test.sh
+cargo build --release
+target/release/neon run tests/corpus/sample_bank.neon
+target/release/neon repl
 ```
+
+```
+neon run <file>       compile and run (also: neon <file>)
+neon check <file>     report errors without running
+neon disasm <file>    print the bytecode
+neon ir <file>        print the optimized intermediate representation
+neon repl             interactive session
+
+--no-opt  --no-peephole      turn optimizers off
+--gc-limit 64k               cap the heap; exceeding it is a run-time error
+--gc-stress                  collect at every safe-point (finds missing roots)
+--max-steps N  --max-frames N
+--stats                      collector statistics on stderr
+```
+
+Exit status: `0` success, `1` compile error, `2` run-time error, `64` usage.
+Diagnostics (with source snippets) go to stderr, program output to stdout.
+
+## The language in one page
+
+* **Types**: `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char string`, arrays
+  `[T]`, maps `{K: V}`, sets `set { .. }`, structs, enums with payloads,
+  function types `fn(A) -> B`, generics with trait bounds.
+* **Bindings**: `let` / `let mut` / `const`; module-level bindings are globals.
+  Types are inferred locally; integer and float literals adapt to context.
+* **Control flow**: `if`/`else` and `match` are expressions; `while`, `for x in
+  xs`, ranges `a..b` / `a..=b`, `break`, `continue`, `return`.
+* **Patterns**: literals, ranges, `|` alternatives, bindings, enum variants with
+  nested payload patterns, `_`, and `if` guards. Matches must be exhaustive.
+* **Closures**: `|x| => x + 1`, `|| => { n += 1; n }`. Captured variables are
+  shared and mutable; each loop iteration captures its own variables.
+* **Traits**: `trait`/`impl`, default methods, operator traits (`Add`, `Mul`,
+  `Neg`, `Eq`, `Ord`, ...), `Display` used by `println`. Resolution is static
+  (monomorphization), there are no trait objects.
+* **Modules**: `import { f } from "dir/file"`, `import "dir/file" as m`,
+  `export`. A module DAG is built through the virtual file system.
+* **Arithmetic is checked**: integer overflow, division by zero, bad shifts,
+  out-of-range indexing and missing map keys are run-time errors, never
+  undefined behavior. Float → int casts saturate; NaN casts to 0.
+
+More programs live in `tests/corpus/`.
+
+## Architecture
+
+```
+source ─▶ lexer ─▶ parser ─▶ sema ─▶ IR ─▶ IR optimizer ─▶ compiler ─▶ bytecode ─▶ VM
+          syntax/            sema/    ir/    ir/opt/       compiler/    bytecode/   vm/ + gc/
+```
+
+| Module | What it does |
+|---|---|
+| `vfs/` | `Vfs` trait with `OsVfs` (native only) and `MemVfs`. All file access goes through it. |
+| `diag/` | `FileId`/`Span`, one central `SourceMap`, `Diagnostic`s and an ASCII renderer. Positions are stable, which is what an LSP needs. |
+| `syntax/` | Interner, token stream, a flat-arena AST and an error-resilient parser: panic-mode recovery leaves `Error` nodes so later items are still analyzed. |
+| `sema/` | Module loading, name resolution (def-use table), Hindley–Milner-style local inference, trait solving, exhaustiveness checking. |
+| `ir/` | Three-address code in basic blocks over virtual registers; generics are monomorphized during lowering. Folding, copy propagation, DCE and inlining. A reference interpreter acts as the test oracle. |
+| `compiler/` | Block layout, linear-scan frame-slot allocation (≤ 256 slots) with a Lua-style sliding call window, stack maps. |
+| `bytecode/` | Opcode table, 32-bit words with a 64-bit wide form, relaxing assembler, disassembler, liveness, peephole optimizer, verifier. |
+| `gc/` | Handle-based object heap, upvalue cells, exact mark-and-sweep, root scanning from stack maps. |
+| `vm/` | The register machine and the `VmIo` trait. |
+| `runtime/` | Numeric semantics, formatting and builtins shared by the constant folder, the interpreter and the VM, so `127i8 + 1` means the same thing at compile time and at run time. |
+| `cli.rs`, `repl.rs` | The command line and the replay-based REPL, written against traits. |
+
+### Execution model
+
+* Registers are untagged 64-bit words. Integers are kept in canonical form
+  (signed values sign-extended, unsigned zero-extended).
+* A call places its arguments in consecutive registers *above every live
+  value*; the callee's frame **is** that window, and the result returns in the
+  window's first register — no copying on call or return.
+* Upvalues follow Lua: a closure first points at the live stack slot (open),
+  and the variable moves to the heap when its scope ends (closed).
+* The compiler records, for every instruction at which the collector may run,
+  which registers hold live references (**stack maps**: bytecode liveness ∧ a
+  reference-type dataflow). The collector scans exactly those, so integers that
+  look like handles are never mistaken for references.
+* Heap handles are 1-based; 0 is null. With `--gc-limit` the heap has a hard
+  cap and traps with *out of memory* only if live data exceeds it.
+
+### WebAssembly
+
+The compiler, analyzer and VM never touch `std::fs` or the process streams.
+Files come from a `Vfs`, program I/O goes through `VmIo` (`BufferIo`,
+`StreamIo<R, W>` or your own). `cargo build --lib --target wasm32-unknown-unknown`
+is part of the checks below.
+
+## Testing
+
+```sh
+cargo test                                    # unit + integration tests
+cargo build --lib --target wasm32-unknown-unknown
+scripts/valgrind_test.sh                      # every test binary and the CLI under Valgrind
+```
+
+Highlights:
+
+* `tests/corpus/*.neon` + `.out` — programs with known output. They are
+  compiled under every optimizer setting, executed by the reference
+  interpreter and by the VM, with and without a collection at *every*
+  safe-point, and run through the real binary.
+* `tests/phase9_math.rs` — boundary-value arithmetic for every numeric type,
+  operator and cast, VM against interpreter.
+* `tests/phase8_gc.rs`, `src/gc/tests.rs` — collector behavior under restricted
+  limits, cycles, closures and randomized object graphs.
+* Peephole optimizer: a randomized semantic-equivalence test against a tiny
+  instruction interpreter.
 
 ### Valgrind gate
 
-`scripts/valgrind_test.sh` runs every test binary under
+`scripts/valgrind_test.sh` runs every test binary (and the CLI on every corpus
+program with `--gc-stress`) under
 `valgrind --leak-check=full --show-leak-kinds=all --errors-for-leak-kinds=all --error-exitcode=1`
 and requires `0 errors from 0 contexts`, `definitely lost: 0 bytes` and
 `indirectly lost: 0 bytes`.
@@ -65,3 +154,10 @@ program).
 
 The script also sets `RUST_BACKTRACE=0`: symbolizing a backtrace (printed by
 `should_panic` tests) builds process-wide caches in std that are never freed.
+
+## Limits
+
+At most 256 registers per function (a function that needs more is reported as
+a compile error), 255 captured variables per closure, 250 call arguments,
+255 enum variants. Long array/set/map literals are built incrementally so
+they do not hit the register limit.

@@ -65,8 +65,44 @@ for bin in "${BINS[@]}"; do
     echo "ok: $name"
 done
 
+# The command-line binary itself, on every corpus program, with the collector
+# running at every safe-point (this exercises stack maps, upvalues and the
+# heap under Valgrind's memory checking).
+cargo build --quiet --bin neon
+CLI="$PWD/target/debug/neon"
+OUT="$(mktemp)"
+trap 'rm -f "$LOG" "$OUT"' EXIT
+programs=0
+for prog in tests/corpus/*.neon; do
+    expected="${prog%.neon}.out"
+    programs=$((programs + 1))
+    if ! valgrind "${VG_FLAGS[@]}" --log-file="$LOG" "$CLI" run --gc-stress "$prog" >"$OUT" 2>/dev/null; then
+        echo "FAIL: neon run $prog exited non-zero under valgrind"
+        tail -n 40 "$LOG"
+        failed=1
+        continue
+    fi
+    if ! cmp -s "$OUT" "$expected"; then
+        echo "FAIL: neon run $prog printed the wrong output under valgrind"
+        failed=1
+        continue
+    fi
+    for pattern in \
+        "0 errors from 0 contexts" \
+        "definitely lost: 0 bytes" \
+        "indirectly lost: 0 bytes"; do
+        if ! grep -q "$pattern" "$LOG"; then
+            echo "FAIL: neon run $prog: missing '$pattern'"
+            tail -n 40 "$LOG"
+            failed=1
+            continue 2
+        fi
+    done
+done
+echo "ran $programs corpus programs through the CLI under valgrind"
+
 if [ "$failed" -ne 0 ]; then
     echo "valgrind validation FAILED" >&2
     exit 1
 fi
-echo "valgrind validation passed for ${#BINS[@]} test binaries"
+echo "valgrind validation passed for ${#BINS[@]} test binaries and $programs CLI runs"

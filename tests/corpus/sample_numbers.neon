@@ -1,0 +1,18 @@
+// Integer limits, wrapping casts and float formatting.
+println(i64::MAX);
+println(i64::MIN);
+println(u64::MAX);
+println(255u8 as i8);
+println(-1 as u32);
+println(3.99 as i32);
+println(1.0 / 3.0);
+println(2.0.sqrt() * 2.0.sqrt());
+println(0.1 + 0.2);
+println(7 / 2);
+println(-7 / 2);
+println(-7 % 3);
+println(7.0 / 2.0);
+println(1e21);
+println(1.5e-7);
+println(i32::MAX as i64 + 1);
+println(100u8 as char);

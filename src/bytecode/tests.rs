@@ -468,6 +468,7 @@ fn disassembly_shows_labels_offsets_and_roots() {
         code: asm.code,
         params: 1,
         frame_size: 2,
+        param_refs: vec![false],
         upvals: vec![],
         stack_maps: vec![StackMap { pc: 1, live_roots: [1u8].into_iter().collect() }],
     };

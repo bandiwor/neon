@@ -17,7 +17,7 @@ pub mod opcode;
 pub mod peephole;
 pub mod verify;
 
-pub use asm::{assemble, decode, decode_one, AsmError, Assembled, DecodeError};
+pub use asm::{assemble, decode, decode_one, AsmError, Assembled, DecodeError, NO_DESC};
 pub use chunk::{BytecodeProgram, Chunk};
 pub use disasm::{disassemble, disassemble_chunk, format_insn};
 pub use insn::{Capture, Insn, Item, Label, Reg};

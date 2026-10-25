@@ -367,6 +367,7 @@ fn chunk_with_maps(name: &str, maps: &[(u32, &[u8])]) -> Chunk {
         code: vec![0; 8],
         params: 0,
         frame_size: 8,
+        param_refs: vec![],
         upvals: vec![],
         stack_maps: maps
             .iter()

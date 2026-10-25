@@ -44,7 +44,8 @@ fn ext(op: Opcode, a: u8, b: u8) -> u32 {
     ((EXT_ESCAPE as u32) << 24) | ((op as u32) << 16) | ((a as u32) << 8) | b as u32
 }
 
-const NO_DESC: u16 = 0xFFFF;
+/// The descriptor field value meaning "no descriptor" in an `intrinsic`.
+pub const NO_DESC: u16 = 0xFFFF;
 
 fn builtin_index(b: Builtin) -> u8 {
     Builtin::ALL.iter().position(|&x| x == b).expect("builtin is in ALL") as u8

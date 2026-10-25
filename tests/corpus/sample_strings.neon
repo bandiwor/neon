@@ -1,0 +1,20 @@
+// Strings: characters, unicode, searching, joining.
+fn reverse(s: string) -> string {
+    let mut cs = s.chars();
+    cs.reverse();
+    let mut out = "";
+    for c in cs { out = out + c.to_string(); }
+    out
+}
+fn is_palindrome(s: string) -> bool { s == reverse(s) }
+println(reverse("hello"));
+println(is_palindrome("level"));
+println(is_palindrome("neon"));
+println("héllo wörld".to_upper());
+println("héllo".len());
+let words = "a,b,,c".split(",");
+println(words);
+println(words.join("|"));
+println("  padded  ".trim() + "!");
+println("banana".find("nan"));
+println("banana".contains("xyz"));

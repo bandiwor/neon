@@ -1,0 +1,25 @@
+// Structs, methods, enums with payloads and exhaustive matching.
+enum Tx { Deposit(i64), Withdraw(i64), Transfer(string, i64) }
+struct Account { owner: string, balance: i64, log: [string] }
+impl Account {
+    fn new(owner: string) -> Account { Account { owner: owner, balance: 0, log: [] } }
+    fn apply(mut self, tx: Tx) -> bool {
+        match tx {
+            Tx::Deposit(n) => { self.balance += n; self.log.push("deposit " + n.to_string()); true }
+            Tx::Withdraw(n) => {
+                if n > self.balance { self.log.push("denied " + n.to_string()); false }
+                else { self.balance -= n; self.log.push("withdraw " + n.to_string()); true }
+            }
+            Tx::Transfer(to, n) => {
+                if n > self.balance { self.log.push("denied transfer to " + to); false }
+                else { self.balance -= n; self.log.push("sent " + n.to_string() + " to " + to); true }
+            }
+        }
+    }
+}
+let mut acc = Account::new("ada");
+let txs = [Tx::Deposit(100), Tx::Withdraw(30), Tx::Withdraw(500), Tx::Transfer("bob", 50), Tx::Transfer("eve", 50)];
+let mut ok = 0;
+for tx in txs { if acc.apply(tx) { ok += 1; } }
+println(acc.owner + " has " + acc.balance.to_string() + " after " + ok.to_string() + " successful transactions");
+for line in acc.log { println("  " + line); }

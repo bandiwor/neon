@@ -9,12 +9,15 @@
 
 pub mod builtin;
 pub mod bytecode;
+pub mod cli;
 pub mod compiler;
 pub mod diag;
 pub mod driver;
 pub mod gc;
 pub mod ir;
+pub mod repl;
 pub mod runtime;
 pub mod sema;
 pub mod syntax;
 pub mod vfs;
+pub mod vm;

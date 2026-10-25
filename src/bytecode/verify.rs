@@ -32,6 +32,9 @@ pub fn verify_chunk(p: &BytecodeProgram, c: &Chunk) -> Result<(), String> {
     if (c.params as usize) > frame {
         return Err("more parameters than registers".into());
     }
+    if c.param_refs.len() != c.params as usize {
+        return Err("param_refs does not match the parameter count".into());
+    }
     let reg_ok = |r: Reg, what: &str| -> Result<(), String> {
         if (r as usize) < frame {
             Ok(())
@@ -233,7 +236,15 @@ mod tests {
                 stack_maps.push(StackMap { pc: asm.pcs[i], live_roots: BitSet::new() });
             }
         }
-        Chunk { name: "t".into(), code: asm.code, params, frame_size: frame, upvals: vec![], stack_maps }
+        Chunk {
+            name: "t".into(),
+            code: asm.code,
+            params,
+            frame_size: frame,
+            param_refs: vec![false; params as usize],
+            upvals: vec![],
+            stack_maps,
+        }
     }
 
     fn prog(c: Chunk) -> BytecodeProgram {

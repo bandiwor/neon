@@ -1,0 +1,8 @@
+// Classic FizzBuzz.
+fn say(n: i64) -> string {
+    if n % 15 == 0 { "FizzBuzz" }
+    else if n % 3 == 0 { "Fizz" }
+    else if n % 5 == 0 { "Buzz" }
+    else { n.to_string() }
+}
+for i in 1..=15 { println(say(i)); }

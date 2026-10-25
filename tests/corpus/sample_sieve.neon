@@ -1,0 +1,19 @@
+// Sieve of Eratosthenes over a boolean array.
+fn primes_below(limit: i64) -> [i64] {
+    let mut is_prime: [bool] = [];
+    for i in 0..limit { is_prime.push(i >= 2); }
+    let mut p = 2;
+    while p * p < limit {
+        if is_prime[p] {
+            let mut m = p * p;
+            while m < limit { is_prime[m] = false; m += p; }
+        }
+        p += 1;
+    }
+    let mut out: [i64] = [];
+    for i in 0..limit { if is_prime[i] { out.push(i); } }
+    out
+}
+let ps = primes_below(60);
+println(ps);
+println(ps.len());
