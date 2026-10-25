@@ -567,7 +567,7 @@ impl<'p, 'io> Vm<'p, 'io> {
                     Opcode::MapGet => {
                         let h = reg!(b);
                         let i = self.heap.map_find(h, reg!(c)).ok_or(Trap::KeyNotFound)?;
-                        reg!(a) = self.heap.map_entries_ref(h)[i].1;
+                        reg!(a) = self.heap.map_val_at(h, i);
                         pc += 1;
                     }
                     Opcode::MapSet => {

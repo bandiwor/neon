@@ -36,7 +36,13 @@ pub struct PeepholeStats {
 
 impl PeepholeStats {
     pub fn total(&self) -> usize {
-        self.moves_removed + self.dead_removed + self.coalesced + self.fused + self.immediates + self.jumps_removed + self.rotated
+        self.moves_removed
+            + self.dead_removed
+            + self.coalesced
+            + self.fused
+            + self.immediates
+            + self.jumps_removed
+            + self.rotated
     }
 }
 
@@ -325,7 +331,11 @@ fn rotate_loops(items: &mut Vec<Item>, stats: &mut PeepholeStats) {
                     }
                     j += 1;
                 }
-                if exit_follows { invert(kind.cmp(), a, b).and_then(|(k2, a2, b2)| k2.fused().map(|f| (f, a2, b2))) } else { None }
+                if exit_follows {
+                    invert(kind.cmp(), a, b).and_then(|(k2, a2, b2)| k2.fused().map(|f| (f, a2, b2)))
+                } else {
+                    None
+                }
             }
             _ => None,
         };

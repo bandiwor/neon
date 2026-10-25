@@ -220,25 +220,25 @@ impl Vm<'_, '_> {
                 0
             }
 
-            MapLen | SetLen => h.map_entries_ref(a[0]).len() as u64,
-            MapIsEmpty | SetIsEmpty => h.map_entries_ref(a[0]).is_empty() as u64,
+            MapLen | SetLen => h.map_len(a[0]) as u64,
+            MapIsEmpty | SetIsEmpty => (h.map_len(a[0]) == 0) as u64,
             MapInsert => {
                 self.heap.map_insert(a[0], a[1], a[2])?;
                 0
             }
             MapGetOr => match h.map_find(a[0], a[1]) {
-                Some(i) => h.map_entries_ref(a[0])[i].1,
+                Some(i) => h.map_val_at(a[0], i),
                 None => a[2],
             },
             MapContainsKey | SetContains => h.map_find(a[0], a[1]).is_some() as u64,
             MapRemove | SetRemove => self.heap.map_remove(a[0], a[1])?.is_some() as u64,
             MapKeys | SetToArray => {
-                let keys = h.map_entries_ref(a[0]).iter().map(|e| e.0).collect();
+                let keys = h.map_live_entries(a[0]).map(|e| e.0).collect();
                 let (key_ref, _) = h.map_flags(a[0]);
                 self.heap.alloc_array(keys, key_ref)?
             }
             MapValues => {
-                let vals = h.map_entries_ref(a[0]).iter().map(|e| e.1).collect();
+                let vals = h.map_live_entries(a[0]).map(|e| e.1).collect();
                 let (_, val_ref) = h.map_flags(a[0]);
                 self.heap.alloc_array(vals, val_ref)?
             }
@@ -303,7 +303,7 @@ impl Vm<'_, '_> {
                 self.option(desc, e)?
             }
             MapGet => {
-                let e = h.map_find(a[0], a[1]).map(|i| h.map_entries_ref(a[0])[i].1);
+                let e = h.map_find(a[0], a[1]).map(|i| h.map_val_at(a[0], i));
                 self.option(desc, e)?
             }
             CheckedAdd | CheckedSub | CheckedMul | CheckedDiv | CheckedRem | CheckedPow | CheckedShl | CheckedShr => {

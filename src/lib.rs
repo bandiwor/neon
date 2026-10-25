@@ -14,6 +14,7 @@ pub mod compiler;
 pub mod diag;
 pub mod driver;
 pub mod fmt;
+pub mod fx;
 pub mod gc;
 pub mod ir;
 pub mod lsp;

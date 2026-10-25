@@ -231,13 +231,73 @@ fn map_preserves_insertion_order_and_overwrites() {
     assert_eq!(h.map_find(m, 3), Some(1));
     assert_eq!(h.map_find(m, 4), None);
     assert_eq!(h.map_remove(m, 5).unwrap(), Some((5, 55)));
-    assert_eq!(h.map_find(m, 3), Some(0), "later entries shift down");
+    assert_eq!(h.map_find(m, 5), None);
+    assert_eq!(h.map_val_at(m, h.map_find(m, 3).unwrap()), 30);
+    assert_eq!(h.map_len(m), 1);
     assert_eq!(h.map_remove(m, 5).unwrap(), None);
     h.map_insert(m, 9, 90).unwrap();
     assert_eq!(h.map_entries(m), [(3, 30), (9, 90)]);
     h.map_clear(m).unwrap();
     assert!(h.map_entries(m).is_empty());
     h.check_invariants().unwrap();
+}
+
+#[test]
+fn maps_agree_with_a_reference_model_under_churn() {
+    use std::collections::BTreeMap;
+    let mut h = heap();
+    let m = h.alloc_map(false, false, false).unwrap();
+    // an insertion-ordered reference: Vec of (key, value) with linear search
+    let mut model: Vec<(u64, u64)> = Vec::new();
+    let mut state = 0x2545_F491_4F6C_DD1Du64;
+    let mut next = || {
+        state ^= state << 13;
+        state ^= state >> 7;
+        state ^= state << 17;
+        state
+    };
+    for step in 0..20_000u64 {
+        let key = next() % 300 + 1;
+        match next() % 5 {
+            0 | 1 => {
+                let fresh = h.map_insert(m, key, step).unwrap();
+                match model.iter_mut().find(|e| e.0 == key) {
+                    Some(e) => {
+                        assert!(!fresh);
+                        e.1 = step;
+                    }
+                    None => {
+                        assert!(fresh);
+                        model.push((key, step));
+                    }
+                }
+            }
+            2 | 3 => {
+                let got = h.map_remove(m, key).unwrap();
+                let want = model.iter().position(|e| e.0 == key).map(|i| model.remove(i));
+                assert_eq!(got, want, "step {step}");
+            }
+            _ => {
+                let want = model.iter().find(|e| e.0 == key).map(|e| e.1);
+                let got = h.map_find(m, key).map(|i| h.map_val_at(m, i));
+                assert_eq!(got, want, "step {step}");
+            }
+        }
+        if step % 997 == 0 {
+            assert_eq!(h.map_entries(m), model);
+            assert_eq!(h.map_len(m), model.len());
+            h.check_invariants().unwrap();
+        }
+        if step == 15_000 {
+            // everything out, then reuse
+            for (k, _) in std::mem::take(&mut model) {
+                assert!(h.map_remove(m, k).unwrap().is_some());
+            }
+            assert_eq!(h.map_len(m), 0);
+        }
+    }
+    assert_eq!(h.map_entries(m), model);
+    let _ = BTreeMap::<u8, u8>::new();
 }
 
 #[test]

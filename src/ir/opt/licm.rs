@@ -209,7 +209,11 @@ fn hoist_one_loop(f: &mut IrFunc) -> usize {
                         break 'grow;
                     }
                     let Some(d) = i.def() else { continue };
-                    if hoisted.contains(&(b, ii)) || defs[d.index()] != 1 || f.pinned[d.index()] || !movable_kind(i, loop_writes_heap) {
+                    if hoisted.contains(&(b, ii))
+                        || defs[d.index()] != 1
+                        || f.pinned[d.index()]
+                        || !movable_kind(i, loop_writes_heap)
+                    {
                         continue;
                     }
                     let mut invariant = true;

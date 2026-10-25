@@ -8,11 +8,9 @@
 //! and enums consult the layout derived from their type descriptor), and the
 //! VM supplies the live register roots from the compiler's stack maps.
 
-use std::collections::hash_map::DefaultHasher;
-use std::collections::HashMap;
-use std::hash::{Hash, Hasher};
 use std::mem::size_of;
 
+use crate::fx::{hash_bytes, mix64};
 use crate::ir::TypeDesc;
 use crate::runtime::{HeapView, Trap};
 
@@ -32,11 +30,28 @@ pub enum KeyKind {
     Str,
 }
 
+/// One entry of a map or set. `hash == 0` marks a removed entry: real hashes always have the top
+/// bit set (see [`Heap::hash_key`]).
+#[derive(Debug, Clone, Copy)]
+struct Entry {
+    hash: u64,
+    key: u64,
+    val: u64,
+}
+
+const EMPTY: u32 = u32::MAX;
+const TOP_BIT: u64 = 1 << 63;
+
 /// Insertion-ordered hash table shared by maps and sets (sets ignore values).
+///
+/// `entries` keeps insertion order; `table` is an open-addressing index (linear probing, load at
+/// most one half) of positions in `entries`. Removing an entry only marks it dead, so removal is
+/// O(1); dead entries are squeezed out when the table is rebuilt.
 #[derive(Debug)]
 pub struct MapObj {
-    pub entries: Vec<(u64, u64)>,
-    index: HashMap<u64, Vec<u32>>,
+    entries: Vec<Entry>,
+    table: Vec<u32>,
+    live: usize,
     pub key_kind: KeyKind,
     pub key_ref: bool,
     pub val_ref: bool,
@@ -46,8 +61,8 @@ pub struct MapObj {
 pub enum Obj {
     Str(String),
     Array { elems: Vec<u64>, refs: bool },
-    Map(MapObj),
-    Set(MapObj),
+    Map(Box<MapObj>),
+    Set(Box<MapObj>),
     Struct { desc: u32, fields: Vec<u64> },
     Enum { desc: u32, tag: u32, fields: Vec<u64> },
     Closure { func: u32, cells: Vec<CellId> },
@@ -265,11 +280,11 @@ impl Heap {
 
     /// An empty map; `key_str` selects content-based hashing of string keys.
     pub fn alloc_map(&mut self, key_str: bool, key_ref: bool, val_ref: bool) -> Result<Handle, Trap> {
-        self.alloc(Obj::Map(MapObj::new(key_str, key_ref, val_ref)))
+        self.alloc(Obj::Map(Box::new(MapObj::new(key_str, key_ref, val_ref))))
     }
 
     pub fn alloc_set(&mut self, key_str: bool, key_ref: bool) -> Result<Handle, Trap> {
-        self.alloc(Obj::Set(MapObj::new(key_str, key_ref, false)))
+        self.alloc(Obj::Set(Box::new(MapObj::new(key_str, key_ref, false))))
     }
 
     /// Allocates an upvalue cell over stack slot `slot` (open) .
@@ -398,26 +413,46 @@ impl Heap {
     }
 
     fn hash_key(&self, kind: KeyKind, key: u64) -> u64 {
-        let mut hasher = DefaultHasher::new();
-        match kind {
-            KeyKind::Bits => key.hash(&mut hasher),
-            KeyKind::Str => self.str_of(key).hash(&mut hasher),
-        }
-        hasher.finish()
+        let h = match kind {
+            KeyKind::Bits => mix64(key),
+            KeyKind::Str => hash_bytes(self.str_of(key).as_bytes()),
+        };
+        h | TOP_BIT
     }
 
     fn keys_equal(&self, kind: KeyKind, a: u64, b: u64) -> bool {
         match kind {
             KeyKind::Bits => a == b,
-            KeyKind::Str => self.str_of(a) == self.str_of(b),
+            KeyKind::Str => a == b || self.str_of(a) == self.str_of(b),
         }
     }
 
-    /// Position of `key` in the entry list of a map or set.
+    fn find_hashed(&self, m: &MapObj, key: u64, hash: u64) -> Option<usize> {
+        if m.table.is_empty() {
+            return None;
+        }
+        let mask = m.table.len() - 1;
+        let mut i = hash as usize & mask;
+        loop {
+            let slot = m.table[i];
+            if slot == EMPTY {
+                return None;
+            }
+            let e = &m.entries[slot as usize];
+            if e.hash == hash && self.keys_equal(m.key_kind, e.key, key) {
+                return Some(slot as usize);
+            }
+            i = (i + 1) & mask;
+        }
+    }
+
+    /// Position of `key` in the entry list of a map or set (valid until the next change).
     pub fn map_find(&self, h: Handle, key: u64) -> Option<usize> {
         let m = self.map_obj(h);
-        let bucket = m.index.get(&self.hash_key(m.key_kind, key))?;
-        bucket.iter().map(|&i| i as usize).find(|&i| self.keys_equal(m.key_kind, m.entries[i].0, key))
+        if m.live == 0 {
+            return None;
+        }
+        self.find_hashed(m, key, self.hash_key(m.key_kind, key))
     }
 
     /// Whether the keys / values of a map or set are references.
@@ -426,31 +461,41 @@ impl Heap {
         (m.key_ref, m.val_ref)
     }
 
-    pub fn map_entries_ref(&self, h: Handle) -> &[(u64, u64)] {
-        &self.map_obj(h).entries
+    /// Number of entries.
+    pub fn map_len(&self, h: Handle) -> usize {
+        self.map_obj(h).live
+    }
+
+    /// The value stored at a position returned by [`Heap::map_find`].
+    pub fn map_val_at(&self, h: Handle, pos: usize) -> u64 {
+        self.map_obj(h).entries[pos].val
+    }
+
+    /// The live `(key, value)` pairs in insertion order.
+    pub fn map_live_entries(&self, h: Handle) -> impl Iterator<Item = (u64, u64)> + '_ {
+        self.map_obj(h).entries.iter().filter(|e| e.hash != 0).map(|e| (e.key, e.val))
     }
 
     /// Inserts or overwrites; returns whether the key was new.
     pub fn map_insert(&mut self, h: Handle, key: u64, val: u64) -> Result<bool, Trap> {
-        match self.map_find(h, key) {
+        let (hash, found) = {
+            let m = self.map_obj(h);
+            let hash = self.hash_key(m.key_kind, key);
+            (hash, if m.live == 0 { None } else { self.find_hashed(m, key, hash) })
+        };
+        match found {
             Some(i) => {
                 self.update(h, |o| {
                     if let Obj::Map(m) | Obj::Set(m) = o {
-                        m.entries[i].1 = val
+                        m.entries[i].val = val
                     }
                 })?;
                 Ok(false)
             }
             None => {
-                let (kind, hash) = {
-                    let m = self.map_obj(h);
-                    (m.key_kind, self.hash_key(m.key_kind, key))
-                };
-                let _ = kind;
                 self.update(h, |o| {
                     if let Obj::Map(m) | Obj::Set(m) = o {
-                        m.index.entry(hash).or_default().push(m.entries.len() as u32);
-                        m.entries.push((key, val));
+                        m.push_new(hash, key, val);
                     }
                 })?;
                 Ok(true)
@@ -463,25 +508,14 @@ impl Heap {
         let Some(pos) = self.map_find(h, key) else { return Ok(None) };
         self.update(h, |o| {
             let (Obj::Map(m) | Obj::Set(m)) = o else { unreachable!() };
-            let removed = m.entries.remove(pos);
-            m.index.values_mut().for_each(|b| {
-                b.retain(|&i| i as usize != pos);
-                b.iter_mut().for_each(|i| {
-                    if *i as usize > pos {
-                        *i -= 1
-                    }
-                });
-            });
-            m.index.retain(|_, b| !b.is_empty());
-            Some(removed)
+            Some(m.kill(pos))
         })
     }
 
     pub fn map_clear(&mut self, h: Handle) -> Result<(), Trap> {
         self.update(h, |o| {
             if let Obj::Map(m) | Obj::Set(m) = o {
-                m.entries.clear();
-                m.index.clear();
+                m.clear();
             }
         })
     }
@@ -574,12 +608,12 @@ impl Heap {
                 }
             }
             Obj::Map(m) | Obj::Set(m) => {
-                for &(k, v) in &m.entries {
+                for e in &m.entries {
                     if m.key_ref {
-                        push(k);
+                        push(e.key);
                     }
                     if m.val_ref {
-                        push(v);
+                        push(e.val);
                     }
                 }
             }
@@ -633,11 +667,64 @@ impl MapObj {
     fn new(key_str: bool, key_ref: bool, val_ref: bool) -> MapObj {
         MapObj {
             entries: Vec::new(),
-            index: HashMap::new(),
+            table: Vec::new(),
+            live: 0,
             key_kind: if key_str { KeyKind::Str } else { KeyKind::Bits },
             key_ref,
             val_ref,
         }
+    }
+
+    fn place(&mut self, hash: u64, pos: u32) {
+        let mask = self.table.len() - 1;
+        let mut i = hash as usize & mask;
+        while self.table[i] != EMPTY {
+            i = (i + 1) & mask;
+        }
+        self.table[i] = pos;
+    }
+
+    /// Appends a new entry (the key is known to be absent).
+    fn push_new(&mut self, hash: u64, key: u64, val: u64) {
+        if (self.entries.len() + 1) * 2 > self.table.len() {
+            self.rebuild();
+        }
+        let pos = self.entries.len() as u32;
+        self.entries.push(Entry { hash, key, val });
+        self.place(hash, pos);
+        self.live += 1;
+    }
+
+    /// Squeezes out dead entries and re-creates the index with room for the next insertion.
+    fn rebuild(&mut self) {
+        if self.live < self.entries.len() {
+            self.entries.retain(|e| e.hash != 0);
+        }
+        let size = ((self.entries.len() + 1) * 2).next_power_of_two().max(8);
+        self.table.clear();
+        self.table.resize(size, EMPTY);
+        for pos in 0..self.entries.len() {
+            let hash = self.entries[pos].hash;
+            self.place(hash, pos as u32);
+        }
+    }
+
+    /// Marks the entry at `pos` removed and returns its key and value.
+    fn kill(&mut self, pos: usize) -> (u64, u64) {
+        let e = &mut self.entries[pos];
+        let removed = (e.key, e.val);
+        *e = Entry { hash: 0, key: 0, val: 0 };
+        self.live -= 1;
+        if self.live == 0 {
+            self.clear();
+        }
+        removed
+    }
+
+    fn clear(&mut self) {
+        self.entries.clear();
+        self.live = 0;
+        self.table.iter_mut().for_each(|s| *s = EMPTY);
     }
 }
 
@@ -646,7 +733,9 @@ fn obj_size(o: &Obj) -> usize {
     base + match o {
         Obj::Str(s) => s.capacity(),
         Obj::Array { elems, .. } => elems.capacity() * 8,
-        Obj::Map(m) | Obj::Set(m) => m.entries.capacity() * 16 + m.index.len() * 48,
+        Obj::Map(m) | Obj::Set(m) => {
+            size_of::<MapObj>() + m.entries.capacity() * size_of::<Entry>() + m.table.capacity() * 4
+        }
         Obj::Struct { fields, .. } | Obj::Enum { fields, .. } => fields.capacity() * 8,
         Obj::Closure { cells, .. } => cells.capacity() * 4,
     }
@@ -669,14 +758,14 @@ impl HeapView for Heap {
 
     fn map_entries(&self, h: u64) -> Vec<(u64, u64)> {
         match self.obj(h) {
-            Obj::Map(m) => m.entries.clone(),
+            Obj::Map(m) => m.entries.iter().filter(|e| e.hash != 0).map(|e| (e.key, e.val)).collect(),
             other => panic!("expected a map, found {other:?}"),
         }
     }
 
     fn set_elems(&self, h: u64) -> Vec<u64> {
         match self.obj(h) {
-            Obj::Set(m) => m.entries.iter().map(|e| e.0).collect(),
+            Obj::Set(m) => m.entries.iter().filter(|e| e.hash != 0).map(|e| e.key).collect(),
             other => panic!("expected a set, found {other:?}"),
         }
     }

@@ -518,7 +518,12 @@ fn is_intrinsic(i: &Inst, which: crate::builtin::Builtin) -> bool {
 fn common_subexpressions_are_computed_once() {
     let src = "fn f(a: i64, b: i64) -> i64 { a * b + a * b }\nprintln(f(3, 4));";
     let (ir, _) = optimized(src, only_simplify());
-    let muls = fn_named(&ir, "f").blocks.iter().flat_map(|b| &b.insts).filter(|i| matches!(i, Inst::Arith { op: crate::runtime::numeric::ArithOp::Mul, .. })).count();
+    let muls = fn_named(&ir, "f")
+        .blocks
+        .iter()
+        .flat_map(|b| &b.insts)
+        .filter(|i| matches!(i, Inst::Arith { op: crate::runtime::numeric::ArithOp::Mul, .. }))
+        .count();
     assert_eq!(muls, 1);
     assert_eq!(run(src), "24\n");
 }
@@ -547,13 +552,17 @@ fn fields_of_fresh_structs_and_enums_are_forwarded() {
     let src = "struct P { x: i64, y: i64 }\nfn f(a: i64, b: i64) -> i64 { let p = P { x: a, y: b }; p.x + p.y }\nprintln(f(1, 2));";
     let (ir, _) = optimized(src, only_simplify());
     let f = fn_named(&ir, "f");
-    assert!(f.blocks.iter().flat_map(|b| &b.insts).all(|i| !matches!(i, Inst::NewStruct { .. } | Inst::GetField { .. })), "{ir}");
+    assert!(
+        f.blocks.iter().flat_map(|b| &b.insts).all(|i| !matches!(i, Inst::NewStruct { .. } | Inst::GetField { .. })),
+        "{ir}"
+    );
     assert_eq!(run(src), "3\n");
     // a write to the struct is seen
     let src = "struct P { x: i64 }\nfn f() -> i64 { var p = P { x: 1 }; p.x = 5; p.x }\nprintln(f());";
     assert_eq!(run(src), "5\n");
     // the forwarded register changes after the construction
-    let src = "struct P { x: i64 }\nfn f() -> i64 { var a = 1; let p = P { x: a }; a = 9; p.x * 10 + a }\nprintln(f());";
+    let src =
+        "struct P { x: i64 }\nfn f() -> i64 { var a = 1; let p = P { x: a }; a = 9; p.x * 10 + a }\nprintln(f());";
     assert_eq!(run(src), "19\n");
 }
 
@@ -604,7 +613,10 @@ fn unused_elements_of_for_loops_are_not_loaded() {
     // an array that shrinks while iterating is still handled by the loop condition
     assert_eq!(run("var a = [1, 2, 3, 4]; var n = 0; for x in a { a.pop(); n += 1; } println(n);"), "2\n");
     // a user-written index loop with a possibly negative start must keep its trap
-    assert_eq!(trap_of("fn f(i: i64) { let a = [1]; if i < a.len() { let x = a[i]; } }\nf(-1);"), Trap::IndexOutOfBounds { index: -1, len: 1 });
+    assert_eq!(
+        trap_of("fn f(i: i64) { let a = [1]; if i < a.len() { let x = a[i]; } }\nf(-1);"),
+        Trap::IndexOutOfBounds { index: -1, len: 1 }
+    );
 }
 
 // ---- loop-invariant code motion ---------------------------------------------------------------
@@ -617,7 +629,14 @@ fn invariants_leave_the_loop() {
     assert_eq!(run(src), "18\n");
     // `len` is read once, before the loop
     let f = fn_named(&ir, "f");
-    let in_loop_len = f.blocks.iter().skip(1).filter(|b| matches!(b.term, Term::Branch { .. })).flat_map(|b| &b.insts).filter(|i| is_intrinsic(i, crate::builtin::Builtin::ArrLen)).count();
+    let in_loop_len = f
+        .blocks
+        .iter()
+        .skip(1)
+        .filter(|b| matches!(b.term, Term::Branch { .. }))
+        .flat_map(|b| &b.insts)
+        .filter(|i| is_intrinsic(i, crate::builtin::Builtin::ArrLen))
+        .count();
     assert_eq!(in_loop_len, 0, "{ir}");
 }
 

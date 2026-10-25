@@ -68,7 +68,11 @@ pub(super) fn predecessors(f: &IrFunc) -> Vec<Vec<usize>> {
 /// Whether executing `i` may write heap memory (or run arbitrary code that does).
 pub(super) fn clobbers_memory(i: &Inst) -> bool {
     match i {
-        Inst::SetField { .. } | Inst::ArraySet { .. } | Inst::MapSet { .. } | Inst::Call { .. } | Inst::CallClosure { .. } => true,
+        Inst::SetField { .. }
+        | Inst::ArraySet { .. }
+        | Inst::MapSet { .. }
+        | Inst::Call { .. }
+        | Inst::CallClosure { .. } => true,
         Inst::Intrinsic { b, .. } => b.mutates_heap(),
         _ => false,
     }
@@ -163,7 +167,9 @@ fn key_of(f: &IrFunc, inst: &Inst) -> Option<Key> {
         Inst::EnumTag { obj, .. } => Key::EnumTag(*obj),
         Inst::EnumField { obj, idx, .. } => Key::EnumField(*obj, *idx),
         Inst::ArrayGet { arr, idx, idx_ty, .. } => Key::ArrayGet(*arr, *idx, *idx_ty),
-        Inst::Intrinsic { b, desc, args, .. } if b.is_pure() || b.reads_memory_only() => Key::Intrinsic(*b, *desc, args.clone()),
+        Inst::Intrinsic { b, desc, args, .. } if b.is_pure() || b.reads_memory_only() => {
+            Key::Intrinsic(*b, *desc, args.clone())
+        }
         _ => return None,
     };
     let dst = inst.def()?;
@@ -358,7 +364,9 @@ fn split_print_concat(f: &mut IrFunc) -> usize {
     for bi in 0..f.blocks.len() {
         let mut ii = 0;
         while ii < f.blocks[bi].insts.len() {
-            let Inst::Intrinsic { b: pb @ (Builtin::Print | Builtin::Println), desc, args: pargs, .. } = f.blocks[bi].insts[ii].clone() else {
+            let Inst::Intrinsic { b: pb @ (Builtin::Print | Builtin::Println), desc, args: pargs, .. } =
+                f.blocks[bi].insts[ii].clone()
+            else {
                 ii += 1;
                 continue;
             };
@@ -435,7 +443,8 @@ fn never_negative(f: &IrFunc, defs: &[u32], idx: VReg, ty: NumTy) -> bool {
         let ok = match i {
             Inst::Const { val: Const::Bits(v), .. } => decode_int(ty, *v) >= 0,
             Inst::Arith { op: ArithOp::Add, ty: aty, lhs, rhs, .. } if *aty == ty => {
-                (*lhs == idx && single_const(*rhs).is_some_and(|c| c > 0)) || (*rhs == idx && single_const(*lhs).is_some_and(|c| c > 0))
+                (*lhs == idx && single_const(*rhs).is_some_and(|c| c > 0))
+                    || (*rhs == idx && single_const(*lhs).is_some_and(|c| c > 0))
             }
             _ => false,
         };

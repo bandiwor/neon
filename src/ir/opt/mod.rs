@@ -36,7 +36,15 @@ pub struct OptConfig {
 
 impl Default for OptConfig {
     fn default() -> Self {
-        OptConfig { fold: true, dce: true, simplify: true, licm: true, inline: true, inline_threshold: 30, max_regs: 160 }
+        OptConfig {
+            fold: true,
+            dce: true,
+            simplify: true,
+            licm: true,
+            inline: true,
+            inline_threshold: 30,
+            max_regs: 160,
+        }
     }
 }
 
