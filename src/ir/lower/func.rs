@@ -94,6 +94,35 @@ fn display_name(cx: &Lowerer<'_>, name: &str, args: &[Ty]) -> String {
     format!("{name}<{}>", shown.join(", "))
 }
 
+/// Lowers the initializer `init` of a `const` of `module` into a stand-alone,
+/// call-free function that returns its value.
+pub(super) fn lower_const_init(cx: &mut Lowerer<'_>, module: ModuleId, init: NodeId) -> IrFunc {
+    let ast = cx.prog.modules[module.index()].ast.clone();
+    let mut fl = FnLower {
+        cx,
+        ast,
+        module,
+        args: Vec::new(),
+        f: IrFunc::new("<const>"),
+        cur: BlockId(0),
+        sealed: false,
+        locals: HashMap::new(),
+        scopes: vec![Vec::new()],
+        loops: Vec::new(),
+        unit: None,
+        captures: Vec::new(),
+        ret_ty: crate::sema::Ty(0),
+    };
+    let ty = fl.node_ty(init);
+    fl.ret_ty = ty;
+    fl.f.ret = fl.cx.ir_ty(ty);
+    let entry = fl.f.new_block();
+    fl.cur = entry;
+    let v = fl.expr(init);
+    fl.finish_with(v);
+    std::mem::replace(&mut fl.f, IrFunc::new(""))
+}
+
 /// Lowers the body of one reserved instance.
 pub(super) fn lower_instance(cx: &mut Lowerer<'_>, id: FuncId, key: FuncKey) {
     // Keep the signature in place while lowering, so recursive calls can read it.

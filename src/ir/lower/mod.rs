@@ -42,7 +42,22 @@ pub(super) struct Lowerer<'a> {
     descs: HashMap<Ty, DescId>,
     strings: HashMap<String, u32>,
     globals: HashMap<GlobalId, GlobalSlot>,
+    /// Evaluated `const`s (`None` once evaluation failed, so the error is reported once).
+    consts: HashMap<GlobalId, ConstState>,
     pub failed: bool,
+}
+
+#[derive(Debug, Clone, Copy)]
+enum ConstState {
+    InProgress,
+    Done(Option<ConstResult>),
+}
+
+/// A compile-time constant, ready to be materialized at its uses.
+#[derive(Debug, Clone, Copy)]
+pub(super) enum ConstResult {
+    Bits(u64),
+    Str(u32),
 }
 
 /// Lowers a checked program. Returns `None` (with diagnostics) if lowering
@@ -58,8 +73,15 @@ pub fn lower_program(prog: &mut Program, interner: &Interner, diags: &mut DiagBa
         descs: HashMap::new(),
         strings: HashMap::new(),
         globals: HashMap::new(),
+        consts: HashMap::new(),
         failed: false,
     };
+    // Evaluate every constant up front, so a broken one is reported even if nothing uses it.
+    for i in 0..cx.prog.globals.len() {
+        if cx.prog.globals[i].is_const {
+            cx.const_value(GlobalId(i as u32));
+        }
+    }
     // Reserve `<start>` first so it has a stable id; it is filled in below.
     let start = cx.reserve_entry();
     let mut calls: Vec<FuncId> = Vec::new();
@@ -91,6 +113,57 @@ impl Lowerer<'_> {
     pub fn error(&mut self, message: impl Into<String>) {
         self.failed = true;
         self.diags.report(Diagnostic::error(message.into()).with_code("E0400"));
+    }
+
+    /// An error attached to a source location.
+    pub fn error_at(&mut self, span: crate::diag::Span, code: &'static str, message: impl Into<String>) {
+        self.failed = true;
+        self.diags.report(Diagnostic::error(message.into()).with_code(code).with_label(span, "in this constant"));
+    }
+
+    /// The value of the `const` `g`, evaluated by the compiler (once).
+    pub(super) fn const_value(&mut self, g: GlobalId) -> Option<ConstResult> {
+        match self.consts.get(&g) {
+            Some(ConstState::Done(r)) => return *r,
+            Some(ConstState::InProgress) => {
+                let (name, span) = {
+                    let d = &self.prog.globals[g.index()];
+                    (self.interner.resolve(d.name).to_string(), d.name_span)
+                };
+                self.error_at(span, "E0402", format!("constant `{name}` is defined in terms of itself"));
+                self.consts.insert(g, ConstState::Done(None));
+                return None;
+            }
+            None => {}
+        }
+        self.consts.insert(g, ConstState::InProgress);
+        let result = self.eval_const_global(g);
+        self.consts.insert(g, ConstState::Done(result));
+        result
+    }
+
+    fn eval_const_global(&mut self, g: GlobalId) -> Option<ConstResult> {
+        use crate::syntax::NodeKind;
+        let (module, name_span, name) = {
+            let d = &self.prog.globals[g.index()];
+            (d.module, d.name_span, self.interner.resolve(d.name).to_string())
+        };
+        // the declaration node of this global
+        let decl = self.prog.modules[module.index()].info.globals.iter().find(|(_, &gid)| gid == g).map(|(&n, _)| n)?;
+        let ast = self.prog.modules[module.index()].ast.clone();
+        let NodeKind::ConstDecl { init, .. } = *ast.kind(decl) else { return None };
+        let func = func::lower_const_init(self, module, init);
+        let mut prog = IrProgram { funcs: vec![func], ..IrProgram::default() };
+        prog.strings = self.out.strings.clone();
+        prog.descs = self.out.descs.clone();
+        match crate::ir::interp::eval_const(&prog) {
+            Ok(crate::ir::interp::ConstValue::Bits(b)) => Some(ConstResult::Bits(b)),
+            Ok(crate::ir::interp::ConstValue::Str(s)) => Some(ConstResult::Str(self.string(&s))),
+            Err(trap) => {
+                self.error_at(name_span, "E0401", format!("cannot evaluate constant `{name}` at compile time: {trap}"));
+                None
+            }
+        }
     }
 
     fn reserve_entry(&mut self) -> FuncId {

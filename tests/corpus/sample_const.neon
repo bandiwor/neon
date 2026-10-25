@@ -1,0 +1,12 @@
+// A const is evaluated by the compiler and inlined at every use.
+const MAX_USERS: i64 = 100;
+const HALF = MAX_USERS / 2;
+const GREETING = "hello" + ", " + "world";
+const PI2 = 3.14159 * 2.0;
+const MASK: u32 = 0xFF << 8;
+const BIG = i32::MAX as i64 + 1;
+const FLAG = MAX_USERS > 50 && !false;
+const LETTER = 'a';
+fn describe() -> string { GREETING + " " + HALF.to_string() }
+println(MAX_USERS); println(HALF); println(GREETING); println(PI2);
+println(MASK); println(BIG); println(FLAG); println(LETTER); println(describe());

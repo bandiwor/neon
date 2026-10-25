@@ -37,10 +37,8 @@ impl FnLower<'_, '_> {
                         self.store_global(item, v);
                     }
                 }
-                NodeKind::ConstDecl { init, .. } => {
-                    let v = self.expr(init);
-                    self.store_global(item, v);
-                }
+                // constants are evaluated by the compiler and inlined at their uses
+                NodeKind::ConstDecl { .. } => {}
                 NodeKind::ExprStmt { expr, .. } => {
                     self.expr(expr);
                 }

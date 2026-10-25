@@ -52,8 +52,18 @@ Diagnostics (with source snippets) go to stderr, program output to stdout.
 * **Types**: `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char string`, arrays
   `[T]`, maps `{K: V}`, sets `set { .. }`, structs, enums with payloads,
   function types `fn(A) -> B`, generics with trait bounds.
-* **Bindings**: `let` / `var` / `const`; module-level bindings are globals.
-  Types are inferred locally; integer and float literals adapt to context.
+* **Bindings**: `let` is an immutable variable, `var` a mutable one, `const` a
+  compile-time constant. Module-level `let`/`var` are globals initialized when
+  the program starts. Types are inferred locally; integer and float literals
+  adapt to context.
+* **`let` vs `const`**: both cannot be reassigned, but a `let` is a *run-time*
+  value (its initializer may call functions, build arrays, read input), while a
+  `const` is computed by the compiler from literals, operators, casts and other
+  constants, and substituted at every use. Constants have no storage, can be
+  `export`ed and imported like any item, and fail at compile time if they
+  overflow or divide by zero (`const X: i8 = 100 + 100;` is an error, even if
+  `X` is never used). `const` is module-level only; its value must be a number,
+  `bool`, `char` or `string`.
 * **Control flow**: `if`/`else` and `match` are expressions; `while`, `for x in
   xs`, ranges `a..b` / `a..=b`, `break`, `continue`, `return`.
 * **Patterns**: literals, ranges, `|` alternatives, bindings, enum variants with

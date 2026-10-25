@@ -229,6 +229,19 @@ impl FnLower<'_, '_> {
     fn value_path(&mut self, id: NodeId, fast: bool) -> VReg {
         match self.res(id) {
             Some(Res::Local(l)) => self.read_local(l, fast),
+            Some(Res::Global(g)) if self.cx.prog.globals[g.index()].is_const => {
+                // a `const` is replaced by its compile-time value
+                let ir = self.ir_ty_of_node(id);
+                match self.cx.const_value(g) {
+                    Some(super::ConstResult::Bits(bits)) => self.const_bits(ir, bits),
+                    Some(super::ConstResult::Str(idx)) => {
+                        let dst = self.new_reg(IrTy::Ref);
+                        self.emit(Inst::Const { dst, val: Const::Str(idx) });
+                        dst
+                    }
+                    None => self.unit(),
+                }
+            }
             Some(Res::Global(g)) => {
                 let slot = self.cx.global_slot(g);
                 let ty = self.cx.out.globals[slot.index()].ty;

@@ -87,6 +87,35 @@ pub fn run(prog: &IrProgram, input: &[&str]) -> RunResult {
     RunResult { output: it.output, trap }
 }
 
+/// The value a constant expression evaluates to.
+#[derive(Debug, Clone, PartialEq)]
+pub enum ConstValue {
+    Bits(u64),
+    Str(String),
+}
+
+/// Evaluates the entry function of `prog` (a call-free constant expression
+/// built by the compiler) and returns its result.
+pub fn eval_const(prog: &IrProgram) -> Result<ConstValue, Trap> {
+    let mut it = Interp {
+        prog,
+        heap: Vec::new(),
+        cells: Vec::new(),
+        open: Vec::new(),
+        frames: Vec::new(),
+        globals: vec![0; prog.globals.len()],
+        output: String::new(),
+        input: VecDeque::new(),
+        steps: 0,
+        max_steps: 1_000_000,
+    };
+    let v = it.call(prog.entry, vec![], &[])?;
+    Ok(match prog.func(prog.entry).ret {
+        IrTy::Ref => ConstValue::Str(it.str_of(v).to_string()),
+        _ => ConstValue::Bits(v),
+    })
+}
+
 impl HeapView for Interp<'_> {
     fn str_of(&self, h: u64) -> &str {
         match &self.heap[h as usize] {

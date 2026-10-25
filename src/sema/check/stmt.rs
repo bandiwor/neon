@@ -151,7 +151,53 @@ impl Checker<'_> {
         let NodeKind::ConstDecl { name, ty, init } = *ast.kind(node) else { return };
         let ann = ty.get().map(|t| self.resolve_type(t));
         let t = self.let_type(node, ann, Some(init));
+        self.check_const_expr(init);
         self.declare_global(node, name, ast.name_span(node), t, false, true, exported);
+    }
+
+    /// A `const` initializer may only combine literals, operators, casts and
+    /// other constants: it is evaluated by the compiler, not at run time.
+    fn check_const_expr(&mut self, node: NodeId) {
+        let ast = self.ast.clone();
+        let span = ast.span(node);
+        let bad = |this: &mut Self, what: &str| {
+            this.err_help(
+                span,
+                "E0241",
+                format!("{what} is not allowed in a constant expression"),
+                "not a constant",
+                "a `const` is evaluated at compile time: use literals, operators, casts and other constants (or `let` for a value computed at run time)",
+            );
+        };
+        match *ast.kind(node) {
+            NodeKind::IntLit(_)
+            | NodeKind::FloatLit(_)
+            | NodeKind::StrLit(_)
+            | NodeKind::CharLit(_)
+            | NodeKind::BoolLit(_) => {}
+            NodeKind::Unary { operand, .. } => self.check_const_expr(operand),
+            NodeKind::Binary { lhs, rhs, .. } => {
+                self.check_const_expr(lhs);
+                self.check_const_expr(rhs);
+            }
+            NodeKind::Cast { expr, .. } => self.check_const_expr(expr),
+            NodeKind::Ident(_) | NodeKind::Path { .. } => {
+                let res = self.info().res.get(&node).cloned();
+                let ok = match res {
+                    Some(Res::Const(_)) => true,
+                    Some(Res::Global(g)) => self.prog.globals[g.index()].is_const,
+                    // unresolved names were already reported
+                    None => true,
+                    _ => false,
+                };
+                if !ok {
+                    bad(self, "a variable or function");
+                }
+            }
+            NodeKind::Error => {}
+            NodeKind::Call { .. } | NodeKind::MethodCall { .. } => bad(self, "a call"),
+            _ => bad(self, "this expression"),
+        }
     }
 
     fn global_let(&mut self, node: NodeId, pat: NodeId, ty: Option<NodeId>, init: Option<NodeId>) {
