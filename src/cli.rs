@@ -21,6 +21,7 @@ Commands:
   disasm <file>   print the compiled bytecode
   ir <file>       print the (optimized) intermediate representation
   repl            start an interactive session
+  lsp             run the language server on stdin/stdout
 
 Options:
   --no-opt            disable IR optimizations (folding, DCE, inlining)
@@ -48,6 +49,7 @@ enum Command {
     Disasm,
     Ir,
     Repl,
+    Lsp,
 }
 
 #[derive(Debug)]
@@ -99,6 +101,8 @@ fn parse_args(args: &[String]) -> Parsed {
                 gc.reuse_slots = false;
             }
             "--stats" => stats = true,
+            // editors launch `neon lsp --stdio`; stdio is the only transport
+            "--stdio" => {}
             "--gc-limit" => match value("--gc-limit").and_then(|v| parse_size(&v).ok_or(format!("bad size `{v}`"))) {
                 Ok(n) => gc.limit = Some(n),
                 Err(e) => return usage(e),
@@ -123,6 +127,8 @@ fn parse_args(args: &[String]) -> Parsed {
             "disasm" if command.is_none() && file.is_none() => command = Some(Command::Disasm),
             "ir" if command.is_none() && file.is_none() => command = Some(Command::Ir),
             "repl" if command.is_none() && file.is_none() => command = Some(Command::Repl),
+            "lsp" if command.is_none() && file.is_none() => command = Some(Command::Lsp),
+
             path => {
                 if file.is_some() {
                     return usage(format!("unexpected argument `{path}`"));
@@ -133,7 +139,7 @@ fn parse_args(args: &[String]) -> Parsed {
     }
     vmcfg.gc = gc;
     let command = command.unwrap_or(if file.is_some() { Command::Run } else { Command::Repl });
-    if command != Command::Repl && file.is_none() {
+    if !matches!(command, Command::Repl | Command::Lsp) && file.is_none() {
         return usage("this command needs a file".to_string());
     }
     Parsed::Go(Args { command, file, opts, vm: vmcfg, stats })
@@ -171,6 +177,9 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
         }
     };
     let mut stdout = stdout;
+    if args.command == Command::Lsp {
+        return crate::lsp::run(stdin, stdout, vfs);
+    }
     if args.command == Command::Repl {
         let cfg = ReplConfig { options: args.opts, vm: args.vm, prompt: interactive };
         let mut stdin = stdin;
@@ -224,7 +233,7 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
                 }
             }
         }
-        Command::Repl => unreachable!(),
+        Command::Repl | Command::Lsp => unreachable!(),
     }
 }
 

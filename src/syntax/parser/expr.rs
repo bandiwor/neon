@@ -205,7 +205,7 @@ impl Parser<'_> {
                 }
                 TokenKind::Dot => {
                     self.bump();
-                    let (name, _) = self.expect_ident()?;
+                    let (name, name_span) = self.expect_ident()?;
                     let mut generics = crate::syntax::ast::NodeList::EMPTY;
                     if self.at(TokenKind::ColonColon) && self.peek_at(1) == TokenKind::Lt {
                         self.bump();
@@ -213,9 +213,9 @@ impl Parser<'_> {
                     }
                     if self.eat(TokenKind::LParen) {
                         let args = self.parse_expr_list(TokenKind::RParen)?;
-                        e = self.node(NodeKind::MethodCall { receiver: e, name, generics, args }, lo);
+                        e = self.node_n(name_span, NodeKind::MethodCall { receiver: e, name, generics, args }, lo);
                     } else {
-                        e = self.node(NodeKind::Field { base: e, name }, lo);
+                        e = self.node_n(name_span, NodeKind::Field { base: e, name }, lo);
                     }
                 }
                 _ => break,

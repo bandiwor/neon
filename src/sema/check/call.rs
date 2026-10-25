@@ -266,6 +266,8 @@ impl Checker<'_> {
         span: Span,
     ) {
         let _ = ret;
+        let (def, name_span) = (self.prog.fns[method.index()].def, self.ast.name_span(id));
+        self.use_def(name_span, def);
         self.set_callee(id, callee);
         if !self.prog.fns[method.index()].has_self {
             let n = self.name(self.prog.fns[method.index()].name).to_string();
@@ -357,6 +359,9 @@ impl Checker<'_> {
             TyKind::Adt(adt, args) if !self.prog.adts[adt.index()].is_enum() => {
                 match self.prog.adts[adt.index()].fields().iter().position(|f| f.name == name) {
                     Some(i) => {
+                        let def = self.prog.adts[adt.index()].fields()[i].def;
+                        let name_span = self.ast.name_span(id);
+                        self.use_def(name_span, def);
                         self.info().field_indices.insert(id, i as u32);
                         let fty = self.prog.adts[adt.index()].fields()[i].ty;
                         self.prog.types.subst(fty, &args)

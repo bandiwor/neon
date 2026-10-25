@@ -15,6 +15,7 @@ pub mod diag;
 pub mod driver;
 pub mod gc;
 pub mod ir;
+pub mod lsp;
 pub mod repl;
 pub mod runtime;
 pub mod sema;
