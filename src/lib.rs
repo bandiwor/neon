@@ -8,8 +8,10 @@
 #![allow(clippy::too_many_arguments)]
 
 pub mod builtin;
+pub mod bytecode;
 pub mod diag;
 pub mod driver;
+pub mod gc;
 pub mod ir;
 pub mod runtime;
 pub mod sema;

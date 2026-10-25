@@ -3,7 +3,7 @@
 A statically typed language with a register bytecode VM, written in pure Rust
 (edition 2021, **standard library only** — no third-party crates).
 
-Status: **Phase 5 of 10** — front end and optimizing IR complete (lexer, parser, sema, monomorphizing IR, folding/inlining/DCE, reference interpreter).
+Status: **Phase 6 of 10** — front end, optimizing IR and bytecode format complete (lexer, parser, sema, monomorphizing IR, folding/inlining/DCE, reference interpreter, 32/64-bit bytecode, disassembler, peephole optimizer).
 
 ## Design constraints
 
@@ -24,6 +24,8 @@ src/
   syntax/ Interner/Symbol, LitPool, tokens, streaming Lexer, flat Ast, resilient Parser, S-expr printer
   sema/   module DAG loader, collection, type inference/checking, traits, exhaustiveness, def-use table, prelude.neon
   ir/     TAC/CFG IR, AST->IR lowering with monomorphization, optimizer (fold, DCE, inline), verifier, reference interpreter
+  bytecode/ opcode table, Insn (assembler-level IR), 32-bit/64-bit encoder + decoder, disassembler, liveness, peephole
+  gc/     stack maps (root bitsets); the collector arrives in Phase 8
   runtime/ typed numeric semantics, value formatting, math builtins shared by every engine
   driver.rs  source -> IR pipeline
   builtin.rs  intrinsic operations shared by sema, IR and VM
@@ -32,7 +34,7 @@ tests/    integration tests
 scripts/  valgrind_test.sh, valgrind.supp
 ```
 
-Later phases add `bytecode/`, `compiler/`, `gc/`, `vm/`.
+Later phases add `compiler/`, the GC heap, and `vm/`.
 
 ## Checks
 
