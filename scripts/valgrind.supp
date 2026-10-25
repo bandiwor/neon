@@ -33,3 +33,17 @@
    fun:*run_tests_console*
    ...
 }
+
+# std::io::stdin(): the process-wide stdin buffer lives in a OnceLock that is
+# never dropped (used by the `neon` binary, which reads program input from it).
+{
+   rust-std-global-stdin-buffer
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   ...
+   fun:*StdinRaw*
+   ...
+   fun:*io*stdio*stdin*
+   ...
+}
