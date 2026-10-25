@@ -15,15 +15,27 @@ fn scratch(name: &str) -> PathBuf {
     dir
 }
 
+/// Under valgrind a `fork` before `exec` reports leaks of the (soon replaced) child; the server itself
+/// is covered by `phase11_lsp`, so these process-driving tests step aside there.
+fn under_valgrind() -> bool {
+    std::env::var("LD_PRELOAD").map_or(false, |v| v.contains("vgpreload"))
+}
+
 fn find(candidates: &[String]) -> Option<String> {
     candidates.iter().find(|c| Command::new(c).arg("--version").output().is_ok()).cloned()
 }
 
 fn vim() -> Option<String> {
+    if under_valgrind() {
+        return None;
+    }
     find(&["vim".into()])
 }
 
 fn nvim() -> Option<String> {
+    if under_valgrind() {
+        return None;
+    }
     find(&[std::env::var("NEON_NVIM").unwrap_or_else(|_| "nvim".into())])
 }
 
