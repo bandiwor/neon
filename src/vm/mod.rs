@@ -390,13 +390,21 @@ impl<'p, 'io> Vm<'p, 'io> {
                     pc += 1;
                 }
                 OpKind::AddImm(ty) => {
-                    let v = numeric::decode_int(ty, reg!(b)) + (c as u8 as i8) as i128;
-                    reg!(a) = numeric::encode_int(ty, v).ok_or(Trap::Overflow)?;
+                    reg!(a) = if ty == NumTy::I64 {
+                        (reg!(b) as i64).checked_add((c as u8 as i8) as i64).ok_or(Trap::Overflow)? as u64
+                    } else {
+                        let v = numeric::decode_int(ty, reg!(b)) + (c as u8 as i8) as i128;
+                        numeric::encode_int(ty, v).ok_or(Trap::Overflow)?
+                    };
                     pc += 1;
                 }
                 OpKind::SubImm(ty) => {
-                    let v = numeric::decode_int(ty, reg!(b)) - c as i128;
-                    reg!(a) = numeric::encode_int(ty, v).ok_or(Trap::Overflow)?;
+                    reg!(a) = if ty == NumTy::I64 {
+                        (reg!(b) as i64).checked_sub(c as i64).ok_or(Trap::Overflow)? as u64
+                    } else {
+                        let v = numeric::decode_int(ty, reg!(b)) - c as i128;
+                        numeric::encode_int(ty, v).ok_or(Trap::Overflow)?
+                    };
                     pc += 1;
                 }
                 OpKind::Cmp(kind) => {

@@ -237,7 +237,45 @@ pub fn arith(op: ArithOp, ty: NumTy, a: u64, b: u64) -> Result<u64, Trap> {
     }
 }
 
+/// Add / sub / mul / div / rem on the four widest integer types without leaving the
+/// native word size. The general path below handles everything else.
+#[inline]
+fn fast_int_arith(op: ArithOp, ty: NumTy, a: u64, b: u64) -> Option<Result<u64, Trap>> {
+    macro_rules! checked {
+        ($t:ty, $wide:ty) => {{
+            let (x, y) = (a as $t, b as $t);
+            let r = match op {
+                ArithOp::Add => x.checked_add(y),
+                ArithOp::Sub => x.checked_sub(y),
+                ArithOp::Mul => x.checked_mul(y),
+                ArithOp::Div | ArithOp::Rem if y == 0 => return Some(Err(Trap::DivideByZero)),
+                ArithOp::Div => x.checked_div(y),
+                // `MIN % -1` is 0 rather than an overflow
+                ArithOp::Rem => Some(x.wrapping_rem(y)),
+                _ => return None,
+            };
+            // canonical form: signed sign-extended, unsigned zero-extended
+            Some(r.map(|v| v as $wide as u64).ok_or(Trap::Overflow))
+        }};
+    }
+    match ty {
+        NumTy::I64 => checked!(i64, i64),
+        NumTy::I32 => checked!(i32, i64),
+        NumTy::U64 => checked!(u64, u64),
+        NumTy::U32 => checked!(u32, u64),
+        _ => None,
+    }
+}
+
 fn int_arith(op: ArithOp, ty: NumTy, a: u64, b: u64) -> Result<u64, Trap> {
+    if let Some(r) = fast_int_arith(op, ty, a, b) {
+        return r;
+    }
+    int_arith_generic(op, ty, a, b)
+}
+
+/// The reference implementation: every integer type through `i128`.
+fn int_arith_generic(op: ArithOp, ty: NumTy, a: u64, b: u64) -> Result<u64, Trap> {
     match op {
         ArithOp::And => return Ok(a & b),
         ArithOp::Or => return Ok(a | b),
@@ -416,6 +454,35 @@ pub fn const_int(ty: NumTy, v: i128) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn native_fast_paths_agree_with_the_i128_reference() {
+        let mut state = 0x9E37_79B9_7F4A_7C15u64;
+        let mut next = || {
+            state ^= state << 13;
+            state ^= state >> 7;
+            state ^= state << 17;
+            state
+        };
+        for ty in [NumTy::I64, NumTy::I32, NumTy::U64, NumTy::U32] {
+            let (lo, hi) = (ty.min_value(), ty.max_value());
+            let mut vals: Vec<i128> = vec![lo, lo + 1, -1, 0, 1, 2, 3, 10, hi / 2, hi - 1, hi];
+            vals.retain(|v| (lo..=hi).contains(v));
+            for _ in 0..40 {
+                let r = next() as i128;
+                vals.push(lo + r.rem_euclid(hi - lo + 1));
+            }
+            for op in [ArithOp::Add, ArithOp::Sub, ArithOp::Mul, ArithOp::Div, ArithOp::Rem] {
+                for &x in &vals {
+                    for &y in &vals {
+                        let (a, b) = (encode_int(ty, x).unwrap(), encode_int(ty, y).unwrap());
+                        let fast = fast_int_arith(op, ty, a, b).expect("covered type and op");
+                        assert_eq!(fast, int_arith_generic(op, ty, a, b), "{ty:?} {op:?} {x} {y}");
+                    }
+                }
+            }
+        }
+    }
+
     use super::*;
 
     fn enc(ty: NumTy, v: i128) -> u64 {
