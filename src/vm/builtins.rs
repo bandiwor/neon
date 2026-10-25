@@ -26,20 +26,20 @@ impl Vm<'_, '_> {
     }
 
     fn some(&mut self, desc: Option<u32>, v: u64) -> Result<u64, Trap> {
-        self.heap.alloc_enum(desc.expect("result descriptor"), SOME_TAG, vec![v])
+        self.heap.alloc_enum(desc.expect("result descriptor"), SOME_TAG, [v])
     }
 
     fn none(&mut self, desc: Option<u32>) -> Result<u64, Trap> {
-        self.heap.alloc_enum(desc.expect("result descriptor"), NONE_TAG, vec![])
+        self.heap.alloc_enum(desc.expect("result descriptor"), NONE_TAG, [])
     }
 
     fn ok(&mut self, desc: Option<u32>, v: u64) -> Result<u64, Trap> {
-        self.heap.alloc_enum(desc.expect("result descriptor"), OK_TAG, vec![v])
+        self.heap.alloc_enum(desc.expect("result descriptor"), OK_TAG, [v])
     }
 
     fn err_str(&mut self, desc: Option<u32>, message: String) -> Result<u64, Trap> {
         let m = self.heap.alloc_str(message)?;
-        self.heap.alloc_enum(desc.expect("result descriptor"), ERR_TAG, vec![m])
+        self.heap.alloc_enum(desc.expect("result descriptor"), ERR_TAG, [m])
     }
 
     /// `Some(x)` / `None` from an optional value.

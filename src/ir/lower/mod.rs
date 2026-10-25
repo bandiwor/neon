@@ -14,8 +14,8 @@ mod pat;
 mod place;
 mod stmt;
 
-use std::collections::VecDeque;
 use crate::fx::FxHashMap as HashMap;
+use std::collections::VecDeque;
 
 use super::types::*;
 use crate::diag::{DiagBag, Diagnostic};

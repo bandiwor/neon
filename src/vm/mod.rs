@@ -606,14 +606,8 @@ impl<'p, 'io> Vm<'p, 'io> {
                         let n = ((w1 >> 16) & 0xFF) as usize;
                         let start = base + b;
                         let h = match op {
-                            Opcode::NewStruct => {
-                                let fields = self.stack[start..start + n].to_vec();
-                                self.heap.alloc_struct(desc, fields)?
-                            }
-                            Opcode::NewEnum => {
-                                let fields = self.stack[start..start + n].to_vec();
-                                self.heap.alloc_enum(desc, w1 >> 24, fields)?
-                            }
+                            Opcode::NewStruct => self.heap.alloc_struct(desc, &self.stack[start..start + n])?,
+                            Opcode::NewEnum => self.heap.alloc_enum(desc, w1 >> 24, &self.stack[start..start + n])?,
                             Opcode::NewArray => {
                                 let elems = self.stack[start..start + n].to_vec();
                                 let refs = self.array_elems_are_refs(desc);

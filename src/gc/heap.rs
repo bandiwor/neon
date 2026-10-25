@@ -9,6 +9,7 @@
 //! VM supplies the live register roots from the compiler's stack maps.
 
 use std::mem::size_of;
+use std::ops::{Deref, DerefMut};
 
 use crate::fx::{hash_bytes, mix64};
 use crate::ir::TypeDesc;
@@ -57,14 +58,66 @@ pub struct MapObj {
     pub val_ref: bool,
 }
 
+/// Words stored inline in an object up to this many; larger objects use a `Vec`.
+const INLINE_FIELDS: usize = 4;
+
+/// The fields of a struct or the payload of an enum. Small ones (the common case) live in the
+/// object slot itself, so allocating them costs no `malloc`.
+#[derive(Debug, Clone)]
+pub enum Fields {
+    Inline { len: u8, words: [u64; INLINE_FIELDS] },
+    Heap(Vec<u64>),
+}
+
+impl Fields {
+    pub fn new(src: &[u64]) -> Fields {
+        if src.len() <= INLINE_FIELDS {
+            let mut words = [0; INLINE_FIELDS];
+            words[..src.len()].copy_from_slice(src);
+            Fields::Inline { len: src.len() as u8, words }
+        } else {
+            Fields::Heap(src.to_vec())
+        }
+    }
+
+    /// Bytes outside the object slot.
+    fn extra_bytes(&self) -> usize {
+        match self {
+            Fields::Inline { .. } => 0,
+            Fields::Heap(v) => v.capacity() * 8,
+        }
+    }
+}
+
+impl Deref for Fields {
+    type Target = [u64];
+    #[inline]
+    fn deref(&self) -> &[u64] {
+        match self {
+            Fields::Inline { len, words } => &words[..*len as usize],
+            Fields::Heap(v) => v,
+        }
+    }
+}
+
+impl DerefMut for Fields {
+    #[inline]
+    fn deref_mut(&mut self) -> &mut [u64] {
+        match self {
+            Fields::Inline { len, words } => &mut words[..*len as usize],
+            Fields::Heap(v) => v,
+        }
+    }
+}
+
 #[derive(Debug)]
 pub enum Obj {
     Str(String),
     Array { elems: Vec<u64>, refs: bool },
     Map(Box<MapObj>),
     Set(Box<MapObj>),
-    Struct { desc: u32, fields: Vec<u64> },
-    Enum { desc: u32, tag: u32, fields: Vec<u64> },
+    Struct { desc: u32, fields: Fields },
+    Enum { desc: u32, tag: u32, fields: Fields },
     Closure { func: u32, cells: Vec<CellId> },
 }
 
@@ -266,12 +319,12 @@ impl Heap {
         self.alloc(Obj::Array { elems, refs })
     }
 
-    pub fn alloc_struct(&mut self, desc: u32, fields: Vec<u64>) -> Result<Handle, Trap> {
-        self.alloc(Obj::Struct { desc, fields })
+    pub fn alloc_struct(&mut self, desc: u32, fields: impl AsRef<[u64]>) -> Result<Handle, Trap> {
+        self.alloc(Obj::Struct { desc, fields: Fields::new(fields.as_ref()) })
     }
 
-    pub fn alloc_enum(&mut self, desc: u32, tag: u32, fields: Vec<u64>) -> Result<Handle, Trap> {
-        self.alloc(Obj::Enum { desc, tag, fields })
+    pub fn alloc_enum(&mut self, desc: u32, tag: u32, fields: impl AsRef<[u64]>) -> Result<Handle, Trap> {
+        self.alloc(Obj::Enum { desc, tag, fields: Fields::new(fields.as_ref()) })
     }
 
     pub fn alloc_closure(&mut self, func: u32, cells: Vec<CellId>) -> Result<Handle, Trap> {
@@ -736,7 +789,7 @@ fn obj_size(o: &Obj) -> usize {
         Obj::Map(m) | Obj::Set(m) => {
             size_of::<MapObj>() + m.entries.capacity() * size_of::<Entry>() + m.table.capacity() * 4
         }
-        Obj::Struct { fields, .. } | Obj::Enum { fields, .. } => fields.capacity() * 8,
+        Obj::Struct { fields, .. } | Obj::Enum { fields, .. } => fields.extra_bytes(),
         Obj::Closure { cells, .. } => cells.capacity() * 4,
     }
 }
