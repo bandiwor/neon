@@ -29,6 +29,7 @@ builtins! {
     // conversions (receiver is any primitive)
     ToString = "to_string",
     // strings
+    StrConcat = "concat",
     StrLen = "len",
     StrIsEmpty = "is_empty",
     StrChars = "chars",

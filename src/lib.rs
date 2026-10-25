@@ -9,6 +9,9 @@
 
 pub mod builtin;
 pub mod diag;
+pub mod driver;
+pub mod ir;
+pub mod runtime;
 pub mod sema;
 pub mod syntax;
 pub mod vfs;
