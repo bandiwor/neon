@@ -33,6 +33,10 @@ impl Parsed {
         self.diags.iter().map(|d| d.message.clone()).collect()
     }
 
+    fn codes(&self) -> Vec<&'static str> {
+        self.diags.iter().filter_map(|d| d.code).collect()
+    }
+
     fn rendered(&self, src: &str) -> String {
         let mut map = SourceMap::new();
         map.add_file("t.neon", src).unwrap();
@@ -213,7 +217,7 @@ fn closures() {
     assert_eq!(expr("|a, b| => a + b"), "(closure (a b) (+ a b))");
     assert_eq!(expr("|| => 1"), "(closure () 1)");
     assert_eq!(expr("|x| => { x * 2 }"), "(closure (x) (block (tail (* x 2))))");
-    assert_eq!(expr("|x: i32, mut y| => x"), "(closure (x:i32 mut y) x)");
+    assert_eq!(expr("|x: i32, var y| => x"), "(closure (x:i32 var y) x)");
     assert_eq!(expr("|x| -> i64 => x"), "(closure (x) -> i64 x)");
     assert_eq!(expr("|| => {}"), "(closure () (block))");
     assert_eq!(expr("|| => { \"k\": 1 }"), "(closure () (map (\"k\" 1)))");
@@ -226,7 +230,7 @@ fn closures() {
 #[test]
 fn control_flow() {
     assert_eq!(
-        expr("if a { 1 } else if b { 2 } else { 3 }"),
+        expr("if a { 1 } elif b { 2 } else { 3 }"),
         "(if a (block (tail 1)) (if b (block (tail 2)) (block (tail 3))))"
     );
     assert_eq!(expr("loop { break; }"), "(loop (block (stmt (break))))");
@@ -275,7 +279,7 @@ fn match_arms_and_patterns() {
         expr("match x { Option::Some(Option::Some(v)) => v, _ => 0 }"),
         "(match x (arm (variant Option::Some (variant Option::Some v)) v) (arm _ 0))"
     );
-    assert_eq!(expr("match x { mut y => y }"), "(match x (arm mut y y))");
+    assert_eq!(expr("match x { var y => y }"), "(match x (arm var y y))");
 }
 
 #[test]
@@ -291,7 +295,7 @@ fn match_arm_separators() {
 #[test]
 fn let_statements() {
     assert_eq!(module("let x = 1;"), "(module (let x 1))");
-    assert_eq!(module("let mut x: i32 = 1;"), "(module (let mut x:i32 1))");
+    assert_eq!(module("var x: i32 = 1;"), "(module (let var x:i32 1))");
     assert_eq!(module("let x: [i32];"), "(module (let x:[i32]))");
     assert_eq!(module("let _ = f();"), "(module (let _ (call f)))");
 }
@@ -341,8 +345,8 @@ fn functions() {
     );
     assert_eq!(module("fn id<T>(x: T) -> T { x }"), "(module (fn id <T> (x:T) -> T (block (tail x))))");
     assert_eq!(
-        module("fn show<T: Display + Debug, U>(x: T, mut y: U) { }"),
-        "(module (fn show <T: Display + Debug, U> (x:T mut y:U) (block)))"
+        module("fn show<T: Display + Debug, U>(x: T, var y: U) { }"),
+        "(module (fn show <T: Display + Debug, U> (x:T var y:U) (block)))"
     );
     assert_eq!(
         module("fn apply(f: fn(i32) -> i32, x: i32) -> i32 { f(x) }"),
@@ -380,8 +384,8 @@ fn traits_and_impls() {
         "(module (impl Add for Vec2 (fn add (self o:Vec2) -> Vec2 (block (tail o)))))"
     );
     assert_eq!(
-        module("impl<T> Show for Option<T> { fn show(mut self) { } }"),
-        "(module (impl <T> Show for Option<T> (fn show (mut self) (block))))"
+        module("impl<T> Show for Option<T> { fn show(var self) { } }"),
+        "(module (impl <T> Show for Option<T> (fn show (var self) (block))))"
     );
     assert_eq!(module("impl Mul<f64> for Vec2 { }"), "(module (impl Mul<f64> for Vec2))");
 }
@@ -613,7 +617,7 @@ fn always_terminates_and_yields_a_module_on_garbage() {
     const PIECES: &[&str] = &[
         "let", "fn", "x", "y", "1", "2.5", "\"s\"", "'c'", "(", ")", "{", "}", "[", "]", ",", ";", ":", "::", ".",
         "..", "=", "==", "=>", "->", "+", "-", "*", "|", "||", "&&", "<", ">", ">>", "match", "if", "else", "while",
-        "for", "in", "return", "enum", "struct", "impl", "trait", "import", "export", "from", "as", "mut", "_", "set",
+        "for", "in", "return", "enum", "struct", "impl", "trait", "import", "export", "from", "as", "var", "_", "set",
         "?", "true", "i32", "Self", "self", "const", "break", "loop", "\n",
     ];
     let mut state = 0x2545F4914F6CDD1Du64;
@@ -632,4 +636,39 @@ fn always_terminates_and_yields_a_module_on_garbage() {
             assert!(node.span.lo <= node.span.hi && node.span.hi as usize <= src.len(), "{src:?} node {id:?}");
         }
     }
+}
+
+#[test]
+fn var_declares_a_mutable_variable() {
+    assert_eq!(module("var n = 0;"), "(module (let var n 0))");
+    assert_eq!(module("var n: i64;"), "(module (let var n:i64))");
+    // mutable bindings in patterns and parameters use `var` too
+    assert_eq!(module("fn f(var self, var x: i32) {}"), module("fn f(var self, var x: i32) {}"));
+    let p = parse("fn f(var x: i32) { match x { var y => y } }");
+    assert!(p.diags.is_empty(), "{:?}", p.messages());
+}
+
+#[test]
+fn elif_chains_parse_like_nested_ifs() {
+    let chain = expr("if a { 1 } elif b { 2 } elif c { 3 } else { 4 }");
+    assert_eq!(chain, "(if a (block (tail 1)) (if b (block (tail 2)) (if c (block (tail 3)) (block (tail 4)))))");
+    assert_eq!(expr("if a { 1 } elif b { 2 }"), "(if a (block (tail 1)) (if b (block (tail 2))))");
+}
+
+#[test]
+fn the_old_spellings_are_reported_once_and_still_parse() {
+    let p = parse("let mut x = 1;");
+    assert_eq!(p.codes(), ["E0109"], "{:?}", p.messages());
+    assert!(p.messages()[0].contains("`let mut` is spelled `var`"));
+    // the declaration itself is intact: a mutable binding named x
+    let NodeKind::Let { pat, .. } = *p.ast.kind(p.items()[0]) else { panic!() };
+    assert!(matches!(*p.ast.kind(pat), NodeKind::PatBinding { mutable: true, .. }));
+
+    let p = parse("fn f() { if a { 1 } else if b { 2 } else { 3 } }");
+    assert_eq!(p.codes(), ["E0110"], "{:?}", p.messages());
+    assert!(p.messages()[0].contains("`else if` is spelled `elif`"));
+
+    // `mut` is an ordinary identifier now
+    let p = parse("let mut = 3; let y = mut + 1;");
+    assert!(p.diags.is_empty(), "{:?}", p.messages());
 }

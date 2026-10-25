@@ -45,7 +45,7 @@ fn area(s: Shape) -> f64 {
 }
 
 fn make_counter() -> fn() -> i32 {
-    let mut count = 0;
+    var count = 0;
     return || => { count += 1; count };
 }
 

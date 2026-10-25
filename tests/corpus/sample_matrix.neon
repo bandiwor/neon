@@ -3,11 +3,11 @@ fn matmul(a: [[i64]], b: [[i64]]) -> [[i64]] {
     let n = a.len();
     let m = b[0].len();
     let k = b.len();
-    let mut out: [[i64]] = [];
+    var out: [[i64]] = [];
     for i in 0..n {
-        let mut row: [i64] = [];
+        var row: [i64] = [];
         for j in 0..m {
-            let mut acc = 0;
+            var acc = 0;
             for t in 0..k { acc += a[i][t] * b[t][j]; }
             row.push(acc);
         }

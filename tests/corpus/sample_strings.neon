@@ -1,8 +1,8 @@
 // Strings: characters, unicode, searching, joining.
 fn reverse(s: string) -> string {
-    let mut cs = s.chars();
+    var cs = s.chars();
     cs.reverse();
-    let mut out = "";
+    var out = "";
     for c in cs { out = out + c.to_string(); }
     out
 }

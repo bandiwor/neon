@@ -325,14 +325,14 @@ mod tests {
 
     #[test]
     fn gc_options_and_stats() {
-        let src = "let mut s = 0; for i in 0..2000 { let t = \"x\" + i.to_string(); s += t.len(); } println(s);";
+        let src = "var s = 0; for i in 0..2000 { let t = \"x\" + i.to_string(); s += t.len(); } println(s);";
         let (code, out, err) = go(&["run", "--gc-limit", "32k", "--stats", "p.neon"], &[("p.neon", src)], "");
         assert_eq!(code, 0, "{err}");
         assert_eq!(out, "8890\n");
         assert!(err.starts_with("gc: ") && !err.contains(" 0 collections"), "{err}");
         let (code, out, _) = go(&["run", "--gc-stress", "p.neon"], &[("p.neon", "println(\"a\" + \"b\");")], "");
         assert_eq!((code, out.as_str()), (0, "ab\n"));
-        let leak = "let mut a: [string] = []; while true { a.push(\"keep me around\"); }";
+        let leak = "var a: [string] = []; while true { a.push(\"keep me around\"); }";
         let (code, _, err) = go(&["run", "--gc-limit", "16k", "p.neon"], &[("p.neon", leak)], "");
         assert_eq!(code, EXIT_RUNTIME);
         assert!(err.contains("out of memory"), "{err}");

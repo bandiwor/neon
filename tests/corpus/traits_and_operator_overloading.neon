@@ -11,4 +11,4 @@ impl Neg for V { fn neg(self) -> V { V { x: -self.x, y: -self.y } } }
 impl Eq for V { fn eq(self, o: V) -> bool { self.x == o.x && self.y == o.y } }
 impl Ord for V { fn lt(self, o: V) -> bool { self.x < o.x } }
 let a = V { x: 1.0, y: 2.0 }; let b = a + a * 3.0; println(b); println(-a); println(a == b); println(a != b); println(a < b); println(a >= b); println(a <= a);
-let mut c = a; c += b; println(c);
+var c = a; c += b; println(c);

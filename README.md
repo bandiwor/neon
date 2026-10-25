@@ -15,7 +15,7 @@ fn area(s: Shape) -> f64 {
     }
 }
 
-let mut counter = 0;
+var counter = 0;
 let bump = || => { counter += 1; counter };
 bump(); bump();
 println(counter);                        // 2
@@ -52,7 +52,7 @@ Diagnostics (with source snippets) go to stderr, program output to stdout.
 * **Types**: `i8 i16 i32 i64 u8 u16 u32 u64 f32 f64 bool char string`, arrays
   `[T]`, maps `{K: V}`, sets `set { .. }`, structs, enums with payloads,
   function types `fn(A) -> B`, generics with trait bounds.
-* **Bindings**: `let` / `let mut` / `const`; module-level bindings are globals.
+* **Bindings**: `let` / `var` / `const`; module-level bindings are globals.
   Types are inferred locally; integer and float literals adapt to context.
 * **Control flow**: `if`/`else` and `match` are expressions; `while`, `for x in
   xs`, ranges `a..b` / `a..=b`, `break`, `continue`, `return`.

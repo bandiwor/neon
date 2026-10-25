@@ -24,7 +24,7 @@ pub struct BuiltinSig {
     /// Parameters after the receiver (for methods).
     pub params: Vec<Ty>,
     pub ret: Ty,
-    /// Mutates the receiver, so a `let` receiver must be `mut`.
+    /// Mutates the receiver, so a `let` receiver must be declared with `var`.
     pub mutating: bool,
     pub requires: Vec<(Require, Ty)>,
 }

@@ -1,2 +1,2 @@
-fn f() -> i32 { let mut x = 1; let g = || => { let h = || => { x += 10; x }; h() + x }; g() }
+fn f() -> i32 { var x = 1; let g = || => { let h = || => { x += 10; x }; h() + x }; g() }
 println(f());

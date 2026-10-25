@@ -27,7 +27,7 @@ impl Parser<'_> {
                 self.bump();
                 Ok(self.node(NodeKind::PatWild, lo))
             }
-            TokenKind::Kw(Keyword::Mut) => {
+            TokenKind::Kw(Keyword::Var) => {
                 self.bump();
                 let (name, name_span) = self.expect_ident()?;
                 Ok(self.node_n(name_span, NodeKind::PatBinding { name, mutable: true }, lo))

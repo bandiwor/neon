@@ -31,14 +31,14 @@ fn workloads(scale: u64) -> Vec<Workload> {
         w("run/fib", format!("fn fib(n: i64) -> i64 {{ if n < 2 {{ n }} else {{ fib(n - 1) + fib(n - 2) }} }}\nprintln(fib({}));", 20 + scale.min(10)), true, None),
         w(
             "run/loop-sum",
-            format!("fn sum(n: i64) -> i64 {{ let mut s = 0; let mut i = 0; while i < n {{ s += i % 7; i += 1; }} s }}\nprintln(sum({}));", 200_000 * scale),
+            format!("fn sum(n: i64) -> i64 {{ var s = 0; var i = 0; while i < n {{ s += i % 7; i += 1; }} s }}\nprintln(sum({}));", 200_000 * scale),
             true,
             None,
         ),
         w(
             "run/sieve",
             format!(
-                "fn count(limit: i64) -> i64 {{\n  let mut p: [bool] = [];\n  for i in 0..limit {{ p.push(i >= 2); }}\n  let mut i = 2;\n  while i * i < limit {{ if p[i] {{ let mut m = i * i; while m < limit {{ p[m] = false; m += i; }} }} i += 1; }}\n  let mut c = 0;\n  for i in 0..limit {{ if p[i] {{ c += 1; }} }}\n  c\n}}\nprintln(count({}));",
+                "fn count(limit: i64) -> i64 {{\n  var p: [bool] = [];\n  for i in 0..limit {{ p.push(i >= 2); }}\n  var i = 2;\n  while i * i < limit {{ if p[i] {{ var m = i * i; while m < limit {{ p[m] = false; m += i; }} }} i += 1; }}\n  var c = 0;\n  for i in 0..limit {{ if p[i] {{ c += 1; }} }}\n  c\n}}\nprintln(count({}));",
                 20_000 * scale
             ),
             true,
@@ -46,20 +46,20 @@ fn workloads(scale: u64) -> Vec<Workload> {
         ),
         w(
             "run/float-loop",
-            format!("fn f(n: i64) -> f64 {{ let mut x = 0.0; let mut i = 0; while i < n {{ x = x * 0.999 + (i as f64).sqrt(); i += 1; }} x }}\nprintln(f({}));", 100_000 * scale),
+            format!("fn f(n: i64) -> f64 {{ var x = 0.0; var i = 0; while i < n {{ x = x * 0.999 + (i as f64).sqrt(); i += 1; }} x }}\nprintln(f({}));", 100_000 * scale),
             true,
             None,
         ),
         w(
             "run/closures",
-            format!("fn run(n: i64) -> i64 {{ let mut total = 0; let add = |k: i64| => {{ total += k; total }}; let mut i = 0; while i < n {{ add(i); i += 1; }} total }}\nprintln(run({}));", 100_000 * scale),
+            format!("fn run(n: i64) -> i64 {{ var total = 0; let add = |k: i64| => {{ total += k; total }}; var i = 0; while i < n {{ add(i); i += 1; }} total }}\nprintln(run({}));", 100_000 * scale),
             true,
             None,
         ),
         w(
             "run/structs-enums",
             format!(
-                "enum Shape {{ Circle(f64), Rect(f64, f64), Empty }}\nstruct P {{ x: f64, y: f64 }}\nfn area(s: Shape) -> f64 {{ match s {{ Shape::Circle(r) => 3.14 * r * r, Shape::Rect(w, h) => w * h, Shape::Empty => 0.0 }} }}\nfn run(n: i64) -> f64 {{ let mut t = 0.0; let mut i = 0; while i < n {{ let p = P {{ x: i as f64, y: 2.0 }}; let s = if i % 3 == 0 {{ Shape::Circle(p.y) }} else if i % 3 == 1 {{ Shape::Rect(p.x, p.y) }} else {{ Shape::Empty }}; t += area(s); i += 1; }} t }}\nprintln(run({}));",
+                "enum Shape {{ Circle(f64), Rect(f64, f64), Empty }}\nstruct P {{ x: f64, y: f64 }}\nfn area(s: Shape) -> f64 {{ match s {{ Shape::Circle(r) => 3.14 * r * r, Shape::Rect(w, h) => w * h, Shape::Empty => 0.0 }} }}\nfn run(n: i64) -> f64 {{ var t = 0.0; var i = 0; while i < n {{ let p = P {{ x: i as f64, y: 2.0 }}; let s = if i % 3 == 0 {{ Shape::Circle(p.y) }} elif i % 3 == 1 {{ Shape::Rect(p.x, p.y) }} else {{ Shape::Empty }}; t += area(s); i += 1; }} t }}\nprintln(run({}));",
                 50_000 * scale
             ),
             true,
@@ -67,32 +67,32 @@ fn workloads(scale: u64) -> Vec<Workload> {
         ),
         w(
             "run/map-int",
-            format!("fn run(n: i64) -> i64 {{ let mut m: {{i64: i64}} = {{}}; for i in 0..n {{ m[i] = i * 2; }} let mut s = 0; for i in 0..n {{ s += m[i]; }} s }}\nprintln(run({}));", 20_000 * scale),
+            format!("fn run(n: i64) -> i64 {{ var m: {{i64: i64}} = {{}}; for i in 0..n {{ m[i] = i * 2; }} var s = 0; for i in 0..n {{ s += m[i]; }} s }}\nprintln(run({}));", 20_000 * scale),
             false,
             None,
         ),
         w(
             "run/strings",
-            format!("fn run(n: i64) -> i64 {{ let mut total = 0; for i in 0..n {{ let s = \"item-\" + i.to_string() + \"-end\"; let parts = s.split(\"-\"); total += parts.len() + s.len(); }} total }}\nprintln(run({}));", 10_000 * scale),
+            format!("fn run(n: i64) -> i64 {{ var total = 0; for i in 0..n {{ let s = \"item-\" + i.to_string() + \"-end\"; let parts = s.split(\"-\"); total += parts.len() + s.len(); }} total }}\nprintln(run({}));", 10_000 * scale),
             false,
             None,
         ),
         w(
             "gc/garbage",
-            format!("fn run(n: i64) -> i64 {{ let mut keep = 0; for i in 0..n {{ let a = [i, i + 1, i + 2, i + 3]; let s = \"g\" + i.to_string(); keep += a.len() + s.len(); }} keep }}\nprintln(run({}));", 30_000 * scale),
+            format!("fn run(n: i64) -> i64 {{ var keep = 0; for i in 0..n {{ let a = [i, i + 1, i + 2, i + 3]; let s = \"g\" + i.to_string(); keep += a.len() + s.len(); }} keep }}\nprintln(run({}));", 30_000 * scale),
             false,
             None,
         ),
         w(
             "gc/garbage-64k-limit",
-            format!("fn run(n: i64) -> i64 {{ let mut keep = 0; for i in 0..n {{ let a = [i, i + 1, i + 2, i + 3]; let s = \"g\" + i.to_string(); keep += a.len() + s.len(); }} keep }}\nprintln(run({}));", 30_000 * scale),
+            format!("fn run(n: i64) -> i64 {{ var keep = 0; for i in 0..n {{ let a = [i, i + 1, i + 2, i + 3]; let s = \"g\" + i.to_string(); keep += a.len() + s.len(); }} keep }}\nprintln(run({}));", 30_000 * scale),
             false,
             Some(64 * 1024),
         ),
         w(
             "gc/live-tree",
             format!(
-                "enum T {{ Leaf, Node(T, i64, T) }}\nfn build(d: i64) -> T {{ if d == 0 {{ T::Leaf }} else {{ T::Node(build(d - 1), d, build(d - 1)) }} }}\nfn sum(t: T) -> i64 {{ match t {{ T::Leaf => 0, T::Node(l, v, r) => sum(l) + v + sum(r) }} }}\nfn run(rounds: i64) -> i64 {{ let mut s = 0; for _ in 0..rounds {{ s += sum(build(10)); }} s }}\nprintln(run({}));",
+                "enum T {{ Leaf, Node(T, i64, T) }}\nfn build(d: i64) -> T {{ if d == 0 {{ T::Leaf }} else {{ T::Node(build(d - 1), d, build(d - 1)) }} }}\nfn sum(t: T) -> i64 {{ match t {{ T::Leaf => 0, T::Node(l, v, r) => sum(l) + v + sum(r) }} }}\nfn run(rounds: i64) -> i64 {{ var s = 0; for _ in 0..rounds {{ s += sum(build(10)); }} s }}\nprintln(run({}));",
                 2 * scale
             ),
             false,
@@ -212,10 +212,10 @@ fn big_program(n: usize) -> String {
     let mut s = String::new();
     for i in 0..n {
         s += &format!(
-            "struct S{i} {{ a: i64, b: f64 }}\nfn work{i}(x: i64, y: f64) -> f64 {{\n    let s = S{i} {{ a: x * {i}, b: y + 1.5 }};\n    let mut acc = 0.0;\n    for k in 0..x {{ if k % 3 == 0 {{ acc += s.b * (k as f64); }} else {{ acc -= 1.0; }} }}\n    match s.a {{ 0 => acc, 1..=9 => acc + 1.0, _ => acc * 2.0 }}\n}}\n"
+            "struct S{i} {{ a: i64, b: f64 }}\nfn work{i}(x: i64, y: f64) -> f64 {{\n    let s = S{i} {{ a: x * {i}, b: y + 1.5 }};\n    var acc = 0.0;\n    for k in 0..x {{ if k % 3 == 0 {{ acc += s.b * (k as f64); }} else {{ acc -= 1.0; }} }}\n    match s.a {{ 0 => acc, 1..=9 => acc + 1.0, _ => acc * 2.0 }}\n}}\n"
         );
     }
-    s += "let mut t = 0.0;\n";
+    s += "var t = 0.0;\n";
     for i in 0..n {
         s += &format!("t += work{i}({}, 1.0);\n", i % 7);
     }

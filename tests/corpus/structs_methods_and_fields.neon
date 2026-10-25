@@ -1,3 +1,3 @@
 struct P { x: i32, y: i32 }
-impl P { fn new(x: i32, y: i32) -> P { P { x: x, y: y } } fn sum(self) -> i32 { self.x + self.y } fn shift(mut self, d: i32) { self.x += d; } }
-let mut p = P::new(1, 2); println(p.sum()); p.shift(10); println(p.x); p.y = 100; println(p.sum()); println(p);
+impl P { fn new(x: i32, y: i32) -> P { P { x: x, y: y } } fn sum(self) -> i32 { self.x + self.y } fn shift(var self, d: i32) { self.x += d; } }
+var p = P::new(1, 2); println(p.sum()); p.shift(10); println(p.x); p.y = 100; println(p.sum()); println(p);

@@ -120,7 +120,7 @@ fn runtime_traps_surface_with_their_kind() {
         ("let a = [1, 2, 3]; let i = 7; println(a[i]);", Trap::IndexOutOfBounds { index: 7, len: 3 }),
         ("let a = [1, 2, 3]; let i = -1; println(a[i]);", Trap::IndexOutOfBounds { index: -1, len: 3 }),
         ("let m = {\"a\": 1}; println(m[\"zz\"]);", Trap::KeyNotFound),
-        ("let mut a: [i64] = []; a.pop();", Trap::EmptyArray),
+        ("var a: [i64] = []; a.pop();", Trap::EmptyArray),
         ("panic(\"boom\");", Trap::Panic("boom".into())),
         ("assert(1 > 2, \"nope\");", Trap::Panic("assertion failed: nope".into())),
         ("let s = 70; println(1 << s);", Trap::ShiftOverflow),
@@ -182,8 +182,8 @@ println(swap(x, y)); println(swap(y, x)); println(swap(swap(x, y)[0], swap(x, y)
 #[test]
 fn garbage_heavy_programs_run_in_a_small_heap() {
     let src = r#"
-let mut keep: [string] = [];
-let mut total = 0;
+var keep: [string] = [];
+var total = 0;
 for i in 0..3000 {
     let s = "item " + i.to_string() + " padding padding padding";
     let parts = s.split(" ");
@@ -208,7 +208,8 @@ println(total); println(keep.len()); println(keep[3]);
 
 #[test]
 fn live_data_that_exceeds_the_limit_is_out_of_memory() {
-    let src = "let mut a: [string] = []; let mut i = 0; while true { a.push(\"some text to keep alive \" + i.to_string()); i += 1; }";
+    let src =
+        "var a: [string] = []; var i = 0; while true { a.push(\"some text to keep alive \" + i.to_string()); i += 1; }";
     let cfg = VmConfig { gc: GcConfig { limit: Some(64 * 1024), ..GcConfig::default() }, ..VmConfig::default() };
     let got = run_vm(src, &Options::default(), &cfg, &[]);
     assert_eq!(got.trap, Some(Trap::OutOfMemory));
@@ -218,17 +219,17 @@ fn live_data_that_exceeds_the_limit_is_out_of_memory() {
 fn collections_and_closures_under_the_stress_collector() {
     let src = r#"
 fn make_adders() -> [fn(i64) -> i64] {
-    let mut out: [fn(i64) -> i64] = [];
+    var out: [fn(i64) -> i64] = [];
     for i in 0..5 { let k = i * 100; out.push(|x| => x + k + i); }
     out
 }
 let adders = make_adders();
-let mut m = { "a": [1, 2, 3], "b": [4] };
+var m = { "a": [1, 2, 3], "b": [4] };
 m["c"] = [5, 6];
-let mut acc = 0;
+var acc = 0;
 for f in adders { acc += f(1); }
 for k in m.keys() { for v in m[k] { acc += v; } }
-let mut s = set { "x", "y" };
+var s = set { "x", "y" };
 s.insert("z");
 println(acc); println(s.len()); println(m); println(s);
 "#;
@@ -257,9 +258,9 @@ fn describe(s: string) -> string {
     }
 }
 println(describe("12")); println(describe("1x"));
-let mut stack = [1, 2];
-let mut sum = 0;
-let mut more = true;
+var stack = [1, 2];
+var sum = 0;
+var more = true;
 while more {
     match stack.try_pop() { Option::Some(v) => { sum += v; }, Option::None => { more = false; } }
 }

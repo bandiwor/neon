@@ -132,7 +132,7 @@ fn values_live_across_a_call_stay_below_its_window() {
 #[test]
 fn closures_compile_with_upvalue_metadata() {
     let bc = bytecode(
-        "fn make() -> fn() -> i32 { let mut n = 0; || => { n += 1; n } }\nlet c = make(); println(c()); println(c());",
+        "fn make() -> fn() -> i32 { var n = 0; || => { n += 1; n } }\nlet c = make(); println(c()); println(c());",
         &Options::default(),
     );
     verify_program(&bc).unwrap();
@@ -186,7 +186,7 @@ fn a_function_needing_more_than_256_registers_is_a_diagnostic() {
     for i in 0..300 {
         src += &format!("    let v{i} = {i} * 3;\n");
     }
-    src += "    let mut s = 0;\n";
+    src += "    var s = 0;\n";
     for i in 0..300 {
         src += &format!("    s += v{i};\n");
     }

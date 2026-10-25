@@ -1,4 +1,4 @@
 struct Stack<T> { items: [T] }
-impl<T> Stack<T> { fn new() -> Stack<T> { Stack { items: [] } } fn push(mut self, x: T) { self.items.push(x); } fn pop(mut self) -> T { self.items.pop() } fn size(self) -> i64 { self.items.len() } }
-let mut a = Stack::new(); a.push(1); a.push(2); println(a.pop()); println(a.size());
-let mut b = Stack::<string>::new(); b.push("x"); println(b.pop() + "y");
+impl<T> Stack<T> { fn new() -> Stack<T> { Stack { items: [] } } fn push(var self, x: T) { self.items.push(x); } fn pop(var self) -> T { self.items.pop() } fn size(self) -> i64 { self.items.len() } }
+var a = Stack::new(); a.push(1); a.push(2); println(a.pop()); println(a.size());
+var b = Stack::<string>::new(); b.push("x"); println(b.pop() + "y");

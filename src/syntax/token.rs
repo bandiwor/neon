@@ -21,12 +21,13 @@ macro_rules! keywords {
 
 keywords! {
     Let = "let",
-    Mut = "mut",
+    Var = "var",
     Const = "const",
     Fn = "fn",
     Return = "return",
     If = "if",
     Else = "else",
+    Elif = "elif",
     While = "while",
     Loop = "loop",
     For = "for",

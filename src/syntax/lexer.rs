@@ -649,10 +649,10 @@ mod tests {
 
     #[test]
     fn keywords_identifiers_and_primitives() {
-        let out = lex("let mut x_1 = foo; fn Self self _ _y i32 string 名前");
+        let out = lex("let var x_1 = foo; fn Self self _ _y i32 string 名前 elif mut");
         let k = out.kinds();
         assert_eq!(k[0], Kw(Keyword::Let));
-        assert_eq!(k[1], Kw(Keyword::Mut));
+        assert_eq!(k[1], Kw(Keyword::Var));
         let Ident(x) = k[2] else { panic!() };
         assert_eq!(out.interner.resolve(x), "x_1");
         assert_eq!(k[3], Eq);
@@ -668,6 +668,9 @@ mod tests {
         assert_eq!(k[12], Kw(Keyword::String));
         let Ident(n) = k[13] else { panic!() };
         assert_eq!(out.interner.resolve(n), "名前");
+        assert_eq!(k[14], Kw(Keyword::Elif));
+        // `mut` is no longer reserved
+        assert!(matches!(k[15], Ident(_)));
         assert!(out.diags.is_empty());
     }
 

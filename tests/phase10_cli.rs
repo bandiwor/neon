@@ -154,7 +154,7 @@ fn collector_limits_apply_from_the_command_line() {
     let churn = dir.join("churn.neon");
     std::fs::write(
         &churn,
-        "let mut n = 0; for i in 0..20000 { let s = \"garbage \" + i.to_string(); n += s.len(); } println(n);",
+        "var n = 0; for i in 0..20000 { let s = \"garbage \" + i.to_string(); n += s.len(); } println(n);",
     )
     .unwrap();
     let r = run_with(&["run", "--gc-limit", "24k", "--stats", churn.to_str().unwrap()], "");
@@ -163,7 +163,7 @@ fn collector_limits_apply_from_the_command_line() {
     let collections: u64 = r.err.split_whitespace().nth(1).unwrap().parse().unwrap();
     assert!(collections > 50, "{}", r.err);
     let hog = dir.join("hog.neon");
-    std::fs::write(&hog, "let mut a: [[i64]] = []; while true { a.push([1, 2, 3, 4, 5, 6, 7, 8]); }").unwrap();
+    std::fs::write(&hog, "var a: [[i64]] = []; while true { a.push([1, 2, 3, 4, 5, 6, 7, 8]); }").unwrap();
     let r = run_with(&["run", "--gc-limit", "64k", hog.to_str().unwrap()], "");
     assert_eq!(r.code, 2);
     assert!(r.err.contains("out of memory"), "{}", r.err);

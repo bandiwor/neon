@@ -1,6 +1,7 @@
 //! Blocks and statements.
 
 use super::{PResult, Parser, Recover};
+use crate::diag::Diagnostic;
 use crate::syntax::ast::{NodeId, NodeKind, OptionNodeId};
 use crate::syntax::token::{Keyword, TokenKind};
 
@@ -49,7 +50,7 @@ impl Parser<'_> {
                 self.bump();
                 Ok(Stmt::Empty)
             }
-            TokenKind::Kw(Keyword::Let) => self.parse_let().map(Stmt::Node),
+            TokenKind::Kw(Keyword::Let | Keyword::Var) => self.parse_let().map(Stmt::Node),
             TokenKind::Kw(
                 Keyword::Fn
                 | Keyword::Struct
@@ -98,10 +99,34 @@ impl Parser<'_> {
         }
     }
 
+    /// `let pattern [: T] [= init];` (immutable) or `var name [: T] [= init];` (mutable).
     fn parse_let(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
-        self.bump();
-        let pat = self.parse_pattern()?;
+        let is_var = self.at_kw(Keyword::Var);
+        let kw = self.bump();
+        // `let mut x` is the old spelling of `var x`: say so, then parse it as `var x`
+        let old_spelling = !is_var
+            && matches!(self.peek(), TokenKind::Ident(_))
+            && &self.src[self.tok().span.range()] == "mut"
+            && matches!(self.peek_at(1), TokenKind::Ident(_));
+        if old_spelling {
+            let span = kw.span.to(self.tok().span);
+            let message = "`let mut` is spelled `var`".to_string();
+            self.diags.report(
+                Diagnostic::error(message)
+                    .with_code("E0109")
+                    .with_label(span, "use `var` instead".to_string())
+                    .with_help("write `var x = ...;` for a variable that can be reassigned"),
+            );
+            self.bump();
+        }
+        let pat = if is_var || old_spelling {
+            let p_lo = self.cur_lo();
+            let (name, name_span) = self.expect_ident()?;
+            self.node_n(name_span, NodeKind::PatBinding { name, mutable: true }, p_lo)
+        } else {
+            self.parse_pattern()?
+        };
         let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
         let init = if self.eat(TokenKind::Eq) { Some(self.parse_expr()?) } else { None };
         self.expect_semi()?;

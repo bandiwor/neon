@@ -198,7 +198,7 @@ impl Checker<'_> {
     }
 
     /// Reports an error unless `node` is a place the program may mutate:
-    /// the root variable of a field/index chain must be declared `mut`.
+    /// the root variable of a field/index chain must be declared with `var`.
     pub fn check_mutable_place(&mut self, node: NodeId) {
         let ast = self.ast.clone();
         match *ast.kind(node) {
@@ -213,7 +213,7 @@ impl Checker<'_> {
                                 span,
                                 "E0220",
                                 format!("cannot assign to immutable variable `{shown}`"),
-                                format!("declare it with `let mut {shown}`"),
+                                format!("declare it with `var {shown}`"),
                             );
                         }
                     }
@@ -223,7 +223,7 @@ impl Checker<'_> {
                                 span,
                                 "E0220",
                                 format!("cannot assign to immutable `{shown}`"),
-                                "declared without `mut`",
+                                "declared without `var`",
                             );
                         }
                     }

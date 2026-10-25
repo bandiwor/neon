@@ -1,1 +1,1 @@
-let mut x = 1; x = x + 1; x += 5; x *= 2; println(x); let y = x; x = 0; println(y); println(x);
+var x = 1; x = x + 1; x += 5; x *= 2; println(x); let y = x; x = 0; println(y); println(x);

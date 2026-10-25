@@ -1,2 +1,2 @@
-fn f() -> i32 { let mut a = 1; let b = a; a += 10; b + a }
+fn f() -> i32 { var a = 1; let b = a; a += 10; b + a }
 println(f());

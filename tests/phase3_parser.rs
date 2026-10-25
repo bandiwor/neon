@@ -80,7 +80,7 @@ fn unwrap_or<T>(o: Option<T>, default: T) -> T {
 }
 
 fn make_counter() -> fn() -> i32 {
-    let mut count = 0;
+    var count = 0;
     return || => { count += 1; count };
 }
 
@@ -89,7 +89,7 @@ counter();
 let scores = { "ann": 3, "bob": 5 };
 let seen = set { 1, 2, 3 };
 let xs = [1, 2, 3];
-let mut total = 0;
+var total = 0;
 for x in xs { total += x; }
 for i in 0..10 { if i % 2 == 0 { continue; } total += i; }
 let big = 255u8 as i64 + (1 << 40);

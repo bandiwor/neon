@@ -10,7 +10,7 @@
 //! Diagnostic codes: E0101 unexpected token, E0102 expected expression,
 //! E0103 expected type, E0104 expected pattern, E0105 unclosed delimiter,
 //! E0106 invalid assignment target, E0107 chained comparison,
-//! E0108 expected declaration.
+//! E0108 expected declaration, E0109 `let mut` (now `var`), E0110 `else if` (now `elif`).
 
 mod expr;
 mod item;
@@ -286,6 +286,7 @@ impl<'a> Parser<'a> {
                 }
                 TokenKind::Kw(
                     Keyword::Let
+                    | Keyword::Var
                     | Keyword::Fn
                     | Keyword::Struct
                     | Keyword::Enum

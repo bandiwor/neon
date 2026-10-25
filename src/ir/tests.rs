@@ -71,7 +71,7 @@ fn hello_and_arithmetic() {
 #[test]
 fn variables_and_assignment() {
     assert_eq!(
-        run("let mut x = 1; x = x + 1; x += 5; x *= 2; println(x); let y = x; x = 0; println(y); println(x);"),
+        run("var x = 1; x = x + 1; x += 5; x *= 2; println(x); let y = x; x = 0; println(y); println(x);"),
         "14\n14\n0\n"
     );
 }
@@ -79,9 +79,9 @@ fn variables_and_assignment() {
 #[test]
 fn control_flow() {
     assert_eq!(
-        run("let mut i = 0; let mut s = 0; while i < 5 { s += i; i += 1; } println(s);\n\
+        run("var i = 0; var s = 0; while i < 5 { s += i; i += 1; } println(s);\n\
              let a = if s > 5 { \"big\" } else { \"small\" }; println(a);\n\
-             let mut n = 0; let r = loop { n += 1; if n == 4 { break n * 10; } }; println(r);\n\
+             var n = 0; let r = loop { n += 1; if n == 4 { break n * 10; } }; println(r);\n\
              for k in 0..3 { print(k); } println(\"\"); for k in 1..=3 { print(k); } println(\"\");\n\
              for k in 0..10 { if k % 2 == 0 { continue; } if k > 6 { break; } print(k); } println(\"\");"),
         "10\nbig\n40\n012\n123\n135\n"
@@ -109,8 +109,8 @@ fn factorial_overflow_traps() {
 #[test]
 fn structs_methods_and_fields() {
     assert_eq!(
-        run("struct P { x: i32, y: i32 }\nimpl P { fn new(x: i32, y: i32) -> P { P { x: x, y: y } } fn sum(self) -> i32 { self.x + self.y } fn shift(mut self, d: i32) { self.x += d; } }\n\
-             let mut p = P::new(1, 2); println(p.sum()); p.shift(10); println(p.x); p.y = 100; println(p.sum()); println(p);"),
+        run("struct P { x: i32, y: i32 }\nimpl P { fn new(x: i32, y: i32) -> P { P { x: x, y: y } } fn sum(self) -> i32 { self.x + self.y } fn shift(var self, d: i32) { self.x += d; } }\n\
+             var p = P::new(1, 2); println(p.sum()); p.shift(10); println(p.x); p.y = 100; println(p.sum()); println(p);"),
         "3\n11\n111\nP { x: 11, y: 100 }\n"
     );
 }
@@ -153,7 +153,7 @@ fn literal_range_and_or_patterns() {
 #[test]
 fn closures_capture_and_mutate() {
     assert_eq!(
-        run("fn make_counter() -> fn() -> i32 { let mut n = 0; || => { n += 1; n } }\n\
+        run("fn make_counter() -> fn() -> i32 { var n = 0; || => { n += 1; n } }\n\
              let c = make_counter(); println(c()); println(c()); println(c());\n\
              let d = make_counter(); println(d()); println(c());"),
         "1\n2\n3\n1\n4\n"
@@ -163,7 +163,7 @@ fn closures_capture_and_mutate() {
 #[test]
 fn closures_share_one_captured_variable() {
     assert_eq!(
-        run("fn pair() -> [fn() -> i32] { let mut x = 0; let inc = || => { x += 1; x }; let get = || => x; [inc, get] }\n\
+        run("fn pair() -> [fn() -> i32] { var x = 0; let inc = || => { x += 1; x }; let get = || => x; [inc, get] }\n\
              let fs = pair(); let inc = fs[0]; let get = fs[1]; inc(); inc(); println(get()); inc(); println(get());"),
         "2\n3\n"
     );
@@ -172,7 +172,7 @@ fn closures_share_one_captured_variable() {
 #[test]
 fn closures_in_loops_capture_per_iteration() {
     assert_eq!(
-        run("let mut fs: [fn() -> i32] = []; for i in 0..3 { let k = i * 10; fs.push(|| => k + i); }\n\
+        run("var fs: [fn() -> i32] = []; for i in 0..3 { let k = i * 10; fs.push(|| => k + i); }\n\
              for f in fs { println(f()); }"),
         "0\n11\n22\n"
     );
@@ -181,7 +181,7 @@ fn closures_in_loops_capture_per_iteration() {
 #[test]
 fn nested_closures() {
     assert_eq!(
-        run("fn f() -> i32 { let mut x = 1; let g = || => { let h = || => { x += 10; x }; h() + x }; g() }\nprintln(f());"),
+        run("fn f() -> i32 { var x = 1; let g = || => { let h = || => { x += 10; x }; h() + x }; g() }\nprintln(f());"),
         "22\n"
     );
 }
@@ -199,11 +199,11 @@ fn higher_order_functions() {
 #[test]
 fn collections() {
     assert_eq!(
-        run("let mut a = [3, 1, 2]; a.push(4); println(a.len()); println(a); a.sort(); println(a); println(a.pop()); a.reverse(); println(a); println(a[0] + a[1]);\n\
-             let mut m = { \"b\": 2, \"a\": 1 }; m.insert(\"c\", 3); m[\"a\"] = 10; println(m[\"a\"]); println(m.len()); println(m.contains_key(\"z\")); println(m.get_or(\"z\", -1)); println(m);\n\
+        run("var a = [3, 1, 2]; a.push(4); println(a.len()); println(a); a.sort(); println(a); println(a.pop()); a.reverse(); println(a); println(a[0] + a[1]);\n\
+             var m = { \"b\": 2, \"a\": 1 }; m.insert(\"c\", 3); m[\"a\"] = 10; println(m[\"a\"]); println(m.len()); println(m.contains_key(\"z\")); println(m.get_or(\"z\", -1)); println(m);\n\
              println(m.keys()); println(m.values());\n\
-             let mut s = set { 1, 2, 2, 3 }; println(s.len()); println(s.insert(2)); println(s.insert(9)); println(s.contains(9)); println(s.remove(1)); println(s);\n\
-             let mut total = 0; for x in a { total += x; } for k in m.keys() { total += m[k]; } for e in s { total += e; } println(total);"),
+             var s = set { 1, 2, 2, 3 }; println(s.len()); println(s.insert(2)); println(s.insert(9)); println(s.contains(9)); println(s.remove(1)); println(s);\n\
+             var total = 0; for x in a { total += x; } for k in m.keys() { total += m[k]; } for e in s { total += e; } println(total);"),
         "4\n[3, 1, 2, 4]\n[1, 2, 3, 4]\n4\n[3, 2, 1]\n5\n10\n3\nfalse\n-1\n{\"b\": 2, \"a\": 10, \"c\": 3}\n[\"b\", \"a\", \"c\"]\n[2, 10, 3]\n3\nfalse\ntrue\ntrue\ntrue\nset{2, 3, 9}\n35\n"
     );
 }
@@ -250,7 +250,7 @@ fn integer_boundaries_trap() {
 fn runtime_traps() {
     assert!(matches!(trap_of("let a = [1, 2]; println(a[5]);"), Trap::IndexOutOfBounds { index: 5, len: 2 }));
     assert_eq!(trap_of("let m = {\"a\": 1}; println(m[\"b\"]);"), Trap::KeyNotFound);
-    assert_eq!(trap_of("let mut a: [i32] = []; a.pop();"), Trap::EmptyArray);
+    assert_eq!(trap_of("var a: [i32] = []; a.pop();"), Trap::EmptyArray);
     assert_eq!(trap_of("panic(\"boom\");"), Trap::Panic("boom".into()));
     assert_eq!(trap_of("assert(1 > 2, \"math\");"), Trap::Panic("assertion failed: math".into()));
     assert!(matches!(trap_of("println(\"x\".parse_i64());"), Trap::ParseError(_)));
@@ -272,7 +272,7 @@ fn traits_and_operator_overloading() {
              impl Eq for V { fn eq(self, o: V) -> bool { self.x == o.x && self.y == o.y } }\n\
              impl Ord for V { fn lt(self, o: V) -> bool { self.x < o.x } }\n\
              let a = V { x: 1.0, y: 2.0 }; let b = a + a * 3.0; println(b); println(-a); println(a == b); println(a != b); println(a < b); println(a >= b); println(a <= a);\n\
-             let mut c = a; c += b; println(c);"),
+             var c = a; c += b; println(c);"),
         "shape:9.0\ncircle:3.0\nV { x: 4.0, y: 8.0 }\nV { x: -1.0, y: -2.0 }\nfalse\ntrue\ntrue\nfalse\ntrue\nV { x: 5.0, y: 10.0 }\n"
     );
 }
@@ -294,9 +294,9 @@ fn generic_functions_with_operator_bounds_instantiate_per_type() {
 fn generic_struct_methods() {
     assert_eq!(
         run("struct Stack<T> { items: [T] }\n\
-             impl<T> Stack<T> { fn new() -> Stack<T> { Stack { items: [] } } fn push(mut self, x: T) { self.items.push(x); } fn pop(mut self) -> T { self.items.pop() } fn size(self) -> i64 { self.items.len() } }\n\
-             let mut a = Stack::new(); a.push(1); a.push(2); println(a.pop()); println(a.size());\n\
-             let mut b = Stack::<string>::new(); b.push(\"x\"); println(b.pop() + \"y\");"),
+             impl<T> Stack<T> { fn new() -> Stack<T> { Stack { items: [] } } fn push(var self, x: T) { self.items.push(x); } fn pop(var self) -> T { self.items.pop() } fn size(self) -> i64 { self.items.len() } }\n\
+             var a = Stack::new(); a.push(1); a.push(2); println(a.pop()); println(a.size());\n\
+             var b = Stack::<string>::new(); b.push(\"x\"); println(b.pop() + \"y\");"),
         "2\n1\nxy\n"
     );
 }
@@ -312,7 +312,7 @@ fn display_trait_is_used_by_println() {
 #[test]
 fn globals_and_top_level_state() {
     assert_eq!(
-        run("let mut counter = 0; const LIMIT: i32 = 3;\nfn bump() -> i32 { counter += 1; counter }\nbump(); bump(); println(bump()); println(LIMIT * 2); println(counter);"),
+        run("var counter = 0; const LIMIT: i32 = 3;\nfn bump() -> i32 { counter += 1; counter }\nbump(); bump(); println(bump()); println(LIMIT * 2); println(counter);"),
         "3\n6\n3\n"
     );
 }
@@ -352,7 +352,7 @@ fn short_circuit_evaluation() {
 #[test]
 fn evaluation_order_and_aliasing() {
     // an argument that mutates a variable must not change an earlier operand
-    assert_eq!(run("let mut x = 1; fn f(a: i32, b: i32) -> i32 { a * 100 + b } fn bump() -> i32 { x += 1; x }\nprintln(f(x, bump())); println(x);"), "102\n2\n");
+    assert_eq!(run("var x = 1; fn f(a: i32, b: i32) -> i32 { a * 100 + b } fn bump() -> i32 { x += 1; x }\nprintln(f(x, bump())); println(x);"), "102\n2\n");
 }
 
 #[test]
@@ -467,8 +467,8 @@ fn recursive_and_large_functions_are_not_inlined() {
 #[test]
 fn closure_modified_variables_are_never_folded() {
     // `x` has a single `let` definition; only the closure (via its upvalue) changes it
-    let src = "let mut x = 1; let f = || => { x = 5; }; f(); println(x);\n\
-               fn g() -> i32 { let mut y = 10; let h = || => { y += 1; }; h(); h(); y }\nprintln(g());";
+    let src = "var x = 1; let f = || => { x = 5; }; f(); println(x);\n\
+               fn g() -> i32 { var y = 10; let h = || => { y += 1; }; h(); h(); y }\nprintln(g());";
     assert_eq!(run(src), "5\n12\n");
     let (ir, _) = optimized(src, OptConfig::default());
     let r = interp::run(&ir, &[]);
@@ -478,20 +478,20 @@ fn closure_modified_variables_are_never_folded() {
 #[test]
 fn copy_propagation_respects_later_assignment() {
     // `b` is a copy of `a`, but `a` changes afterwards
-    assert_eq!(run("let mut a = 1; let b = a; a = 2; println(b); println(a);"), "1\n2\n");
-    assert_eq!(run("fn f() -> i32 { let mut a = 1; let b = a; a += 10; b + a }\nprintln(f());"), "12\n");
+    assert_eq!(run("var a = 1; let b = a; a = 2; println(b); println(a);"), "1\n2\n");
+    assert_eq!(run("fn f() -> i32 { var a = 1; let b = a; a += 10; b + a }\nprintln(f());"), "12\n");
 }
 
 #[test]
 fn loops_survive_optimization() {
-    let src = "let mut s = 0; for i in 0..100 { if i % 3 == 0 { continue; } s += i; if s > 1000 { break; } } println(s);\n\
-               let mut n = 27u64; let mut steps = 0; while n != 1 { n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }; steps += 1; } println(steps);";
+    let src = "var s = 0; for i in 0..100 { if i % 3 == 0 { continue; } s += i; if s > 1000 { break; } } println(s);\n\
+               var n = 27u64; var steps = 0; while n != 1 { n = if n % 2 == 0 { n / 2 } else { 3 * n + 1 }; steps += 1; } println(steps);";
     assert_eq!(run(src), "1027\n111\n");
 }
 
 #[test]
 fn optimization_reduces_work() {
-    let src = "fn sq(x: i32) -> i32 { x * x }\nfn run() -> i32 { let mut t = 0; for i in 0..10 { t += sq(i) + 2 * 3; } t }\nprintln(run());";
+    let src = "fn sq(x: i32) -> i32 { x * x }\nfn run() -> i32 { var t = 0; for i in 0..10 { t += sq(i) + 2 * 3; } t }\nprintln(run());";
     let plain = compile(src);
     let (opt, stats) = optimized(src, OptConfig::default());
     let size = |p: &IrProgram| p.funcs.iter().map(|f| f.size()).sum::<usize>();

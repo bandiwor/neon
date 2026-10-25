@@ -10,7 +10,7 @@ println(2i64.checked_pow(63u32));
 println(1u8.checked_shl(8u8));
 let xs = [10, 20, 30];
 println(xs.get(1)); println(xs.get(3)); println(xs.get(-1));
-let mut ys = [1, 2];
+var ys = [1, 2];
 println(ys.try_pop()); println(ys.try_pop()); println(ys.try_pop());
 let m = {"a": 1};
 println(m.get("a")); println(m.get("z"));

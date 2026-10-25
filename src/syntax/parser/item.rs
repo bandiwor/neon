@@ -146,10 +146,10 @@ impl Parser<'_> {
         ))
     }
 
-    /// `[mut] name: Type`, or a `self` receiver.
+    /// `[var] name: Type`, or a `self` receiver.
     fn parse_param(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
-        let mutable = self.eat_kw(Keyword::Mut);
+        let mutable = self.eat_kw(Keyword::Var);
         let self_span = self.tok().span;
         if self.eat_kw(Keyword::SelfValue) {
             let name = Symbol(Keyword::SelfValue as u32);

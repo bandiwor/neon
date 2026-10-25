@@ -148,7 +148,7 @@ impl Printer<'_> {
             }
             Param { name, mutable, ty } => {
                 if mutable {
-                    self.text("mut ");
+                    self.text("var ");
                 }
                 self.sym(name);
                 if let Some(t) = ty.get() {
@@ -410,7 +410,7 @@ impl Printer<'_> {
             PatWild => self.text("_"),
             PatBinding { name, mutable } => {
                 if mutable {
-                    self.text("mut ");
+                    self.text("var ");
                 }
                 self.sym(name);
             }

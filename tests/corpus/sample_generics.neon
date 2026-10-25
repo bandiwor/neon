@@ -11,7 +11,7 @@ impl<A, B> Pair<A, B> {
     fn swap(self) -> Pair<B, A> { Pair { first: self.second, second: self.first } }
 }
 fn largest<T: Ord>(xs: [T]) -> T {
-    let mut best = xs[0];
+    var best = xs[0];
     for x in xs { if best < x { best = x; } }
     best
 }

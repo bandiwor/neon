@@ -34,19 +34,19 @@ fn multi_module_program_with_generics_closures_and_traits() {
 import { Stack, Shape, area } from "lib/data";
 import "lib/data" as data;
 
-let mut s = Stack::new();
+var s = Stack::new();
 for i in 1..=5 { s.push(i * i); }
-let mut total = 0;
+var total = 0;
 while s.size() > 0 { total += s.pop(); }
 println(total);
 
 let shapes = [Shape::Circle(1.0), Shape::Rect(2.0, 3.0), Shape::Empty];
-let mut sum = 0.0;
+var sum = 0.0;
 for sh in shapes { sum += area(sh); }
 println(sum);
 
 let adders = [1, 2, 3].len();
-let mk = |n: i64| => { let mut acc = n; || => { acc += n; acc } };
+let mk = |n: i64| => { var acc = n; || => { acc += n; acc } };
 let a = mk(5); a(); println(a());
 println(data::answer());
 "#,
@@ -57,8 +57,8 @@ println(data::answer());
 export struct Stack<T> { items: [T] }
 impl<T> Stack<T> {
     fn new() -> Stack<T> { Stack { items: [] } }
-    fn push(mut self, x: T) { self.items.push(x); }
-    fn pop(mut self) -> T { self.items.pop() }
+    fn push(var self, x: T) { self.items.push(x); }
+    fn pop(var self) -> T { self.items.pop() }
     fn size(self) -> i64 { self.items.len() }
 }
 export enum Shape { Circle(f64), Rect(f64, f64), Empty }
@@ -81,13 +81,13 @@ fn allocation_heavy_program_runs_identically_when_optimized() {
         r#"
 struct Node { value: i64, next: [Node] }
 fn build(n: i64) -> [Node] {
-    let mut out = [];
-    let mut i = 0;
+    var out = [];
+    var i = 0;
     while i < n { out.push(Node { value: i, next: [] }); i += 1; }
     out
 }
-fn total(nodes: [Node]) -> i64 { let mut t = 0; for n in nodes { t += n.value; } t }
-let mut grand = 0;
+fn total(nodes: [Node]) -> i64 { var t = 0; for n in nodes { t += n.value; } t }
+var grand = 0;
 for round in 0..50 { grand += total(build(100)); }
 println(grand);
 "#,

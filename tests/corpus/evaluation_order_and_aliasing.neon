@@ -1,2 +1,2 @@
-let mut x = 1; fn f(a: i32, b: i32) -> i32 { a * 100 + b } fn bump() -> i32 { x += 1; x }
+var x = 1; fn f(a: i32, b: i32) -> i32 { a * 100 + b } fn bump() -> i32 { x += 1; x }
 println(f(x, bump())); println(x);

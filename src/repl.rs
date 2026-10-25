@@ -371,7 +371,7 @@ mod tests {
             "x + 1",
             "fn double(n: i64) -> i64 { n * 2 }",
             "double(x)",
-            "let mut y = 1;",
+            "var y = 1;",
             "y += 5;",
             "y",
         ]);
@@ -387,7 +387,7 @@ mod tests {
     #[test]
     fn closures_keep_their_state_across_cells() {
         let out = session(&[
-            "fn counter() -> fn() -> i64 { let mut n = 0; || => { n += 1; n } }",
+            "fn counter() -> fn() -> i64 { var n = 0; || => { n += 1; n } }",
             "let c = counter();",
             "c()",
             "c()",

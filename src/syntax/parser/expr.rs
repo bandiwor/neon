@@ -5,6 +5,7 @@
 //! `as`, unary `- ! ~`, postfix (call, index, field, method call).
 
 use super::{PResult, Parser, Recover};
+use crate::diag::Diagnostic;
 use crate::syntax::ast::{BinOp, NodeId, NodeKind, OptionNodeId, UnOp};
 use crate::syntax::interner::{sym, Symbol};
 use crate::syntax::literal::StrId;
@@ -529,7 +530,7 @@ impl Parser<'_> {
                     break;
                 }
                 let p_lo = self.cur_lo();
-                let mutable = self.eat_kw(Keyword::Mut);
+                let mutable = self.eat_kw(Keyword::Var);
                 let (name, name_span) = self.expect_ident()?;
                 let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
                 params.push(self.node_n(name_span, NodeKind::Param { name, mutable, ty: self.opt(ty) }, p_lo));
@@ -561,8 +562,21 @@ impl Parser<'_> {
         self.bump();
         let cond = self.with_no_struct(true, |p| p.parse_expr())?;
         let then_branch = self.parse_block()?;
-        let else_branch = if self.eat_kw(Keyword::Else) {
-            Some(if self.at_kw(Keyword::If) { self.parse_if()? } else { self.parse_block()? })
+        let else_branch = if self.at_kw(Keyword::Elif) {
+            Some(self.parse_if()?)
+        } else if self.eat_kw(Keyword::Else) {
+            if self.at_kw(Keyword::If) {
+                // `else if` is spelled `elif`; accept it after reporting so the rest still parses
+                let span = self.tok().span;
+                self.diags.report(
+                    Diagnostic::error("`else if` is spelled `elif`")
+                        .with_code("E0110")
+                        .with_label(span, "write `elif` instead of `else if`".to_string()),
+                );
+                Some(self.parse_if()?)
+            } else {
+                Some(self.parse_block()?)
+            }
         } else {
             None
         };

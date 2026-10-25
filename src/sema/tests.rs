@@ -138,8 +138,8 @@ fn generic_functions_are_instantiated_per_call() {
 #[test]
 fn structs_fields_and_methods() {
     let o = ok("struct P { x: i32, y: i32 }\n\
-        impl P {\n  fn new(x: i32, y: i32) -> P { P { x: x, y: y } }\n  fn sum(self) -> i32 { self.x + self.y }\n  fn shift(mut self, d: i32) { self.x += d; }\n}\n\
-        let mut p = P::new(1, 2); let s = p.sum(); p.shift(3); p.y = 9; let q = P { x: 1, y: 2 }; let n = q.x;");
+        impl P {\n  fn new(x: i32, y: i32) -> P { P { x: x, y: y } }\n  fn sum(self) -> i32 { self.x + self.y }\n  fn shift(var self, d: i32) { self.x += d; }\n}\n\
+        var p = P::new(1, 2); let s = p.sum(); p.shift(3); p.y = 9; let q = P { x: 1, y: 2 }; let n = q.x;");
     assert_eq!(o.global("p"), "P");
     assert_eq!(o.global("s"), "i32");
     assert_eq!(o.global("n"), "i32");
@@ -226,7 +226,7 @@ fn operator_overloading_via_traits() {
 
 #[test]
 fn compound_assignment_with_overloaded_operator() {
-    ok("struct V { x: i32 }\nimpl Add<V> for V { fn add(self, r: V) -> V { V { x: self.x + r.x } } }\nlet mut a = V { x: 1 }; a += V { x: 2 };");
+    ok("struct V { x: i32 }\nimpl Add<V> for V { fn add(self, r: V) -> V { V { x: self.x + r.x } } }\nlet var a = V { x: 1 }; a += V { x: 2 };");
 }
 
 #[test]
@@ -240,7 +240,7 @@ fn closures_infer_and_capture() {
         let inc = |x| => x + 1; let s = inc(5);\n\
         fn apply(f: fn(i32) -> i32, v: i32) -> i32 { f(v) }\n\
         let t = apply(|x| => x * 2, 21);\n\
-        fn make_counter() -> fn() -> i32 { let mut n = 0; || => { n += 1; n } }\n\
+        fn make_counter() -> fn() -> i32 { var n = 0; || => { n += 1; n } }\n\
         let c = make_counter(); let v = c();");
     assert_eq!(o.global("r"), "i32");
     assert_eq!(o.global("s"), "i32");
@@ -264,11 +264,11 @@ fn nested_closures_capture_transitively() {
 
 #[test]
 fn collections() {
-    let o = ok("let mut a = [1, 2, 3]; a.push(4); let n = a.len(); let first = a[0];\n\
-        let mut m = { \"a\": 1, \"b\": 2 }; m.insert(\"c\", 3); let v = m[\"a\"]; let has = m.contains_key(\"a\"); let ks = m.keys();\n\
-        let mut s = set { 1, 2, 3 }; s.insert(4); let c = s.contains(2);\n\
+    let o = ok("var a = [1, 2, 3]; a.push(4); let n = a.len(); let first = a[0];\n\
+        var m = { \"a\": 1, \"b\": 2 }; m.insert(\"c\", 3); let v = m[\"a\"]; let has = m.contains_key(\"a\"); let ks = m.keys();\n\
+        var s = set { 1, 2, 3 }; s.insert(4); let c = s.contains(2);\n\
         let empty: [string] = []; let em: {string: i32} = {};\n\
-        let mut total = 0; for x in a { total += x; } for i in 0..10 { total += i; } for k in m { total += m[k]; } for e in s { total += e; }");
+        var total = 0; for x in a { total += x; } for i in 0..10 { total += i; } for k in m { total += m[k]; } for e in s { total += e; }");
     assert_eq!(o.global("a"), "[i32]");
     assert_eq!(o.global("n"), "i64");
     assert_eq!(o.global("m"), "{string: i32}");
@@ -305,7 +305,7 @@ fn casts() {
 #[test]
 fn control_flow_types() {
     let o =
-        ok("let a = if true { 1 } else { 2 };\nlet b = loop { break 5; };\nlet mut i = 0; while i < 3 { i += 1; }\n\
+        ok("let a = if true { 1 } else { 2 };\nlet b = loop { break 5; };\nlet var i = 0; while i < 3 { i += 1; }\n\
         fn f(n: i32) -> i32 { if n > 0 { return 1; } 2 }\n\
         fn g(n: i32) -> i32 { loop { if n > 0 { break n; } } }\n\
         let c = { let x = 1; x + 1 };");
@@ -328,7 +328,7 @@ fn shadowing_and_scopes() {
 
 #[test]
 fn globals_are_visible_to_functions() {
-    ok("let mut counter = 0; const LIMIT: i32 = 10;\nfn bump() { counter += 1; }\nfn limit() -> i32 { LIMIT }\nbump();");
+    ok("var counter = 0; const LIMIT: i32 = 10;\nfn bump() { counter += 1; }\nfn limit() -> i32 { LIMIT }\nbump();");
 }
 
 #[test]
@@ -435,14 +435,14 @@ fn mutability_is_enforced() {
     fails("let a = [1]; a.push(2);", "E0220", "");
     fails("let a = [1]; a[0] = 2;", "E0220", "");
     fails(
-        "struct C { n: i32 }\nimpl C { fn bump(mut self) { self.n += 1; } }\nlet c = C { n: 0 }; c.bump();",
+        "struct C { n: i32 }\nimpl C { fn bump(var self) { self.n += 1; } }\nlet c = C { n: 0 }; c.bump();",
         "E0220",
         "",
     );
     fails("struct C { n: i32 }\nimpl C { fn bump(self) { self.n += 1; } }", "E0220", "");
     fails("const K = 1; fn f() { K = 2; }", "E0220", "");
     fails("let x = 1; let f = || => { x = 2; };", "E0220", "");
-    ok("let mut x = 1; x = 2; let mut a = [1]; a.push(2); a[0] = 5; let mut m = {\"a\": 1}; m[\"a\"] = 2;");
+    ok("var x = 1; x = 2; var a = [1]; a.push(2); a[0] = 5; var m = {\"a\": 1}; m[\"a\"] = 2;");
 }
 
 #[test]
@@ -671,14 +671,14 @@ fn generic_containers_with_generic_methods() {
         struct Stack<T> { items: [T] }\n\
         impl<T> Stack<T> {\n\
             fn new() -> Stack<T> { Stack { items: [] } }\n\
-            fn push(mut self, x: T) { self.items.push(x); }\n\
-            fn pop(mut self) -> Option<T> { if self.items.is_empty() { Option::None } else { Option::Some(self.items.pop()) } }\n\
+            fn push(var self, x: T) { self.items.push(x); }\n\
+            fn pop(var self) -> Option<T> { if self.items.is_empty() { Option::None } else { Option::Some(self.items.pop()) } }\n\
             fn size(self) -> i64 { self.items.len() }\n\
         }\n\
         let a = Option::Some(2).map(|x| => x * 2).unwrap_or(0);\n\
         let b = Option::Some(1).map(|x| => \"s\").is_some();\n\
-        let mut st = Stack::new(); st.push(1u8); st.push(2); let top = st.pop(); let n = st.size();\n\
-        let mut names = Stack::<string>::new(); names.push(\"x\");");
+        var st = Stack::new(); st.push(1u8); st.push(2); let top = st.pop(); let n = st.size();\n\
+        var names = Stack::<string>::new(); names.push(\"x\");");
     assert_eq!(o.global("a"), "i32");
     assert_eq!(o.global("b"), "bool");
     assert_eq!(o.global("top"), "Option<u8>");
@@ -691,7 +691,7 @@ fn function_typed_fields_and_higher_order_functions() {
     ok("struct Op { name: string, f: fn(i32, i32) -> i32 }\n\
         fn run(op: Op, a: i32, b: i32) -> i32 { (op.f)(a, b) }\n\
         fn compose(f: fn(i32) -> i32, g: fn(i32) -> i32) -> fn(i32) -> i32 { |x| => g(f(x)) }\n\
-        fn map(xs: [i32], f: fn(i32) -> i32) -> [i32] { let mut out = []; for x in xs { out.push(f(x)); } out }\n\
+        fn map(xs: [i32], f: fn(i32) -> i32) -> [i32] { var out = []; for x in xs { out.push(f(x)); } out }\n\
         fn double(x: i32) -> i32 { x * 2 }\n\
         let add = Op { name: \"add\", f: |a, b| => a + b };\n\
         let r = run(add, 1, 2); let h = compose(double, |x| => x + 1); let v = h(5); let m = map([1, 2, 3], double);");
@@ -702,20 +702,20 @@ fn self_calls_within_impls() {
     ok("struct Acc { total: i64 }\n\
         impl Acc {\n\
             fn new() -> Acc { Acc { total: 0 } }\n\
-            fn add(mut self, n: i64) -> Acc { self.total += n; self }\n\
-            fn twice(mut self, n: i64) { self.add(n); self.add(n); }\n\
+            fn add(var self, n: i64) -> Acc { self.total += n; self }\n\
+            fn twice(var self, n: i64) { self.add(n); self.add(n); }\n\
             fn fresh() -> Acc { Self::new() }\n\
             fn get(self) -> i64 { self.total }\n\
         }\n\
-        let mut a = Acc::fresh(); a.twice(5); let t = a.get();");
+        var a = Acc::fresh(); a.twice(5); let t = a.get();");
 }
 
 #[test]
 fn trait_bounded_generic_collections() {
     ok("trait Scorer { fn score(self) -> i32; }\n\
         struct A { n: i32 }\nimpl Scorer for A { fn score(self) -> i32 { self.n } }\n\
-        fn best<T: Scorer>(items: [T]) -> i32 { let mut b = 0; for it in items { if it.score() > b { b = it.score(); } } b }\n\
-        fn total<T: Scorer>(items: [T]) -> i32 { let mut t = 0; for it in items { t += it.score(); } t }\n\
+        fn best<T: Scorer>(items: [T]) -> i32 { var b = 0; for it in items { if it.score() > b { b = it.score(); } } b }\n\
+        fn total<T: Scorer>(items: [T]) -> i32 { var t = 0; for it in items { t += it.score(); } t }\n\
         let x = best([A { n: 3 }, A { n: 9 }]); let y = total([A { n: 1 }]);");
 }
 
