@@ -821,18 +821,22 @@ fn exec(insns: &[Insn], init: [u64; 8]) -> Result<u64, Trap> {
             Insn::Label(_) => {}
             Insn::Move { dst, src } => r[*dst as usize] = r[*src as usize],
             Insn::LoadI { dst, imm } => r[*dst as usize] = *imm as i64 as u64,
+            // registers hold raw bits here, so view the operands as canonical values of
+            // the instruction's type (shift amounts are plain i64s)
             Insn::Arith { op, ty, dst, a, b } => {
-                r[*dst as usize] = numeric::arith(*op, *ty, r[*a as usize], r[*b as usize])?
+                let x = numeric::canon_bits(*ty, r[*a as usize]);
+                let y = if op.is_shift() { r[*b as usize] } else { numeric::canon_bits(*ty, r[*b as usize]) };
+                r[*dst as usize] = numeric::arith(*op, *ty, x, y)?
             }
             Insn::Bitwise { op, dst, a, b } => {
                 r[*dst as usize] = numeric::arith(*op, NumTy::I64, r[*a as usize], r[*b as usize])?
             }
             Insn::AddImm { ty, dst, src, imm } => {
-                let v = numeric::decode_int(*ty, r[*src as usize]) + *imm as i128;
+                let v = numeric::decode_int(*ty, numeric::canon_bits(*ty, r[*src as usize])) + *imm as i128;
                 r[*dst as usize] = numeric::encode_int(*ty, v).ok_or(Trap::Overflow)?;
             }
             Insn::SubImm { ty, dst, src, imm } => {
-                let v = numeric::decode_int(*ty, r[*src as usize]) - *imm as i128;
+                let v = numeric::decode_int(*ty, numeric::canon_bits(*ty, r[*src as usize])) - *imm as i128;
                 r[*dst as usize] = numeric::encode_int(*ty, v).ok_or(Trap::Overflow)?;
             }
             Insn::BoolNot { dst, src } => r[*dst as usize] = (r[*src as usize] == 0) as u64,

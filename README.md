@@ -187,6 +187,52 @@ program).
 The script also sets `RUST_BACKTRACE=0`: symbolizing a backtrace (printed by
 `should_panic` tests) builds process-wide caches in std that are never freed.
 
+## Benchmarks
+
+```sh
+cargo bench                        # full run (~3 min); results as a table
+cargo bench -- fib compile         # only benchmarks whose name contains a filter word
+NEON_BENCH_QUICK=1 cargo bench     # quick smoke run
+```
+
+`benches/vm.rs` is a std-only harness (`harness = false`, no external crates).
+Every workload runs on the optimized VM (`vm`), on the VM with the IR
+optimizer and peephole off (`vm-noopt`) and, for the smaller ones, on the
+reference IR interpreter (`ir-interp`). Output is checked to be identical
+across settings. Times are the median of repeated runs; "M insn/s" is VM
+instructions executed per second.
+
+Sample run (release build, one shared cloud core — your numbers will differ,
+compare the *ratios*):
+
+| workload | vm | vm-noopt | ir-interp | VM speed |
+|---|---|---|---|---|
+| `fib(25)` recursion | 12.4 ms | 13.7 ms | 24.4 ms | 147 M insn/s |
+| tight loop, 1M iterations (`%`, `+`) | 32.9 ms | 48.3 ms | 48.0 ms | 183 M insn/s |
+| sieve, 100k | 14.0 ms | 17.3 ms | 16.7 ms | 184 M insn/s |
+| float loop, 500k | 26.3 ms | 37.5 ms | 38.9 ms | 152 M insn/s |
+| closure calls, 500k | 33.0 ms | 40.3 ms | 65.9 ms | 167 M insn/s |
+| structs + enums, 250k | 52.1 ms | 59.5 ms | 110.9 ms | 119 M insn/s |
+| map insert + lookup, 100k | 27.8 ms | 38.6 ms | – | 47 M insn/s |
+| string concat + split, 50k | 45.3 ms | 36.8 ms | – | 19 M insn/s |
+| garbage-heavy, 150k iterations | 53.2 ms (66 GCs) | 55.5 ms | – | 51 M insn/s |
+| same, 64 KiB heap limit | 48.9 ms (2133 GCs) | 49.9 ms | – | 55 M insn/s |
+
+`compile/*` measures source → bytecode, including the prelude: about
+1.8 MiB/s of source on this machine (400 generated functions in ~67 ms;
+roughly 2 ms of fixed prelude cost for a tiny program). Parsing is ~3% of
+the total; the IR optimizer more than doubles compile time for a modest
+instruction-count reduction, which is visible in the `vm` vs `vm-noopt`
+columns.
+
+What the numbers say, honestly: the dispatch loop is a straightforward
+`match` over decoded words, so the VM is ~1.5–2× faster than the reference
+interpreter on call- and allocation-heavy code and about even on simple
+arithmetic loops. Integer add/sub/mul/div/rem on `i64`/`i32`/`u64`/`u32` use
+native checked operations (verified against an `i128` reference path); other
+widths take the general path. Programs dominated by builtins (maps, strings)
+are bound by those builtins rather than by dispatch.
+
 ## Limits
 
 At most 256 registers per function (a function that needs more is reported as

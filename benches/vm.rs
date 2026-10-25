@@ -3,7 +3,7 @@
 //!
 //! Three groups:
 //! * `run/*`     — programs on the VM (optimized and unoptimized) and on the
-//!                 IR reference interpreter, with VM instructions per second;
+//!   IR reference interpreter, with VM instructions per second;
 //! * `gc/*`      — allocation-heavy programs with and without a heap limit;
 //! * `compile/*` — front end + IR + code generation throughput.
 
@@ -138,7 +138,12 @@ fn stats(times: &[Duration]) -> Stats {
 }
 
 fn report(name: &str, label: &str, s: &Stats, extra: &str) {
-    println!("{name:<24} {label:<12} min {:>10}   median {:>10}   mean {:>10}  {extra}", fmt_dur(s.min), fmt_dur(s.median), fmt_dur(s.mean));
+    println!(
+        "{name:<24} {label:<12} min {:>10}   median {:>10}   mean {:>10}  {extra}",
+        fmt_dur(s.min),
+        fmt_dur(s.median),
+        fmt_dur(s.mean)
+    );
 }
 
 fn opts(opt: bool) -> Options {
@@ -152,7 +157,11 @@ fn opts(opt: bool) -> Options {
 fn bench_workload(w: &Workload, budget: Duration, min_runs: usize) {
     let vfs = MemVfs::new();
     let cfg = VmConfig {
-        gc: GcConfig { limit: w.gc_limit, initial_threshold: if w.gc_limit.is_some() { 4096 } else { 1 << 20 }, ..GcConfig::default() },
+        gc: GcConfig {
+            limit: w.gc_limit,
+            initial_threshold: if w.gc_limit.is_some() { 4096 } else { 1 << 20 },
+            ..GcConfig::default()
+        },
         ..VmConfig::default()
     };
     let mut expected = None;
@@ -228,7 +237,12 @@ fn bench_compile(budget: Duration, min_runs: usize, filter: &dyn Fn(&str) -> boo
             std::hint::black_box(&c.bytecode);
         });
         let s = stats(&times);
-        report(name, "source→bytecode", &s, &format!("{n} functions, {kb:.0} KiB, {:.0} KiB/s", kb / s.median.as_secs_f64()));
+        report(
+            name,
+            "source→bytecode",
+            &s,
+            &format!("{n} functions, {kb:.0} KiB, {:.0} KiB/s", kb / s.median.as_secs_f64()),
+        );
     }
     // each phase on its own, for the large program
     if filter("compile/phases") {
@@ -243,7 +257,12 @@ fn bench_compile(budget: Duration, min_runs: usize, filter: &dyn Fn(&str) -> boo
         });
         report("compile/phases", "parse", &lex, "200 functions");
         let whole = t(&mut || {
-            std::hint::black_box(compile_source("big.neon", &src, &vfs, &Options { opt: OptConfig::none(), compile: CompileOptions { peephole: false } }));
+            std::hint::black_box(compile_source(
+                "big.neon",
+                &src,
+                &vfs,
+                &Options { opt: OptConfig::none(), compile: CompileOptions { peephole: false } },
+            ));
         });
         report("compile/phases", "all, no opts", &whole, "");
         let whole = t(&mut || {
@@ -256,9 +275,14 @@ fn bench_compile(budget: Duration, min_runs: usize, filter: &dyn Fn(&str) -> boo
 fn main() {
     let args: Vec<String> = std::env::args().skip(1).filter(|a| !a.starts_with("--")).collect();
     let quick = std::env::var_os("NEON_BENCH_QUICK").is_some() || std::env::args().any(|a| a == "--quick");
-    let (budget, min_runs, scale) = if quick { (Duration::from_millis(100), 2, 1) } else { (Duration::from_secs(2), 5, 5) };
+    let (budget, min_runs, scale) =
+        if quick { (Duration::from_millis(100), 2, 1) } else { (Duration::from_secs(2), 5, 5) };
     let filter = |name: &str| args.is_empty() || args.iter().any(|a| name.contains(a.as_str()));
-    println!("neon benchmarks ({}; {})", if quick { "quick" } else { "full" }, if cfg!(debug_assertions) { "DEBUG build — use `cargo bench`" } else { "release build" });
+    println!(
+        "neon benchmarks ({}; {})",
+        if quick { "quick" } else { "full" },
+        if cfg!(debug_assertions) { "DEBUG build — use `cargo bench`" } else { "release build" }
+    );
     println!("{:-<120}", "");
     for w in workloads(scale).iter().filter(|w| filter(w.name)) {
         bench_workload(w, budget, min_runs);
