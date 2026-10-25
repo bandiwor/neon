@@ -23,6 +23,10 @@ let b:undo_ftplugin = 'setlocal commentstring< comments< formatoptions< suffixes
 " <Enter> between a bracket pair opens a body: `{|}` becomes `{`, an indented line, `}`.
 " Neovim watches the text (lua/neon/enter.lua), which composes with completion and auto-pairs
 " plugins; Vim gets a plain <CR> mapping. Disable with `let g:neon_smart_enter = 0`.
+if has('nvim-0.8')
+  " keep our indentexpr even if a plugin (nvim-treesitter, ...) sets its own afterwards
+  lua require('neon.enter').ensure_indent(vim.api.nvim_get_current_buf())
+endif
 if get(g:, 'neon_smart_enter', 1)
   if has('nvim-0.8')
     lua require('neon.enter').attach(0)

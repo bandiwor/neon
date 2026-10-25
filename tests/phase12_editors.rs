@@ -366,3 +366,27 @@ out[#out + 1] = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "|")
         assert_eq!(lines[1], "fn main( {", "lsp={lsp}");
     }
 }
+
+#[test]
+fn nvim_keeps_its_indentexpr_when_another_plugin_replaces_it() {
+    let Some(nvim) = nvim() else {
+        eprintln!("skipped: nvim not installed");
+        return;
+    };
+    let dir = scratch("indentexpr");
+    // what nvim-treesitter's indent setup does for every filetype
+    let body = format!(
+        r#"
+vim.api.nvim_create_autocmd('FileType', {{ callback = function() vim.bo.indentexpr = 'v:lua.vim.fn.indent(-1)' end }})
+type_cases({{ {typed} }}, function(out)
+  out[#out + 1] = vim.bo.indentexpr
+  finish(out)
+end)
+"#,
+        typed = keys("fn f() {", &["<CR>", "x"]),
+    );
+    let out = run_nvim_interactive(&nvim, &dir, &body);
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "fn f() {|    x");
+    assert_eq!(lines[1], "GetNeonIndent()");
+}

@@ -60,6 +60,18 @@ function M.check(buf)
   state[buf] = snapshot(buf)
 end
 
+--- Other plugins (nvim-treesitter's `indentexpr` for every filetype, vim-sleuth, ...) may replace
+--- the buffer's `indentexpr` after our filetype plugin ran; Neon has no tree-sitter parser, so
+--- theirs would not indent anything. Put ours back once the FileType autocmds are done.
+function M.ensure_indent(buf)
+  vim.schedule(function()
+    if vim.api.nvim_buf_is_valid(buf) and vim.bo[buf].filetype == "neon" and vim.fn.exists("*GetNeonIndent") == 1
+      and vim.bo[buf].indentexpr ~= "GetNeonIndent()" then
+      vim.bo[buf].indentexpr = "GetNeonIndent()"
+    end
+  end)
+end
+
 --- Starts watching `buf` (called from the filetype plugin).
 function M.attach(buf)
   buf = (buf == nil or buf == 0) and vim.api.nvim_get_current_buf() or buf
