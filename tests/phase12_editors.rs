@@ -213,6 +213,76 @@ fn run_nvim_script(nvim: &str, dir: &Path, body: &str) -> String {
         .unwrap_or_else(|_| panic!("no result file; nvim said: {}", String::from_utf8_lossy(&output.stderr)))
 }
 
+/// Runs `body` inside a live Neovim main loop (so insert-mode events fire between key presses, as for
+/// a person typing). `body` gets `finish(lines)`, which writes `out.txt` and quits.
+fn run_nvim_interactive(nvim: &str, dir: &Path, body: &str) -> String {
+    let lua = format!(
+        r#"
+vim.opt.runtimepath:prepend({editor:?})
+vim.cmd('filetype plugin indent on | syntax on')
+local function finish(lines)
+  vim.fn.writefile(lines, {outfile:?})
+  vim.cmd('qa!')
+end
+vim.defer_fn(function() finish({{ 'timeout' }}) end, 20000)
+-- types each key list into a fresh neon buffer and collects the buffer text (lines joined by `|`)
+local function type_cases(cases, done)
+  local out, ci, ki = {{}}, 1, 0
+  local function step()
+    if ci > #cases then return done(out) end
+    local keys = cases[ci]
+    if ki == 0 then
+      vim.cmd('enew! | setfiletype neon')
+      vim.api.nvim_input('i')
+      ki = 1
+    elseif ki <= #keys then
+      vim.api.nvim_input(keys[ki])
+      ki = ki + 1
+    else
+      vim.api.nvim_input('<Esc>')
+      vim.defer_fn(function()
+        out[#out + 1] = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), '|')
+        ci, ki = ci + 1, 0
+        step()
+      end, 40)
+      return
+    end
+    vim.defer_fn(step, 25)
+  end
+  vim.defer_fn(step, 100)
+end
+{body}
+"#,
+        editor = editor_dir().display().to_string(),
+        outfile = dir.join("out.txt").display().to_string(),
+    );
+    let script = dir.join("check.lua");
+    std::fs::write(&script, lua).unwrap();
+    let _ = std::fs::remove_file(dir.join("out.txt"));
+    let output = Command::new(nvim)
+        .args(["--headless", "-u", "NONE", "-i", "NONE", "-S"])
+        .arg(&script)
+        .env("HOME", dir)
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("XDG_CACHE_HOME", dir.join("cache"))
+        .output()
+        .expect("nvim runs");
+    std::fs::read_to_string(dir.join("out.txt")).unwrap_or_else(|_| {
+        panic!(
+            "no result file; nvim said: {}{}",
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        )
+    })
+}
+
+/// A Lua list of key presses: every character of `typed`, then the `keys` as given.
+fn keys(typed: &str, keys: &[&str]) -> String {
+    let mut list: Vec<String> = typed.chars().map(|c| format!("{:?}", c.to_string())).collect();
+    list.extend(keys.iter().map(|k| format!("{k:?}")));
+    format!("{{ {} }}", list.join(", "))
+}
+
 #[test]
 fn nvim_enter_opens_bodies_with_indentation() {
     let Some(nvim) = nvim() else {
@@ -220,31 +290,44 @@ fn nvim_enter_opens_bodies_with_indentation() {
         return;
     };
     let dir = scratch("enter");
-    let out = run_nvim_script(
-        &nvim,
-        &dir,
+    let body = format!(
         r#"
-local function typed(keys)
-  vim.cmd("enew! | setfiletype neon")
-  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i" .. keys .. "<Esc>", true, false, true), "x", false)
-  out[#out + 1] = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "|")
-end
-typed("fn new() -> Point {<CR>x")
-typed("fn new() -> Point {}<Left><CR>x")
-typed("foo([<Esc>a])<Left><Left><CR>1")
-typed("fn f() {<CR>let a = 1;<CR>}")
-typed("a<CR>b")
-vim.g.neon_smart_enter = 0
-typed("fn g() {}<Left><CR>x")
+vim.g.neon_smart_enter = 1
+type_cases({{
+  {c1},
+  {c2},
+  {c3},
+  {c4},
+  {c5},
+  {c6},
+}}, function(out)
+  vim.g.neon_smart_enter = 0
+  type_cases({{ {c7} }}, function(out2)
+    out[#out + 1] = out2[1]
+    finish(out)
+  end)
+end)
 "#,
+        // after `{` + Enter: plain indentation
+        c1 = keys("fn new() -> Point {", &["<CR>", "x"]),
+        // the case of the report: the closer is already there
+        c2 = keys("fn new() -> Point {}", &["<Left>", "<CR>", "x"]),
+        c3 = keys("foo([])", &["<Left>", "<Left>", "<CR>", "1"]),
+        c4 = keys("fn f() {", &["<CR>", "let a = 1;", "<CR>", "}"]),
+        c5 = keys("ab", &["<CR>", "c"]),
+        // nested: the outer body is indented, so the new line is indented further
+        c6 = keys("fn f() {", &["<CR>", "if x {}", "<Left>", "<CR>", "y"]),
+        c7 = keys("fn g() {}", &["<Left>", "<CR>", "x"]),
     );
+    let out = run_nvim_interactive(&nvim, &dir, &body);
     let lines: Vec<&str> = out.lines().collect();
     assert_eq!(lines[0], "fn new() -> Point {|    x");
     assert_eq!(lines[1], "fn new() -> Point {|    x|}");
     assert_eq!(lines[2], "foo([|    1|])");
     assert_eq!(lines[3], "fn f() {|    let a = 1;|}");
-    assert_eq!(lines[4], "a|b");
-    assert_eq!(lines[5], "fn g() {|x}", "disabled: a plain newline");
+    assert_eq!(lines[4], "ab|c");
+    assert_eq!(lines[5], "fn f() {|    if x {|        y|    }", "nested: {out}");
+    assert_eq!(lines[6], "fn g() {|x}", "disabled: a plain newline");
 }
 
 #[test]

@@ -2,7 +2,7 @@
 //!
 //! Variables come in three kinds: `General` (any type), `Int` (an integer
 //! literal's type: only integer primitives) and `Float`. Unsuffixed literals
-//! get `Int`/`Float` variables that default to `i32`/`f64` when nothing else
+//! get `Int`/`Float` variables that default to `i64`/`f64` when nothing else
 //! constrains them. Every binding is logged on a trail so trial unifications
 //! (impl matching) can be rolled back.
 
@@ -200,14 +200,14 @@ impl InferCtx {
         Ok(())
     }
 
-    /// Binds unresolved literal variables to `i32` / `f64`.
+    /// Binds unresolved literal variables to `i64` / `f64`.
     pub fn apply_literal_defaults(&mut self, types: &mut TypeTable) {
         for i in 0..self.vars.len() {
             if self.vars[i].binding.is_some() {
                 continue;
             }
             let default = match self.vars[i].kind {
-                VarKind::Int => types.prim(Prim::I32),
+                VarKind::Int => types.prim(Prim::I64),
                 VarKind::Float => types.prim(Prim::F64),
                 VarKind::General => continue,
             };
@@ -352,7 +352,7 @@ mod tests {
         let u8t = t.prim(Prim::U8);
         i.unify(&mut t, bound, u8t).unwrap();
         i.apply_literal_defaults(&mut t);
-        assert_eq!(i.shallow(&t, n), t.prim(Prim::I32));
+        assert_eq!(i.shallow(&t, n), t.prim(Prim::I64));
         assert_eq!(i.shallow(&t, f), t.prim(Prim::F64));
         assert_eq!(i.shallow(&t, bound), u8t);
         assert_eq!(i.shallow(&t, g), g);

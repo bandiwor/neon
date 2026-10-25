@@ -1,54 +1,88 @@
--- Insert-mode <CR> for Neon buffers.
+-- Opens a body when Enter is pressed between a bracket pair.
 --
--- Between a bracket pair, `{|}` + <Enter> opens a body:
+--     fn new() -> Point {|}      <Enter>      fn new() -> Point {
+--                                                 |
+--                                             }
 --
---     fn new() -> Point {
---         |
---     }
---
--- The indentation of the middle line comes from the indent file. In every other place <CR> keeps
--- doing what it did before (plain newline, or the mapping of nvim-cmp / nvim-autopairs / ...).
+-- This watches the text instead of mapping <CR>, so it works together with every other plugin that
+-- touches Enter (completion menus, auto-pairs, ...) and with whatever the user typed it with. The
+-- default Enter leaves the closer on a line of its own with the cursor in front of it; here the
+-- missing middle line is inserted and indented.
 local M = {}
 
 local closing = { ["{"] = "}", ["("] = ")", ["["] = "]" }
 
-local function keys(s)
-  return vim.api.nvim_replace_termcodes(s, true, false, true)
-end
+local state = {} ---@type table<integer, table>
 
---- The global insert-mode <CR> mapping this buffer-local one shadows, if any.
-local function previous()
-  for _, m in ipairs(vim.api.nvim_get_keymap("i")) do
-    if m.lhs == "<CR>" then
-      return m
-    end
-  end
-end
-
-function M.expr()
+local function snapshot(buf)
+  local row, col = unpack(vim.api.nvim_win_get_cursor(0))
   local line = vim.api.nvim_get_current_line()
-  local col = vim.fn.col(".")
-  local open = line:sub(col - 1, col - 1)
-  if vim.fn.pumvisible() == 0 and closing[open] and line:sub(col, col) == closing[open] then
-    return keys("<CR><C-o>O")
+  return {
+    row = row,
+    lines = vim.api.nvim_buf_line_count(buf),
+    before = line:sub(col, col),
+    after = line:sub(col + 1, col + 1),
+  }
+end
+
+local function indent_string(width)
+  if vim.bo.expandtab then
+    return string.rep(" ", width)
   end
-  local prev = previous()
-  if prev then
-    if prev.callback then
-      local ok, result = pcall(prev.callback)
-      if ok and prev.expr == 1 and type(result) == "string" then
-        return keys(result)
-      end
-      return ""
-    elseif prev.rhs and prev.rhs ~= "" then
-      if prev.expr == 1 then
-        local ok, result = pcall(vim.api.nvim_eval, prev.rhs)
-        return ok and keys(tostring(result)) or keys("<CR>")
-      end
-      return keys(prev.rhs)
-    end
+  local ts = vim.bo.tabstop
+  return string.rep("\t", math.floor(width / ts)) .. string.rep(" ", width % ts)
+end
+
+--- Compares the cursor surroundings with the previous call; expands the pair when a single new
+--- line appeared right between an opener and its closer.
+function M.check(buf)
+  if vim.g.neon_smart_enter == 0 or vim.api.nvim_get_current_buf() ~= buf then
+    return
   end
-  return keys("<CR>")
+  local prev, cur = state[buf], snapshot(buf)
+  state[buf] = cur
+  if not (prev and cur.lines == prev.lines + 1 and cur.row == prev.row + 1) then
+    return
+  end
+  if closing[prev.before] ~= prev.after then
+    return
+  end
+  -- the closer must have moved down with the cursor: "<indent>|}"
+  local col = vim.api.nvim_win_get_cursor(0)[2]
+  local line = vim.api.nvim_get_current_line()
+  if line:sub(col + 1, col + 1) ~= prev.after or not line:sub(1, col):match("^%s*$") then
+    return
+  end
+  local width = vim.fn.indent(cur.row - 1) + vim.fn.shiftwidth()
+  local text = indent_string(width)
+  vim.api.nvim_buf_set_lines(buf, cur.row - 1, cur.row - 1, false, { text })
+  vim.api.nvim_win_set_cursor(0, { cur.row, #text })
+  state[buf] = snapshot(buf)
+end
+
+--- Starts watching `buf` (called from the filetype plugin).
+function M.attach(buf)
+  buf = (buf == nil or buf == 0) and vim.api.nvim_get_current_buf() or buf
+  if vim.b[buf].neon_enter_attached then
+    return
+  end
+  vim.b[buf].neon_enter_attached = true
+  local group = vim.api.nvim_create_augroup("NeonEnter" .. buf, { clear = true })
+  vim.api.nvim_create_autocmd({ "InsertEnter", "CursorMovedI", "TextChangedI" }, {
+    group = group,
+    buffer = buf,
+    desc = "Neon: open a body when Enter is pressed between brackets",
+    callback = function()
+      M.check(buf)
+    end,
+  })
+  vim.api.nvim_create_autocmd({ "InsertLeave", "BufUnload" }, {
+    group = group,
+    buffer = buf,
+    callback = function()
+      state[buf] = nil
+    end,
+  })
 end
 
 return M

@@ -56,8 +56,13 @@ Diagnostics (with source snippets) go to stderr, program output to stdout.
   function types `fn(A) -> B`, generics with trait bounds.
 * **Bindings**: `let` is an immutable variable, `var` a mutable one, `const` a
   compile-time constant. Module-level `let`/`var` are globals initialized when
-  the program starts. Types are inferred locally; integer and float literals
-  adapt to context.
+  the program starts. Types are inferred locally.
+* **Number literals**: an unsuffixed integer literal is `i64` and a float literal
+  is `f64` unless the context says otherwise (`let a: u8 = 5`, `f(1.5f32)`).
+  An integer literal also stands for a float where a float is required, so
+  `let x: f64 = 15`, `x / 2`, `2 * x`, `x < 3` and `P { y: 1 }` need no `.0`.
+  Only literals do this: a variable `n: i64` is never converted implicitly
+  (`x * n` is an error, write `x * (n as f64)`).
 * **`let` vs `const`**: both cannot be reassigned, but a `let` is a *run-time*
   value (its initializer may call functions, build arrays, read input), while a
   `const` is computed by the compiler from literals, operators, casts and other

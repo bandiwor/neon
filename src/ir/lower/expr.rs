@@ -63,6 +63,9 @@ impl FnLower<'_, '_> {
                 let ir = self.ir_ty_of_node(id);
                 let v = ast.lits.int(lit).value;
                 let bits = match ir {
+                    // an integer literal in a float context
+                    IrTy::Num(NumTy::F64) => (v as f64).to_bits(),
+                    IrTy::Num(NumTy::F32) => (v as f32).to_bits() as u64,
                     IrTy::Num(n) => const_int(n, v as i128),
                     _ => v,
                 };
@@ -324,7 +327,12 @@ impl FnLower<'_, '_> {
         if op == UnOp::Neg {
             if let (NodeKind::IntLit(lit), IrTy::Num(n)) = (*self.ast.kind(operand), ir) {
                 let v = self.ast.lits.int(lit).value as i128;
-                return self.const_bits(ir, const_int(n, -v));
+                let bits = match n {
+                    NumTy::F64 => (-(v as f64)).to_bits(),
+                    NumTy::F32 => (-(v as f32)).to_bits() as u64,
+                    _ => const_int(n, -v),
+                };
+                return self.const_bits(ir, bits);
             }
         }
         let src = self.expr_fast(operand);

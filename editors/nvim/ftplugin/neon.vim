@@ -21,14 +21,15 @@ setlocal softtabstop=4
 let b:undo_ftplugin = 'setlocal commentstring< comments< formatoptions< suffixesadd< expandtab< shiftwidth< softtabstop<'
 
 " <Enter> between a bracket pair opens a body: `{|}` becomes `{`, an indented line, `}`.
-" Elsewhere it does what it did before. Disable with `let g:neon_smart_enter = 0`.
+" Neovim watches the text (lua/neon/enter.lua), which composes with completion and auto-pairs
+" plugins; Vim gets a plain <CR> mapping. Disable with `let g:neon_smart_enter = 0`.
 if get(g:, 'neon_smart_enter', 1)
   if has('nvim-0.8')
-    inoremap <buffer><expr><silent> <CR> v:lua.require'neon.enter'.expr()
+    lua require('neon.enter').attach(0)
   else
     inoremap <buffer><expr><silent> <CR> NeonSmartEnter()
+    let b:undo_ftplugin .= ' | silent! iunmap <buffer> <CR>'
   endif
-  let b:undo_ftplugin .= ' | silent! iunmap <buffer> <CR>'
 endif
 
 if !exists('*NeonSmartEnter')

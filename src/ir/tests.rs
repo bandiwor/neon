@@ -284,7 +284,7 @@ fn generic_functions_with_operator_bounds_instantiate_per_type() {
     assert_eq!(run(src), "3\n3.75\nab\n255\n");
     let ir = compile(src);
     let names: Vec<&str> = ir.funcs.iter().map(|f| f.name.as_str()).collect();
-    for want in ["sum<i32>", "sum<f64>", "sum<string>", "sum<u8>"] {
+    for want in ["sum<i64>", "sum<f64>", "sum<string>", "sum<u8>"] {
         assert!(names.contains(&want), "missing instance {want}: {names:?}");
     }
     assert!(trap_of("fn sum<T: Add<T>>(a: T, b: T) -> T { a + b }\nprintln(sum(250u8, 6u8));") == Trap::Overflow);
@@ -312,7 +312,7 @@ fn display_trait_is_used_by_println() {
 #[test]
 fn globals_and_top_level_state() {
     assert_eq!(
-        run("var counter = 0; const LIMIT: i32 = 3;\nfn bump() -> i32 { counter += 1; counter }\nbump(); bump(); println(bump()); println(LIMIT * 2); println(counter);"),
+        run("var counter: i32 = 0; const LIMIT: i32 = 3;\nfn bump() -> i32 { counter += 1; counter }\nbump(); bump(); println(bump()); println(LIMIT * 2); println(counter);"),
         "3\n6\n3\n"
     );
 }
@@ -407,7 +407,7 @@ fn trapping_constant_expressions_are_not_folded_away() {
         "let x: i8 = 127; println(x + 1);",
         "println(1 / 0);",
         "let a: u8 = 0; println(a - 1);",
-        "println(1 << 40);",
+        "println(1 << 64);",
         "println(i32::MIN / -1);",
         "println(i64::MAX * 2);",
     ] {

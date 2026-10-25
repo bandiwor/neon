@@ -47,6 +47,8 @@ impl Checker<'_> {
                     Some(s) => self.prim(prim_of_int_suffix(s)),
                     None => match expected.map(|e| self.shallow(e)) {
                         Some(e) if matches!(self.prog.types.kind(e), TyKind::Prim(p) if p.is_int()) => e,
+                        // `15` where a float is required means `15.0`
+                        Some(e) if self.is_float_context(e) => e,
                         _ => self.fresh_kind(VarKind::Int, span),
                     },
                 };

@@ -154,7 +154,7 @@ impl Checker<'_> {
         let recv_ty = match self.kind(recv_ty) {
             TyKind::Infer(v) => match self.infer.var_kind(v) {
                 VarKind::Int => {
-                    let t = self.prim(Prim::I32);
+                    let t = self.prim(Prim::I64);
                     let _ = self.infer.unify(&mut self.prog.types, recv_ty, t);
                     t
                 }

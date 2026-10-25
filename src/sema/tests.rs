@@ -79,7 +79,7 @@ fn prelude_analyzes_cleanly() {
 #[test]
 fn literals_default_and_annotate() {
     let o = ok("let a = 1; let b = 2.5; let c = \"s\"; let d = 'c'; let e = true; let f = 7u8; let g: i64 = 3; let h = 1.5f32; let u = ();");
-    assert_eq!(o.global("a"), "i32");
+    assert_eq!(o.global("a"), "i64");
     assert_eq!(o.global("b"), "f64");
     assert_eq!(o.global("c"), "string");
     assert_eq!(o.global("d"), "char");
@@ -91,15 +91,50 @@ fn literals_default_and_annotate() {
 }
 
 #[test]
+fn integer_literals_default_to_i64_and_floats_to_f64() {
+    let o = ok("let a = 1; let b = 2.5; let c = [1, 2]; let d = 7.max(3); let e = 1.5.max(2.5);");
+    assert_eq!(o.global("a"), "i64");
+    assert_eq!(o.global("b"), "f64");
+    assert_eq!(o.global("c"), "[i64]");
+    assert_eq!(o.global("d"), "i64");
+    assert_eq!(o.global("e"), "f64");
+}
+
+#[test]
+fn integer_literals_become_floats_where_a_float_is_expected() {
+    let o = ok("fn half(x: f64) -> f64 { x / 2 }\nstruct P { x: f32 }\n\
+        let a: f64 = 15; let b: f32 = -4; let c = half(9); let d = P { x: 3 }; let e = [1.5, 2];\n\
+        var f: f64 = 1.5; f += 1; f = 7; let g = 2 * f; let h = 1 + f * 3; let i = 3 < f; let j = f == 2; let k: f64 = if true { 1 } else { 2 };");
+    assert_eq!(o.global("a"), "f64");
+    assert_eq!(o.global("b"), "f32");
+    assert_eq!(o.global("c"), "f64");
+    assert_eq!(o.global("e"), "[f64]");
+    assert_eq!(o.global("g"), "f64");
+    assert_eq!(o.global("h"), "f64");
+    assert_eq!(o.global("i"), "bool");
+    assert_eq!(o.global("k"), "f64");
+}
+
+#[test]
+fn only_literals_convert_not_integer_values() {
+    fails("let n = 1; let x: f64 = n;", "E0211", "expected `f64`, found `{integer}`");
+    fails("let n: i64 = 1; let x: f64 = n;", "E0211", "expected `f64`, found `i64`");
+    fails("let n: i64 = 1; let x = 2.5 * n;", "E0211", "");
+    fails("let x: i64 = 1.0;", "E0211", "expected `i64`");
+    fails("let x: f64 = 1u8;", "E0211", "expected `f64`, found `u8`");
+    fails("let x = 2 * 1.5 << 1;", "E0236", "");
+}
+
+#[test]
 fn arithmetic_infers_through_operands() {
     let o = ok("let a = 1 + 2 * 3; let b: i64 = 1 + 2; let x = 5u8; let c = x + 1; let d = 1.5 * 2.0; let e = 10 % 3 << 1; let f = !true; let g = -5;");
-    assert_eq!(o.global("a"), "i32");
+    assert_eq!(o.global("a"), "i64");
     assert_eq!(o.global("b"), "i64");
     assert_eq!(o.global("c"), "u8");
     assert_eq!(o.global("d"), "f64");
-    assert_eq!(o.global("e"), "i32");
+    assert_eq!(o.global("e"), "i64");
     assert_eq!(o.global("f"), "bool");
-    assert_eq!(o.global("g"), "i32");
+    assert_eq!(o.global("g"), "i64");
 }
 
 #[test]
@@ -129,9 +164,9 @@ fn recursion_and_forward_references() {
 #[test]
 fn generic_functions_are_instantiated_per_call() {
     let o = ok("fn id<T>(x: T) -> T { x }\nlet a = id(5); let b = id(\"s\"); let c = id([1, 2]); let d = id::<u8>(1);");
-    assert_eq!(o.global("a"), "i32");
+    assert_eq!(o.global("a"), "i64");
     assert_eq!(o.global("b"), "string");
-    assert_eq!(o.global("c"), "[i32]");
+    assert_eq!(o.global("c"), "[i64]");
     assert_eq!(o.global("d"), "u8");
 }
 
@@ -165,7 +200,7 @@ fn generic_enum_option() {
     let o = ok("enum Option<T> { Some(T), None }\n\
         fn unwrap_or<T>(o: Option<T>, d: T) -> T { match o { Option::Some(x) => x, Option::None => d } }\n\
         let a = unwrap_or(Option::Some(5), 0); let b: Option<string> = Option::None; let c = Option::Some(Option::Some(1u8));");
-    assert_eq!(o.global("a"), "i32");
+    assert_eq!(o.global("a"), "i64");
     assert_eq!(o.global("b"), "Option<string>");
     assert_eq!(o.global("c"), "Option<Option<u8>>");
 }
@@ -243,7 +278,7 @@ fn closures_infer_and_capture() {
         fn make_counter() -> fn() -> i32 { var n = 0; || => { n += 1; n } }\n\
         let c = make_counter(); let v = c();");
     assert_eq!(o.global("r"), "i32");
-    assert_eq!(o.global("s"), "i32");
+    assert_eq!(o.global("s"), "i64");
     assert_eq!(o.global("t"), "i32");
     assert_eq!(o.global("c"), "fn() -> i32");
     // the counter closure captures `n`, which is marked captured
@@ -269,11 +304,11 @@ fn collections() {
         var s = set { 1, 2, 3 }; s.insert(4); let c = s.contains(2);\n\
         let empty: [string] = []; let em: {string: i32} = {};\n\
         var total = 0; for x in a { total += x; } for i in 0..10 { total += i; } for k in m { total += m[k]; } for e in s { total += e; }");
-    assert_eq!(o.global("a"), "[i32]");
+    assert_eq!(o.global("a"), "[i64]");
     assert_eq!(o.global("n"), "i64");
-    assert_eq!(o.global("m"), "{string: i32}");
+    assert_eq!(o.global("m"), "{string: i64}");
     assert_eq!(o.global("ks"), "[string]");
-    assert_eq!(o.global("s"), "set<i32>");
+    assert_eq!(o.global("s"), "set<i64>");
     assert_eq!(o.global("empty"), "[string]");
 }
 
@@ -309,9 +344,9 @@ fn control_flow_types() {
         fn f(n: i32) -> i32 { if n > 0 { return 1; } 2 }\n\
         fn g(n: i32) -> i32 { loop { if n > 0 { break n; } } }\n\
         let c = { let x = 1; x + 1 };");
-    assert_eq!(o.global("a"), "i32");
-    assert_eq!(o.global("b"), "i32");
-    assert_eq!(o.global("c"), "i32");
+    assert_eq!(o.global("a"), "i64");
+    assert_eq!(o.global("b"), "i64");
+    assert_eq!(o.global("c"), "i64");
 }
 
 #[test]
@@ -322,7 +357,7 @@ fn diverging_branches_unify_with_anything() {
 #[test]
 fn shadowing_and_scopes() {
     let o = ok("let x = 1; fn f() -> string { let x = \"s\"; let x = x; x }\nlet y = { let x = 2.5; x };");
-    assert_eq!(o.global("x"), "i32");
+    assert_eq!(o.global("x"), "i64");
     assert_eq!(o.global("y"), "f64");
 }
 
@@ -393,7 +428,7 @@ fn mismatched_types() {
     fails("let x: i32 = \"a\";", "E0211", "expected `i32`, found `string`");
     fails("fn f() -> i32 { \"s\" }", "E0211", "expected `i32`, found `string`");
     fails("let x = 1 + \"a\";", "E0211", "found `string`");
-    fails("let x: f64 = 1;", "E0211", "expected `f64`, found `{integer}`");
+    fails("let n = 1; let x: f64 = n;", "E0211", "expected `f64`, found `{integer}`");
     fails("fn f(a: i32) {} f(true);", "E0211", "expected `i32`, found `bool`");
     fails("let a = [1, \"x\"];", "E0211", "");
     fails("let a = if true { 1 } else { \"s\" };", "E0211", "");
@@ -451,7 +486,7 @@ fn literal_ranges() {
     fails("let x: i8 = 128;", "E0235", "");
     fails("let x = 300u8;", "E0235", "");
     fails("let x: u8 = -1;", "E0235", "cannot negate an unsigned");
-    fails("let x = 2147483648;", "E0235", "out of range for `i32`");
+    fails("let x = 9223372036854775808;", "E0235", "out of range for `i64`");
     fails("let x: f32 = 1e100;", "E0235", "out of range for `f32`");
     ok("let a: i8 = -128; let b: i8 = 127; let c: u64 = 18446744073709551615; let d: i64 = -9223372036854775808; let e: u8 = 255; let f: i16 = -32768;");
 }
@@ -460,7 +495,7 @@ fn literal_ranges() {
 fn invalid_operators_and_casts() {
     fails("let x = true + false;", "E0236", "cannot apply operator `+` to type `bool`");
     fails("let x = \"a\" - \"b\";", "E0236", "");
-    fails("let x = 1.5 % 2.0 & 1;", "E0211", "");
+    fails("let x = 1.5 % 2.0 & 1;", "E0236", "");
     fails("let x = 1.5 << 1;", "E0236", "");
     fails("let x = -true;", "E0236", "");
     fails("let a: u8 = 1; let x = -a;", "E0236", "");
@@ -494,7 +529,7 @@ fn trait_errors() {
         "E0206",
         "incompatible type",
     );
-    fails("trait T { fn f(self); }\nfn g<X: T>(x: X) {}\ng(5);", "E0237", "`i32: T`");
+    fails("trait T { fn f(self); }\nfn g<X: T>(x: X) {}\ng(5);", "E0237", "`i64: T`");
     fails("trait T { fn f(self); }\nstruct S;\nlet x = S { }; x.f();", "E0214", "no method named `f`");
     fails("struct S;\nimpl Nope for S { }", "E0204", "cannot find trait `Nope`");
     fails("struct V { x: i32 }\nlet a = V { x: 1 }; let b = a + a;", "E0237", "`V: Add");
@@ -642,9 +677,9 @@ fn trait_default_methods_use_required_ones() {
 
 #[test]
 fn methods_on_primitives_via_user_impls() {
-    let o = ok("trait Double { fn double(self) -> Self; }\nimpl Double for i32 { fn double(self) -> i32 { self * 2 } }\nimpl Double for f64 { fn double(self) -> f64 { self * 2.0 } }\n\
+    let o = ok("trait Double { fn double(self) -> Self; }\nimpl Double for i64 { fn double(self) -> i64 { self * 2 } }\nimpl Double for f64 { fn double(self) -> f64 { self * 2.0 } }\n\
         impl i64 { fn triple(self) -> i64 { self * 3 } }\nlet a = 4.double(); let b = 1.5.double(); let c = 5i64.triple();");
-    assert_eq!(o.global("a"), "i32");
+    assert_eq!(o.global("a"), "i64");
     assert_eq!(o.global("b"), "f64");
     assert_eq!(o.global("c"), "i64");
 }
@@ -679,7 +714,7 @@ fn generic_containers_with_generic_methods() {
         let b = Option::Some(1).map(|x| => \"s\").is_some();\n\
         var st = Stack::new(); st.push(1u8); st.push(2); let top = st.pop(); let n = st.size();\n\
         var names = Stack::<string>::new(); names.push(\"x\");");
-    assert_eq!(o.global("a"), "i32");
+    assert_eq!(o.global("a"), "i64");
     assert_eq!(o.global("b"), "bool");
     assert_eq!(o.global("top"), "Option<u8>");
     assert_eq!(o.global("n"), "i64");

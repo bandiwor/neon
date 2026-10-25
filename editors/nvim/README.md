@@ -33,6 +33,10 @@ return {
     dir = "~/src/neon/editors/nvim",     -- path to your clone
     name = "neon.nvim",
     ft = "neon",
+    -- the plugin is lazy-loaded by file type, so the file type must be known before it loads
+    init = function()
+      vim.filetype.add({ extension = { neon = "neon" } })
+    end,
     opts = {
       -- cmd = { "/home/me/.cargo/bin/neon", "lsp" },   -- if neon is not in $PATH
       keymaps = true,          -- gd, gr, K, <leader>rn, <leader>ds, <C-s> in insert mode
@@ -87,9 +91,10 @@ Neovim 0.10+ already maps `K` (hover) and `grn`/`gra`/`grr` (0.11) by default;
   }
   ```
 
-  This works without an auto-pairs plugin (the buffer-local `<CR>` mapping
-  handles it and forwards to the previous `<CR>` mapping, e.g. nvim-cmp's, in
-  all other cases). Turn it off with `let g:neon_smart_enter = 0`.
+  Neovim watches the text for this (no `<CR>` mapping), so it works with or
+  without an auto-pairs plugin and next to completion plugins. Turn it off with
+  `let g:neon_smart_enter = 0`. In plain Vim a buffer-local `<CR>` mapping does
+  the same.
 * **Formatting**: `:NeonFormat`, `vim.lsp.buf.format()`, `format_on_save = true`,
   or any formatter plugin: for conform.nvim use
   `formatters_by_ft = { neon = { "neon_fmt" } }` with
@@ -136,6 +141,9 @@ open document.
 ## Troubleshooting
 
 * `:checkhealth neon` says the binary is not found → fix `$PATH` or set `cmd`.
+* Enter does not indent → `:checkhealth neon` (with a `.neon` file open) shows the buffer's
+  `indentexpr`; it must be `GetNeonIndent()`. If another plugin replaced it, set it again in a
+  `FileType neon` autocmd.
 * `:LspInfo` (or `:checkhealth vim.lsp`) shows whether the client is attached to
   the buffer; the server log is in `:lua vim.cmd.edit(vim.lsp.get_log_path())`.
 * Run `neon lsp` by hand: it should sit silently waiting for input on stdin.

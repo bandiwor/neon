@@ -1,0 +1,23 @@
+fn half(x: f64) -> f64 { x / 2 }
+struct P { x: f64, y: f64 }
+fn main() {
+    let a: f64 = 15;
+    let b = 2 * a;
+    let c = 1 + a * 3;
+    var d: f64 = -4;
+    d += 1;
+    let p = P { x: 1, y: -2 };
+    let n = 7;
+    let m = n / 2;
+    println(a);
+    println(b);
+    println(c);
+    println(d);
+    println(half(9));
+    println(p.x + p.y);
+    println(m);
+    println(1 < a);
+    println([1.5, 2][1]);
+    let e = 10;
+    println(e);
+}

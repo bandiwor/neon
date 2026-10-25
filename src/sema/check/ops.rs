@@ -52,6 +52,25 @@ impl Checker<'_> {
         matches!(self.kind(ty), TyKind::Prim(_) | TyKind::Infer(_) | TyKind::Error | TyKind::Never)
     }
 
+    /// Whether `ty` is a float type (or a float literal's variable): an integer literal may stand
+    /// for a float there.
+    pub(super) fn is_float_context(&self, ty: Ty) -> bool {
+        match self.kind(ty) {
+            TyKind::Prim(p) => p.is_float(),
+            TyKind::Infer(v) => self.infer.var_kind(v) == VarKind::Float,
+            _ => false,
+        }
+    }
+
+    /// An unsuffixed integer literal, possibly negated (`3`, `-3`).
+    fn is_plain_int_literal(&self, node: NodeId) -> bool {
+        match *self.ast.kind(node) {
+            NodeKind::IntLit(lit) => self.ast.lits.int(lit).suffix.is_none(),
+            NodeKind::Unary { op: UnOp::Neg, operand } => self.is_plain_int_literal(operand),
+            _ => false,
+        }
+    }
+
     fn numeric_hint(&self, expected: Option<Ty>) -> Option<Ty> {
         let e = expected?;
         match self.kind(e) {
@@ -111,14 +130,25 @@ impl Checker<'_> {
             return boolt;
         }
         let hint = self.numeric_hint(expected);
+        // `2 * x`: the right operand decides whether the literal is an integer or a float
+        if self.is_plain_int_literal(lhs) && !matches!(op, BinOp::Shl | BinOp::Shr) && !self.is_plain_int_literal(rhs) {
+            let rt = self.expr(rhs, hint);
+            let lt = self.expr(lhs, Some(rt));
+            return self.arith_with(id, op, lt, rhs, Some(rt));
+        }
         let lt = self.expr(lhs, hint);
-        self.arith_with(id, op, lt, rhs, false)
+        self.arith_with(id, op, lt, rhs, None)
     }
 
     fn comparison(&mut self, id: NodeId, op: BinOp, lhs: NodeId, rhs: NodeId) {
         let span = self.span(id);
-        let lt = self.expr(lhs, None);
-        let rt = self.expr(rhs, Some(lt));
+        let (lt, rt) = if self.is_plain_int_literal(lhs) && !self.is_plain_int_literal(rhs) {
+            let rt = self.expr(rhs, None);
+            (self.expr(lhs, Some(rt)), rt)
+        } else {
+            let lt = self.expr(lhs, None);
+            (lt, self.expr(rhs, Some(lt)))
+        };
         let rspan = self.span(rhs);
         self.unify_at(rspan, lt, rt);
         if self.is_builtin_operand(lt) {
@@ -138,7 +168,8 @@ impl Checker<'_> {
 
     /// `lhs op rhs` where `lhs` already has type `lt`. Returns the result type.
     /// `node` is the `Binary` or compound `Assign` node.
-    fn arith_with(&mut self, node: NodeId, op: BinOp, lt: Ty, rhs: NodeId, _compound: bool) -> Ty {
+    /// `rhs_ty` is the already-computed type of `rhs`, when it was checked first.
+    fn arith_with(&mut self, node: NodeId, op: BinOp, lt: Ty, rhs: NodeId, rhs_ty: Option<Ty>) -> Ty {
         let span = self.span(node);
         let is_shift = matches!(op, BinOp::Shl | BinOp::Shr);
         if self.is_builtin_operand(lt) {
@@ -159,7 +190,7 @@ impl Checker<'_> {
                     self.err(s, "E0236", format!("shift amount must be an integer, found `{shown}`"), "not an integer");
                 }
             } else {
-                let rt = self.expr(rhs, Some(lt));
+                let rt = rhs_ty.unwrap_or_else(|| self.expr(rhs, Some(lt)));
                 let s = self.span(rhs);
                 self.unify_at(s, lt, rt);
             }
@@ -167,7 +198,7 @@ impl Checker<'_> {
             return lt;
         }
         let (kind, name) = lang_for(op).expect("arithmetic operators have traits");
-        let rt = self.expr(rhs, None);
+        let rt = rhs_ty.unwrap_or_else(|| self.expr(rhs, None));
         match self.lang_method(kind, name) {
             Some((trait_id, method)) => {
                 self.require_bound(lt, TraitRef { trait_id, args: vec![rt] }, span);
@@ -189,7 +220,7 @@ impl Checker<'_> {
                 self.expr_has_type(value, tt);
             }
             Some(bop) => {
-                let result = self.arith_with(id, bop, tt, value, true);
+                let result = self.arith_with(id, bop, tt, value, None);
                 let span = self.span(id);
                 self.unify_at(span, tt, result);
             }
