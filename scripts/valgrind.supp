@@ -1,0 +1,35 @@
+# Valgrind suppressions for allocations owned by Rust's standard library runtime.
+#
+# The strict gate uses --errors-for-leak-kinds=all, which also counts "still
+# reachable" blocks as errors. std intentionally keeps a few process-lifetime
+# globals alive until exit, so *any* std-based Rust binary (even `fn main() {}`)
+# reports them. Each entry below is limited to `reachable` blocks reached
+# through a specific std-internal frame: a definite/indirect/possible leak, or
+# a reachable block allocated by Neon code, is never matched.
+
+# std::rt::init -> stack_overflow::init: per-thread guard-page bookkeeping for
+# the main thread (a BTreeMap that is never torn down).
+{
+   rust-std-main-thread-stack-guard-info
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:malloc
+   ...
+   fun:*stack_overflow*thread_info*set_current_info*
+   ...
+}
+
+# libtest's console runner (`cargo test`, unit-test and integration-test
+# binaries) lazily creates the main thread's `Thread` handle in a thread-local
+# that is never destroyed; valgrind sees only an interior pointer to it.
+{
+   rust-libtest-main-thread-handle
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   ...
+   fun:*init_current*
+   ...
+   fun:*run_tests_console*
+   ...
+}
