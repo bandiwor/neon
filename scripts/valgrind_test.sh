@@ -8,6 +8,10 @@ set -euo pipefail
 
 cd "$(dirname "$0")/.."
 
+# Backtrace symbolization (triggered by `should_panic` tests) builds process-wide
+# caches that are never freed; they are std's, not ours, so keep them out of the run.
+export RUST_BACKTRACE=0
+
 if ! command -v valgrind >/dev/null 2>&1; then
     echo "error: valgrind is not installed" >&2
     exit 2

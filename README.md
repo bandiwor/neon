@@ -3,7 +3,7 @@
 A statically typed language with a register bytecode VM, written in pure Rust
 (edition 2021, **standard library only** — no third-party crates).
 
-Status: **Phase 7 of 10** — front end, optimizing IR, bytecode format and compiler complete (lexer, parser, sema, monomorphizing IR, folding/inlining/DCE, reference interpreter, 32/64-bit bytecode, disassembler, peephole optimizer, register allocation, stack maps, bytecode verifier). The VM and GC arrive in Phases 8–9.
+Status: **Phase 8 of 10** — front end, optimizing IR, bytecode format and compiler complete (lexer, parser, sema, monomorphizing IR, folding/inlining/DCE, reference interpreter, 32/64-bit bytecode, disassembler, peephole optimizer, register allocation, stack maps, bytecode verifier, GC heap with mark-and-sweep over stack maps). The VM arrives in Phase 9.
 
 ## Design constraints
 
@@ -26,7 +26,7 @@ src/
   ir/     TAC/CFG IR, AST->IR lowering with monomorphization, optimizer (fold, DCE, inline), verifier, reference interpreter
   compiler/ IR -> bytecode: block layout, linear-scan slot allocation with call windows, stack maps
   bytecode/ opcode table, Insn (assembler-level IR), 32-bit/64-bit encoder + decoder, disassembler, liveness, peephole, verifier
-  gc/     stack maps (root bitsets); the collector arrives in Phase 8
+  gc/     object heap (1-based handles, upvalue cells), exact mark-and-sweep, Roots, stack-map root scanning
   runtime/ typed numeric semantics, value formatting, math builtins shared by every engine
   driver.rs  source -> IR pipeline
   builtin.rs  intrinsic operations shared by sema, IR and VM
@@ -35,7 +35,7 @@ tests/    integration tests
 scripts/  valgrind_test.sh, valgrind.supp
 ```
 
-Later phases add the GC heap and `vm/`.
+Later phases add `vm/`.
 
 `tests/corpus/*.neon` + `.out` are programs with known output, shared by the
 compiler tests and (later) the VM differential tests.
@@ -62,3 +62,6 @@ an empty `main`. `scripts/valgrind.supp` suppresses exactly those, each entry
 restricted to a std-internal frame and a leak kind; leaks in Neon code are
 still reported (the suppressions were checked against a deliberately leaking
 program).
+
+The script also sets `RUST_BACKTRACE=0`: symbolizing a backtrace (printed by
+`should_panic` tests) builds process-wide caches in std that are never freed.
