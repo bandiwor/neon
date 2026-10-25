@@ -584,6 +584,7 @@ impl Inst {
             | NewSet { .. }
             | MakeClosure { .. } => false,
             GetField { .. } | EnumTag { .. } | EnumField { .. } => false,
+            Intrinsic { b, .. } => !(b.is_pure() || b.reads_memory_only() || b.only_allocates()),
             _ => true,
         }
     }
