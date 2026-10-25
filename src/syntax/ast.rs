@@ -7,6 +7,7 @@
 //! allocated after their children, so a node's id is greater than all of its
 //! descendants' ids.
 
+use std::collections::HashMap;
 use std::fmt;
 
 use super::interner::Symbol;
@@ -439,11 +440,12 @@ pub struct Ast {
     lists: Vec<NodeId>,
     pub lits: LitPool,
     root: NodeId,
+    name_spans: HashMap<NodeId, Span>,
 }
 
 impl Ast {
     pub(crate) fn new(file: FileId, lits: LitPool) -> Ast {
-        Ast { file, nodes: Vec::new(), lists: Vec::new(), lits, root: NodeId(u32::MAX) }
+        Ast { file, nodes: Vec::new(), lists: Vec::new(), lits, root: NodeId(u32::MAX), name_spans: HashMap::new() }
     }
 
     pub(crate) fn push(&mut self, kind: NodeKind, span: Span) -> NodeId {
@@ -459,6 +461,16 @@ impl Ast {
         let start = u32::try_from(self.lists.len()).expect("more than u32::MAX AST list entries");
         self.lists.extend_from_slice(ids);
         NodeList { start, len: ids.len() as u32 }
+    }
+
+    pub(crate) fn set_name_span(&mut self, id: NodeId, span: Span) {
+        self.name_spans.insert(id, span);
+    }
+
+    /// Span of the name a declaration introduces (`fn area`, a field, a
+    /// parameter, ...); the whole node's span for nodes without one.
+    pub fn name_span(&self, id: NodeId) -> Span {
+        self.name_spans.get(&id).copied().unwrap_or_else(|| self.span(id))
     }
 
     pub(crate) fn set_root(&mut self, root: NodeId) {

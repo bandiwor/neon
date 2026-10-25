@@ -29,8 +29,8 @@ impl Parser<'_> {
             }
             TokenKind::Kw(Keyword::Mut) => {
                 self.bump();
-                let (name, _) = self.expect_ident()?;
-                Ok(self.node(NodeKind::PatBinding { name, mutable: true }, lo))
+                let (name, name_span) = self.expect_ident()?;
+                Ok(self.node_n(name_span, NodeKind::PatBinding { name, mutable: true }, lo))
             }
             TokenKind::Int(_)
             | TokenKind::Float(_)

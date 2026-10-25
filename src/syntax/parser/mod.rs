@@ -122,6 +122,13 @@ impl<'a> Parser<'a> {
         self.ast.push(kind, span)
     }
 
+    /// Like [`node`](Self::node), also recording the span of the declared name.
+    pub(super) fn node_n(&mut self, name_span: Span, kind: NodeKind, lo: u32) -> NodeId {
+        let id = self.node(kind, lo);
+        self.ast.set_name_span(id, name_span);
+        id
+    }
+
     pub(super) fn list(&mut self, ids: &[NodeId]) -> NodeList {
         self.ast.push_list(ids)
     }

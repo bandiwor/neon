@@ -39,9 +39,9 @@ impl Parser<'_> {
         if let TokenKind::Str(path) = self.peek() {
             self.bump();
             self.expect_kw(Keyword::As)?;
-            let (alias, _) = self.expect_ident()?;
+            let (alias, alias_span) = self.expect_ident()?;
             self.expect_semi()?;
-            return Ok(self.node(NodeKind::ImportAlias { path, alias }, lo));
+            return Ok(self.node_n(alias_span, NodeKind::ImportAlias { path, alias }, lo));
         }
         let open = self.expect(TokenKind::LBrace)?;
         let mut names = Vec::new();
@@ -54,9 +54,9 @@ impl Parser<'_> {
                 return Err(Recover);
             }
             let n_lo = self.cur_lo();
-            let (name, _) = self.expect_ident()?;
+            let (name, name_span) = self.expect_ident()?;
             let alias = if self.eat_kw(Keyword::As) { Some(self.expect_ident()?.0) } else { None };
-            names.push(self.node(NodeKind::ImportName { name, alias }, n_lo));
+            names.push(self.node_n(name_span, NodeKind::ImportName { name, alias }, n_lo));
             if self.eat(TokenKind::Comma) {
                 continue;
             }
@@ -90,7 +90,7 @@ impl Parser<'_> {
                 break;
             }
             let lo = self.cur_lo();
-            let (name, _) = self.expect_ident()?;
+            let (name, name_span) = self.expect_ident()?;
             let mut bounds = Vec::new();
             if self.eat(TokenKind::Colon) {
                 loop {
@@ -101,7 +101,7 @@ impl Parser<'_> {
                 }
             }
             let bounds = self.list(&bounds);
-            params.push(self.node(NodeKind::GenericParam { name, bounds }, lo));
+            params.push(self.node_n(name_span, NodeKind::GenericParam { name, bounds }, lo));
             if self.eat(TokenKind::Comma) {
                 continue;
             }
@@ -116,7 +116,7 @@ impl Parser<'_> {
     pub(super) fn parse_fn(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
         self.expect_kw(Keyword::Fn)?;
-        let (name, _) = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident()?;
         let generics = self.parse_generic_params()?;
         self.expect(TokenKind::LParen)?;
         let mut params = Vec::new();
@@ -139,32 +139,37 @@ impl Parser<'_> {
             None
         };
         let params = self.list(&params);
-        Ok(self.node(NodeKind::FnDecl { name, generics, params, ret: self.opt(ret), body: self.opt(body) }, lo))
+        Ok(self.node_n(
+            name_span,
+            NodeKind::FnDecl { name, generics, params, ret: self.opt(ret), body: self.opt(body) },
+            lo,
+        ))
     }
 
     /// `[mut] name: Type`, or a `self` receiver.
     fn parse_param(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
         let mutable = self.eat_kw(Keyword::Mut);
+        let self_span = self.tok().span;
         if self.eat_kw(Keyword::SelfValue) {
             let name = Symbol(Keyword::SelfValue as u32);
             let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
-            return Ok(self.node(NodeKind::Param { name, mutable, ty: self.opt(ty) }, lo));
+            return Ok(self.node_n(self_span, NodeKind::Param { name, mutable, ty: self.opt(ty) }, lo));
         }
-        let (name, _) = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident()?;
         self.expect(TokenKind::Colon)?;
         let ty = self.parse_type()?;
-        Ok(self.node(NodeKind::Param { name, mutable, ty: ty.into() }, lo))
+        Ok(self.node_n(name_span, NodeKind::Param { name, mutable, ty: ty.into() }, lo))
     }
 
     /// `struct Name<G> { a: T, b: U }` or `struct Name;`
     fn parse_struct(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
         self.bump();
-        let (name, _) = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident()?;
         let generics = self.parse_generic_params()?;
         if self.eat(TokenKind::Semi) {
-            return Ok(self.node(NodeKind::StructDecl { name, generics, fields: NodeList::EMPTY }, lo));
+            return Ok(self.node_n(name_span, NodeKind::StructDecl { name, generics, fields: NodeList::EMPTY }, lo));
         }
         let open = self.expect(TokenKind::LBrace)?;
         let mut fields = Vec::new();
@@ -177,10 +182,10 @@ impl Parser<'_> {
                 break;
             }
             let f_lo = self.cur_lo();
-            let (fname, _) = self.expect_ident()?;
+            let (fname, fname_span) = self.expect_ident()?;
             self.expect(TokenKind::Colon)?;
             let ty = self.parse_type()?;
-            fields.push(self.node(NodeKind::FieldDecl { name: fname, ty }, f_lo));
+            fields.push(self.node_n(fname_span, NodeKind::FieldDecl { name: fname, ty }, f_lo));
             if self.eat(TokenKind::Comma) {
                 continue;
             }
@@ -188,14 +193,14 @@ impl Parser<'_> {
             break;
         }
         let fields = self.list(&fields);
-        Ok(self.node(NodeKind::StructDecl { name, generics, fields }, lo))
+        Ok(self.node_n(name_span, NodeKind::StructDecl { name, generics, fields }, lo))
     }
 
     /// `enum Name<G> { A, B(T, U) }`
     fn parse_enum(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
         self.bump();
-        let (name, _) = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident()?;
         let generics = self.parse_generic_params()?;
         let open = self.expect(TokenKind::LBrace)?;
         let mut variants = Vec::new();
@@ -208,7 +213,7 @@ impl Parser<'_> {
                 break;
             }
             let v_lo = self.cur_lo();
-            let (vname, _) = self.expect_ident()?;
+            let (vname, vname_span) = self.expect_ident()?;
             let mut payload = Vec::new();
             if self.eat(TokenKind::LParen) {
                 loop {
@@ -224,7 +229,7 @@ impl Parser<'_> {
                 }
             }
             let fields = self.list(&payload);
-            variants.push(self.node(NodeKind::Variant { name: vname, fields }, v_lo));
+            variants.push(self.node_n(vname_span, NodeKind::Variant { name: vname, fields }, v_lo));
             if self.eat(TokenKind::Comma) {
                 continue;
             }
@@ -232,7 +237,7 @@ impl Parser<'_> {
             break;
         }
         let variants = self.list(&variants);
-        Ok(self.node(NodeKind::EnumDecl { name, generics, variants }, lo))
+        Ok(self.node_n(name_span, NodeKind::EnumDecl { name, generics, variants }, lo))
     }
 
     /// Methods inside `trait`/`impl` braces; a bad member becomes an `Error`
@@ -262,10 +267,10 @@ impl Parser<'_> {
     fn parse_trait(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
         self.bump();
-        let (name, _) = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident()?;
         let generics = self.parse_generic_params()?;
         let items = self.parse_methods()?;
-        Ok(self.node(NodeKind::TraitDecl { name, generics, items }, lo))
+        Ok(self.node_n(name_span, NodeKind::TraitDecl { name, generics, items }, lo))
     }
 
     /// `impl<G> Type { .. }` or `impl<G> Trait<A> for Type { .. }`
@@ -284,11 +289,11 @@ impl Parser<'_> {
     fn parse_const(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
         self.bump();
-        let (name, _) = self.expect_ident()?;
+        let (name, name_span) = self.expect_ident()?;
         let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
         self.expect(TokenKind::Eq)?;
         let init = self.parse_expr()?;
         self.expect_semi()?;
-        Ok(self.node(NodeKind::ConstDecl { name, ty: self.opt(ty), init }, lo))
+        Ok(self.node_n(name_span, NodeKind::ConstDecl { name, ty: self.opt(ty), init }, lo))
     }
 }

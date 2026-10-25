@@ -530,9 +530,9 @@ impl Parser<'_> {
                 }
                 let p_lo = self.cur_lo();
                 let mutable = self.eat_kw(Keyword::Mut);
-                let (name, _) = self.expect_ident()?;
+                let (name, name_span) = self.expect_ident()?;
                 let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
-                params.push(self.node(NodeKind::Param { name, mutable, ty: self.opt(ty) }, p_lo));
+                params.push(self.node_n(name_span, NodeKind::Param { name, mutable, ty: self.opt(ty) }, p_lo));
                 if self.eat(TokenKind::Comma) {
                     continue;
                 }

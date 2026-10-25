@@ -5,7 +5,10 @@
 //! interfaces, so the whole crate builds for `wasm32-unknown-unknown`.
 
 #![warn(missing_debug_implementations, rust_2018_idioms)]
+#![allow(clippy::too_many_arguments)]
 
+pub mod builtin;
 pub mod diag;
+pub mod sema;
 pub mod syntax;
 pub mod vfs;

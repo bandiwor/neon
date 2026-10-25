@@ -1,0 +1,35 @@
+// The Neon prelude: traits behind the operators. Arithmetic, comparison and
+// formatting of primitive types are built into the compiler; these traits let
+// user types opt in with `impl Add<Rhs> for MyType { .. }` and so on.
+
+export trait Add<Rhs> { fn add(self, rhs: Rhs) -> Self; }
+export trait Sub<Rhs> { fn sub(self, rhs: Rhs) -> Self; }
+export trait Mul<Rhs> { fn mul(self, rhs: Rhs) -> Self; }
+export trait Div<Rhs> { fn div(self, rhs: Rhs) -> Self; }
+export trait Rem<Rhs> { fn rem(self, rhs: Rhs) -> Self; }
+export trait BitAnd<Rhs> { fn bitand(self, rhs: Rhs) -> Self; }
+export trait BitOr<Rhs> { fn bitor(self, rhs: Rhs) -> Self; }
+export trait BitXor<Rhs> { fn bitxor(self, rhs: Rhs) -> Self; }
+export trait Shl<Rhs> { fn shl(self, rhs: Rhs) -> Self; }
+export trait Shr<Rhs> { fn shr(self, rhs: Rhs) -> Self; }
+export trait Neg { fn neg(self) -> Self; }
+export trait Not { fn not(self) -> Self; }
+
+// `==` and `!=`; only `eq` must be written.
+export trait Eq {
+    fn eq(self, other: Self) -> bool;
+    fn ne(self, other: Self) -> bool { !self.eq(other) }
+}
+
+// `<`, `<=`, `>`, `>=`; only `lt` must be written.
+export trait Ord {
+    fn lt(self, other: Self) -> bool;
+    fn le(self, other: Self) -> bool { !other.lt(self) }
+    fn gt(self, other: Self) -> bool { other.lt(self) }
+    fn ge(self, other: Self) -> bool { !self.lt(other) }
+}
+
+// Conversion to text, used by `println` for user types.
+export trait Display {
+    fn to_string(self) -> string;
+}
