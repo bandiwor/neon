@@ -277,23 +277,32 @@ compare the *ratios*):
 
 | workload | vm | vm-noopt | ir-interp | VM speed |
 |---|---|---|---|---|
-| `fib(25)` recursion | 12.4 ms | 13.7 ms | 24.4 ms | 147 M insn/s |
-| tight loop, 1M iterations (`%`, `+`) | 32.9 ms | 48.3 ms | 48.0 ms | 183 M insn/s |
-| sieve, 100k | 14.0 ms | 17.3 ms | 16.7 ms | 184 M insn/s |
-| float loop, 500k | 26.3 ms | 37.5 ms | 38.9 ms | 152 M insn/s |
-| closure calls, 500k | 33.0 ms | 40.3 ms | 65.9 ms | 167 M insn/s |
-| structs + enums, 250k | 52.1 ms | 59.5 ms | 110.9 ms | 119 M insn/s |
-| map insert + lookup, 100k | 27.8 ms | 38.6 ms | – | 47 M insn/s |
-| string concat + split, 50k | 45.3 ms | 36.8 ms | – | 19 M insn/s |
-| garbage-heavy, 150k iterations | 53.2 ms (66 GCs) | 55.5 ms | – | 51 M insn/s |
-| same, 64 KiB heap limit | 48.9 ms (2133 GCs) | 49.9 ms | – | 55 M insn/s |
+| `fib(25)` recursion | 11.8 ms | 14.5 ms | 23.7 ms | 155 M insn/s |
+| tight loop, 1M iterations (`%`, `+`) | 30.3 ms | 55.2 ms | 51.4 ms | 132 M insn/s |
+| sieve, 100k | 12.2 ms | 19.2 ms | 17.9 ms | 139 M insn/s |
+| float loop, 500k | 30.5 ms | 40.5 ms | 38.5 ms | 98 M insn/s |
+| closure calls, 500k | 31.6 ms | 38.9 ms | 61.9 ms | 158 M insn/s |
+| structs + enums, 250k | 31.8 ms | 54.5 ms | 106.0 ms | 147 M insn/s |
+| map insert + lookup, 100k | 11.6 ms | 14.4 ms | – | 86 M insn/s |
+| string concat + split, 50k | 25.7 ms | 31.7 ms | – | 29 M insn/s |
+| garbage-heavy, 150k iterations | 43.9 ms (37 GCs) | 58.6 ms | – | 51 M insn/s |
+| same, 64 KiB heap limit | 40.1 ms (1210 GCs) | 50.6 ms | – | 56 M insn/s |
+
+Before the optimizer passes, the loop-invariant motion, the loop rotation, the
+open-addressing map table and the inline struct fields, the same machine gave
+fib 12.4 ms, loop 33.5 ms, sieve 14.3 ms, structs + enums 52.0 ms, map 26.8 ms,
+strings 41.6 ms and garbage 54.1 ms (66 GCs). The biggest wins are in the heap
+(`map`, `strings`, `structs`): maps no longer rehash with SipHash twice or
+rebuild their index on removal, and structs and enums with up to four fields keep
+their words inside the object slot instead of a separate allocation (which also
+halves the number of collections).
 
 `compile/*` measures source → bytecode, including the prelude: about
-1.8 MiB/s of source on this machine (400 generated functions in ~67 ms;
+1.3 MiB/s of source on this machine (400 generated functions in ~89 ms;
 roughly 2 ms of fixed prelude cost for a tiny program). Parsing is ~3% of
-the total; the IR optimizer more than doubles compile time for a modest
-instruction-count reduction, which is visible in the `vm` vs `vm-noopt`
-columns.
+the total; the optimizer passes roughly triple compile time (12 ms without them, 42 ms with
+them on the 200-function benchmark) in exchange for the 20–45% instruction-count
+reduction visible in the `vm` vs `vm-noopt` columns.
 
 What the numbers say, honestly: the dispatch loop is a straightforward
 `match` over decoded words, so the VM is ~1.5–2× faster than the reference
