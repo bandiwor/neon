@@ -1,0 +1,4 @@
+enum Shape { Circle(f64), Rect(f64, f64), Empty }
+fn area(s: Shape) -> f64 { match s { Shape::Circle(r) => 3.0 * r * r, Shape::Rect(w, h) => w * h, Shape::Empty => 0.0 } }
+println(area(Shape::Circle(2.0))); println(area(Shape::Rect(2.0, 3.5))); println(area(Shape::Empty));
+println(Shape::Rect(1.0, 2.0)); println(Shape::Empty);

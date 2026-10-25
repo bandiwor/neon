@@ -15,12 +15,14 @@ pub mod disasm;
 pub mod insn;
 pub mod opcode;
 pub mod peephole;
+pub mod verify;
 
 pub use asm::{assemble, decode, decode_one, AsmError, Assembled, DecodeError};
 pub use chunk::{BytecodeProgram, Chunk};
 pub use disasm::{disassemble, disassemble_chunk, format_insn};
 pub use insn::{Capture, Insn, Item, Label, Reg};
 pub use opcode::{CmpKind, FusedKind, Opcode};
+pub use verify::{verify_chunk, verify_program};
 
 #[cfg(test)]
 mod tests;

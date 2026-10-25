@@ -1,0 +1,2 @@
+println(i32::MAX); println(i8::MIN); println(u64::MAX); println(2.0.sqrt()); println((-7).abs()); println(2.pow(10)); println(3.max(9)); println(1.5.min(0.5));
+println(7.5.floor()); println(f64::INFINITY); println(5.to_string() + "!"); println('x'.to_upper()); println('7'.is_digit());

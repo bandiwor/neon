@@ -1,0 +1,4 @@
+fn apply(f: fn(i32) -> i32, v: i32) -> i32 { f(v) }
+fn double(x: i32) -> i32 { x * 2 }
+fn compose(f: fn(i32) -> i32, g: fn(i32) -> i32) -> fn(i32) -> i32 { |x| => g(f(x)) }
+println(apply(double, 21)); println(apply(|x| => x + 1, 1)); let h = compose(double, |x| => x - 1); println(h(5));

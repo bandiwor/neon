@@ -1,0 +1,3 @@
+let mut counter = 0; const LIMIT: i32 = 3;
+fn bump() -> i32 { counter += 1; counter }
+bump(); bump(); println(bump()); println(LIMIT * 2); println(counter);

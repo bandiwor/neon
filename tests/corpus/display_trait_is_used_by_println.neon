@@ -1,0 +1,3 @@
+struct P { x: i32 }
+impl Display for P { fn to_string(self) -> string { "P<" + self.x.to_string() + ">" } }
+println(P { x: 5 }); println(P { x: 6 }.to_string());

@@ -1,0 +1,4 @@
+fn f(x: i32) -> i32 { let y = if x > 0 { x } else { return 0 }; y * 2 }
+println(f(3)); println(f(-3));
+fn g(x: i32) -> i32 { match x { 0 => panic("zero"), n => n } } println(g(4));
+let u = (); println(u);

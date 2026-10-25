@@ -1,0 +1,2 @@
+fn t(s: string) -> bool { println(s); true } fn f(s: string) -> bool { println(s); false }
+println(f("a") && t("b")); println(t("c") || f("d")); println(t("e") && t("f"));

@@ -1,0 +1,1 @@
+let a: i8 = -128; let b: u64 = 18446744073709551615; println(a); println(b); println(127i8 + 0); println(1u64 << 63);

@@ -1,0 +1,1 @@
+println(300 as u8); println(-1 as u8); println(3.99 as i32); println(-3.99 as i32); println(1e10 as i8); println(65u8 as char); println('a' as u32); println(true as i32); println(5 as f64 / 2.0); println(255u8 as i8);

@@ -1,0 +1,5 @@
+enum Option<T> { Some(T), None }
+fn unwrap_or<T>(o: Option<T>, d: T) -> T { match o { Option::Some(x) => x, Option::None => d } }
+fn f(o: Option<Option<i32>>) -> i32 { match o { Option::Some(Option::Some(x)) if x > 0 => x, Option::Some(Option::Some(_)) => 0, Option::Some(Option::None) => -1, Option::None => -2 } }
+println(unwrap_or(Option::Some(5), 0)); println(unwrap_or(Option::None, "dflt"));
+println(f(Option::Some(Option::Some(7)))); println(f(Option::Some(Option::Some(-7)))); println(f(Option::Some(Option::None))); println(f(Option::None));

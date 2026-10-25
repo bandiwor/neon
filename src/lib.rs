@@ -9,6 +9,7 @@
 
 pub mod builtin;
 pub mod bytecode;
+pub mod compiler;
 pub mod diag;
 pub mod driver;
 pub mod gc;

@@ -1,0 +1,14 @@
+trait Shape { fn area(self) -> f64; fn name(self) -> string { "shape" } }
+struct Sq { s: f64 } struct Circle { r: f64 }
+impl Shape for Sq { fn area(self) -> f64 { self.s * self.s } }
+impl Shape for Circle { fn area(self) -> f64 { 3.0 * self.r * self.r } fn name(self) -> string { "circle" } }
+fn describe<T: Shape>(x: T) -> string { x.name() + ":" + x.area().to_string() }
+println(describe(Sq { s: 3.0 })); println(describe(Circle { r: 1.0 }));
+struct V { x: f64, y: f64 }
+impl Add<V> for V { fn add(self, o: V) -> V { V { x: self.x + o.x, y: self.y + o.y } } }
+impl Mul<f64> for V { fn mul(self, k: f64) -> V { V { x: self.x * k, y: self.y * k } } }
+impl Neg for V { fn neg(self) -> V { V { x: -self.x, y: -self.y } } }
+impl Eq for V { fn eq(self, o: V) -> bool { self.x == o.x && self.y == o.y } }
+impl Ord for V { fn lt(self, o: V) -> bool { self.x < o.x } }
+let a = V { x: 1.0, y: 2.0 }; let b = a + a * 3.0; println(b); println(-a); println(a == b); println(a != b); println(a < b); println(a >= b); println(a <= a);
+let mut c = a; c += b; println(c);

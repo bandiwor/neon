@@ -1,0 +1,10 @@
+shape:9.0
+circle:3.0
+V { x: 4.0, y: 8.0 }
+V { x: -1.0, y: -2.0 }
+false
+true
+true
+false
+true
+V { x: 5.0, y: 10.0 }

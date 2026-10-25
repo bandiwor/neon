@@ -413,8 +413,12 @@ impl Insn {
         !matches!(self, Insn::Jmp { .. } | Insn::Ret { .. } | Insn::Unreachable)
     }
 
-    /// Instructions that can allocate on the heap or run arbitrary code, so
-    /// the collector may run there and a stack map is required.
+    /// Instructions at which the collector may run, so a stack map is required.
+    pub fn is_safe_point(&self) -> bool {
+        self.is_allocation_or_call() || matches!(self, Insn::MapSet { .. })
+    }
+
+    /// Instructions that can allocate on the heap or run arbitrary code.
     pub fn is_allocation_or_call(&self) -> bool {
         use Insn::*;
         matches!(

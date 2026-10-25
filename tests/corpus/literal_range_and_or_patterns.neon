@@ -1,0 +1,5 @@
+fn g(n: i32) -> string { match n { 0 | 1 => "small", 2..=9 => "mid", -5 => "neg", _ => "big" } }
+println(g(0)); println(g(1)); println(g(5)); println(g(9)); println(g(10)); println(g(-5));
+fn c(ch: char) -> i32 { match ch { 'a'..='z' => 1, 'A'..='Z' => 2, _ => 0 } }
+println(c('q')); println(c('Q')); println(c('1'));
+fn s(x: string) -> i32 { match x { "one" => 1, "two" => 2, _ => 0 } } println(s("two"));

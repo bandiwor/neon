@@ -1,0 +1,3 @@
+let s = "Hello, World"; println(s.len()); println(s.to_upper()); println(s.to_lower()); println(s.contains("World")); println(s.starts_with("Hell")); println(s.find("o"));
+println(s.substring(7, 12)); println(s.char_at(1)); println("a,b,c".split(",")); println("  hi  ".trim()); println("x" + "y" + "z"); println("abc" < "abd");
+println("12".parse_i64() + 1); println("2.5".parse_f64() * 2.0); println("héllo".len()); println("ab".chars()); println(["x", "y"].join("-"));

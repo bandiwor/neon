@@ -1,0 +1,2 @@
+fn pair() -> [fn() -> i32] { let mut x = 0; let inc = || => { x += 1; x }; let get = || => x; [inc, get] }
+let fs = pair(); let inc = fs[0]; let get = fs[1]; inc(); inc(); println(get()); inc(); println(get());

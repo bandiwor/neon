@@ -1,6 +1,7 @@
 //! Expression lowering.
 
 use super::func::FnLower;
+use crate::builtin::Builtin;
 use crate::ir::types::*;
 use crate::runtime::numeric::{const_int, ArithOp, CmpOp};
 use crate::runtime::NumTy;
@@ -109,32 +110,35 @@ impl FnLower<'_, '_> {
                 self.index_get(id, base, regs[0], index, regs[1])
             }
             NodeKind::ArrayLit { elems } => {
-                let regs = self.operands(ast.list(elems));
                 let ty = self.node_ty(id);
                 let desc = self.cx.desc(ty);
-                let dst = self.new_reg(IrTy::Ref);
-                self.emit(Inst::NewArray { dst, desc, elems: regs });
-                dst
+                self.collection_lit(desc, ast.list(elems), Builtin::ArrPush)
             }
             NodeKind::SetLit { elems } => {
-                let regs = self.operands(ast.list(elems));
                 let ty = self.node_ty(id);
                 let desc = self.cx.desc(ty);
-                let dst = self.new_reg(IrTy::Ref);
-                self.emit(Inst::NewSet { dst, desc, elems: regs });
-                dst
+                self.collection_lit(desc, ast.list(elems), Builtin::SetInsert)
             }
             NodeKind::MapLit { entries } => {
+                let ty = self.node_ty(id);
+                let desc = self.cx.desc(ty);
+                let entries = ast.list(entries);
+                let (head, tail) = entries.split_at(entries.len().min(LITERAL_CHUNK));
                 let mut pairs = Vec::new();
-                for &e in ast.list(entries) {
+                for &e in head {
                     let NodeKind::MapEntry { key, value } = *ast.kind(e) else { continue };
                     let regs = self.operands(&[key, value]);
                     pairs.push((regs[0], regs[1]));
                 }
-                let ty = self.node_ty(id);
-                let desc = self.cx.desc(ty);
                 let dst = self.new_reg(IrTy::Ref);
                 self.emit(Inst::NewMap { dst, desc, entries: pairs });
+                // a long literal is filled in as it is evaluated, so the frame
+                // never has to hold every entry at once
+                for &e in tail {
+                    let NodeKind::MapEntry { key, value } = *ast.kind(e) else { continue };
+                    let regs = self.operands(&[key, value]);
+                    self.emit(Inst::MapSet { map: dst, key: regs[0], val: regs[1] });
+                }
                 dst
             }
             NodeKind::StructLit { fields, .. } => {
@@ -464,5 +468,29 @@ pub(super) fn cmp_op(op: BinOp) -> CmpOp {
         BinOp::Gt => CmpOp::Gt,
         BinOp::Ge => CmpOp::Ge,
         other => unreachable!("{other:?} is not a comparison"),
+    }
+}
+
+/// Array, set and map literals longer than this are built incrementally.
+const LITERAL_CHUNK: usize = 48;
+
+impl FnLower<'_, '_> {
+    /// An array or set literal: the first [`LITERAL_CHUNK`] elements go straight
+    /// into the allocation, the rest are appended as they are evaluated.
+    fn collection_lit(&mut self, desc: DescId, elems: &[NodeId], append: Builtin) -> VReg {
+        let (head, tail) = elems.split_at(elems.len().min(LITERAL_CHUNK));
+        let regs = self.operands(head);
+        let dst = self.new_reg(IrTy::Ref);
+        if append == Builtin::ArrPush {
+            self.emit(Inst::NewArray { dst, desc, elems: regs });
+        } else {
+            self.emit(Inst::NewSet { dst, desc, elems: regs });
+        }
+        for &e in tail {
+            let v = self.operands(&[e])[0];
+            let res = self.new_reg(if append == Builtin::ArrPush { IrTy::Unit } else { IrTy::Bool });
+            self.emit(Inst::Intrinsic { dst: res, b: append, desc: Some(desc), args: vec![dst, v] });
+        }
+        dst
     }
 }
