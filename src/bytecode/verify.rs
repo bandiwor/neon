@@ -4,7 +4,7 @@
 //! reads of registers that no path has written, and stack maps that disagree
 //! with the instruction stream.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 
 use super::analysis::build_cfg;
 use super::asm::{assemble, decode};

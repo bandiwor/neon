@@ -1,6 +1,6 @@
 //! Liveness analysis over instruction lists.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 
 use super::insn::*;
 use crate::gc::BitSet;
@@ -13,7 +13,7 @@ pub struct Cfg {
 }
 
 pub fn build_cfg(items: &[Item]) -> Cfg {
-    let mut label_index = HashMap::new();
+    let mut label_index = HashMap::default();
     for (i, it) in items.iter().enumerate() {
         if let Insn::Label(l) = it.insn {
             label_index.insert(l, i);

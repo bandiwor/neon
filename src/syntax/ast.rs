@@ -7,7 +7,7 @@
 //! allocated after their children, so a node's id is greater than all of its
 //! descendants' ids.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 use std::fmt;
 
 use super::interner::Symbol;
@@ -449,7 +449,7 @@ pub struct Ast {
 
 impl Ast {
     pub(crate) fn new(file: FileId, lits: LitPool) -> Ast {
-        Ast { file, nodes: Vec::new(), lists: Vec::new(), lits, root: NodeId(u32::MAX), name_spans: HashMap::new() }
+        Ast { file, nodes: Vec::new(), lists: Vec::new(), lits, root: NodeId(u32::MAX), name_spans: HashMap::default() }
     }
 
     pub(crate) fn push(&mut self, kind: NodeKind, span: Span) -> NodeId {

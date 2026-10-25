@@ -8,7 +8,7 @@
 //! Diagnostic codes: E0301 module not found, E0302 circular import,
 //! E0303 import not at module level.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use super::ids::ModuleId;
@@ -126,7 +126,7 @@ impl<'a> Loader<'a> {
             map,
             interner,
             diags,
-            states: HashMap::new(),
+            states: HashMap::default(),
             stack: Vec::new(),
             graph: ModuleGraph::default(),
         };

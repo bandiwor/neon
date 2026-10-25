@@ -1,6 +1,6 @@
 //! Interned semantic types.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 
 use super::ids::AdtId;
 use crate::syntax::Keyword;
@@ -170,7 +170,7 @@ impl TypeTable {
     pub fn new() -> TypeTable {
         let mut t = TypeTable {
             kinds: Vec::new(),
-            map: HashMap::new(),
+            map: HashMap::default(),
             prims: [Ty(0); 13],
             unit: Ty(0),
             never: Ty(0),

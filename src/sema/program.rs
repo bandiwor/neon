@@ -1,7 +1,7 @@
 //! The semantic model of a whole program: definitions, scopes and the typing
 //! results the later phases consume.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use super::ids::*;

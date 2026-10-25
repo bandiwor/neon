@@ -1,6 +1,6 @@
 //! Per-function lowering state and the entry points that lower one instance.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use super::{FuncKey, Lowerer};
@@ -106,7 +106,7 @@ pub(super) fn lower_const_init(cx: &mut Lowerer<'_>, module: ModuleId, init: Nod
         f: IrFunc::new("<const>"),
         cur: BlockId(0),
         sealed: false,
-        locals: HashMap::new(),
+        locals: HashMap::default(),
         scopes: vec![Vec::new()],
         loops: Vec::new(),
         unit: None,
@@ -153,7 +153,7 @@ pub(super) fn lower_instance(cx: &mut Lowerer<'_>, id: FuncId, key: FuncKey) {
         f: skeleton,
         cur: BlockId(0),
         sealed: false,
-        locals: HashMap::new(),
+        locals: HashMap::default(),
         scopes: vec![Vec::new()],
         loops: Vec::new(),
         unit: None,

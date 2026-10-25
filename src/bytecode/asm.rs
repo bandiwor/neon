@@ -1,6 +1,6 @@
 //! Encoding of [`Insn`]s into 32-bit words and decoding back.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 
 use super::insn::*;
 use super::opcode::{Format, Opcode, EXT_ESCAPE};
@@ -92,7 +92,7 @@ pub fn assemble(insns: &[Insn]) -> Result<Assembled, AsmError> {
         })
         .collect();
 
-    let mut label_ids: HashMap<Label, usize> = HashMap::new();
+    let mut label_ids: HashMap<Label, usize> = HashMap::default();
     for (i, insn) in insns.iter().enumerate() {
         if let Insn::Label(l) = insn {
             if label_ids.insert(*l, i).is_some() {

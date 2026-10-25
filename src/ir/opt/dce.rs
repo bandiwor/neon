@@ -1,6 +1,6 @@
 //! Dead code elimination and control-flow cleanup.
 
-use std::collections::HashSet;
+use crate::fx::FxHashSet as HashSet;
 
 use crate::ir::types::*;
 
@@ -225,7 +225,7 @@ fn remove_dead_insts(f: &mut IrFunc) -> usize {
 /// Registers still referenced anywhere (used by tests).
 #[allow(dead_code)]
 pub fn referenced_regs(f: &IrFunc) -> HashSet<VReg> {
-    let mut s = HashSet::new();
+    let mut s = HashSet::default();
     for b in &f.blocks {
         for i in &b.insts {
             i.for_each_use(|r| {

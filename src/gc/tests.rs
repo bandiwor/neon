@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use crate::fx::FxHashSet as HashSet;
 
 use super::*;
 use crate::bytecode::{BytecodeProgram, Chunk};
@@ -455,7 +455,7 @@ fn stack_scan_uses_each_frames_map_and_base() {
     scan_stack(&prog, &frames, &stack, &mut roots);
     h.collect(&roots);
     let live: HashSet<usize> = (0..6).filter(|&i| h.is_live(objs[i])).collect();
-    assert_eq!(live, HashSet::from([0, 2, 4, 5]));
+    assert_eq!(live, [0, 2, 4, 5].into_iter().collect::<HashSet<_>>());
 }
 
 #[test]
@@ -540,7 +540,7 @@ fn random_graphs_keep_exactly_the_reachable_objects() {
         }
         let roots_idx: Vec<usize> = (0..rng.below(4)).map(|_| rng.below(n)).collect();
         // oracle: plain graph search
-        let mut reach = HashSet::new();
+        let mut reach = HashSet::default();
         let mut stack = roots_idx.clone();
         while let Some(i) = stack.pop() {
             if reach.insert(i) {

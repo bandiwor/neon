@@ -1,6 +1,6 @@
 //! Translation of one IR function into bytecode instructions.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 
 use super::regalloc::Allocation;
 use super::CompileError;

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use super::token::Keyword;
@@ -43,7 +43,7 @@ impl Default for Interner {
 impl Interner {
     /// An interner with keywords and predefined symbols already registered.
     pub fn new() -> Interner {
-        let mut i = Interner { strings: Vec::new(), map: HashMap::new() };
+        let mut i = Interner { strings: Vec::new(), map: HashMap::default() };
         for kw in Keyword::ALL {
             i.intern(kw.as_str());
         }

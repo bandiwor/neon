@@ -7,7 +7,7 @@
 //! Folding uses exactly the run-time arithmetic of `runtime::numeric`; an
 //! operation that traps is left in place so the trap still happens.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 
 use crate::ir::types::*;
 use crate::runtime::numeric::{self, CmpOp};
@@ -43,7 +43,7 @@ fn fold_once(f: &mut IrFunc) -> usize {
     let counts = def_counts(f);
 
     // single-definition constants
-    let mut consts: HashMap<VReg, u64> = HashMap::new();
+    let mut consts: HashMap<VReg, u64> = HashMap::default();
     for b in &f.blocks {
         for i in &b.insts {
             if let Inst::Const { dst, val: Const::Bits(v) } = i {
@@ -56,7 +56,7 @@ fn fold_once(f: &mut IrFunc) -> usize {
 
     // single-definition copies of registers that never change
     let stable = |r: VReg| counts[r.index()] == 1 && !f.pinned[r.index()];
-    let mut copies: HashMap<VReg, VReg> = HashMap::new();
+    let mut copies: HashMap<VReg, VReg> = HashMap::default();
     for b in &f.blocks {
         for i in &b.insts {
             if let Inst::Move { dst, src } = i {
@@ -81,7 +81,7 @@ fn fold_once(f: &mut IrFunc) -> usize {
     let mut changes = 0;
     for bi in 0..f.blocks.len() {
         // block-local knowledge about multiply-defined registers
-        let mut local: HashMap<VReg, u64> = HashMap::new();
+        let mut local: HashMap<VReg, u64> = HashMap::default();
         let mut insts = std::mem::take(&mut f.blocks[bi].insts);
         for inst in insts.iter_mut() {
             // propagate copies into operands

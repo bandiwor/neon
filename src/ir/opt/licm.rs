@@ -16,7 +16,7 @@
 //! of one loop and nothing moves in functions that already use many registers: hoisted values live
 //! through the whole loop and every register costs a frame slot.
 
-use std::collections::HashSet;
+use crate::fx::FxHashSet as HashSet;
 
 use super::simplify::{clobbers_memory, def_counts, predecessors};
 use crate::ir::types::*;
@@ -139,7 +139,7 @@ fn find_loops(f: &IrFunc, idom: &[usize], preds: &[Vec<usize>]) -> Vec<Loop> {
                 continue;
             }
             // natural loop of the back edge l -> h
-            let mut body: HashSet<usize> = HashSet::new();
+            let mut body: HashSet<usize> = HashSet::default();
             body.insert(h);
             let mut stack = vec![l];
             while let Some(x) = stack.pop() {

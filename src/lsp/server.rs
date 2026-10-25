@@ -1,6 +1,6 @@
 //! The language server: JSON-RPC framing, document store and request handlers.
 
-use std::collections::{HashMap, HashSet};
+use crate::fx::{FxHashMap as HashMap, FxHashSet as HashSet};
 use std::io::{self, BufRead, Write};
 
 use super::analysis::complete::{call_context, closing_delimiters, completion_context, CompletionContext};
@@ -131,7 +131,7 @@ fn invalid(msg: &str) -> (i64, String) {
 
 impl<'v, W: Write> Server<'v, W> {
     pub fn new(base: &'v dyn Vfs, out: W) -> Server<'v, W> {
-        Server { base, out, docs: HashMap::new(), state: State::Starting, exit_code: None }
+        Server { base, out, docs: HashMap::default(), state: State::Starting, exit_code: None }
     }
 
     pub fn into_output(self) -> W {

@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use crate::fx::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::analysis::liveness;
 use super::asm::{assemble, decode, decode_one};
@@ -30,7 +30,7 @@ fn opcode_numbering_is_dense_and_stable() {
 
 #[test]
 fn mnemonics_are_unique() {
-    let mut seen = HashSet::new();
+    let mut seen = HashSet::default();
     for op in Opcode::ALL {
         assert!(seen.insert(op.mnemonic()), "duplicate mnemonic {}", op.mnemonic());
     }
@@ -126,7 +126,7 @@ fn jump_offsets_are_relative_to_the_next_word() {
 /// Re-expresses `insns` the way `decode(assemble(insns))` returns them.
 fn normalize(insns: &[Insn]) -> Vec<Insn> {
     let asm = assemble(insns).unwrap();
-    let mut label_pc: HashMap<Label, u32> = HashMap::new();
+    let mut label_pc: HashMap<Label, u32> = HashMap::default();
     for (i, insn) in insns.iter().enumerate() {
         if let Insn::Label(l) = insn {
             label_pc.insert(*l, asm.pcs[i]);

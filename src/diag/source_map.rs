@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 use std::error::Error;
 use std::fmt;
 use std::io;

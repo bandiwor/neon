@@ -1,6 +1,6 @@
 //! Calls, method calls, struct literals, field access and indexing.
 
-use std::collections::HashSet;
+use crate::fx::FxHashSet as HashSet;
 
 use super::path::ValueRes;
 use super::Checker;
@@ -305,7 +305,7 @@ impl Checker<'_> {
         let ty = self.prog.types.adt(adt, targs.clone());
         self.set_ty(path, ty);
         let adt_name = self.name(self.prog.adts[adt.index()].name).to_string();
-        let mut seen: HashSet<Symbol> = HashSet::new();
+        let mut seen: HashSet<Symbol> = HashSet::default();
         for &f in ast.list(fields) {
             let NodeKind::FieldInit { name, value } = *ast.kind(f) else { continue };
             let fspan = ast.span(f);

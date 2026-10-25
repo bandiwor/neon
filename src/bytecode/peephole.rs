@@ -15,7 +15,7 @@
 //!
 //! Registers in `always_live` (captured by closures) are never treated as dead.
 
-use std::collections::{HashMap, HashSet};
+use crate::fx::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::analysis::liveness;
 use super::insn::*;
@@ -207,7 +207,7 @@ impl SetDefProbe for Insn {
 fn control_flow(items: &mut Vec<Item>, stats: &mut PeepholeStats) {
     // thread jumps through unconditional jumps: L1: jmp L2
     loop {
-        let mut forward: HashMap<Label, Label> = HashMap::new();
+        let mut forward: HashMap<Label, Label> = HashMap::default();
         for (i, it) in items.iter().enumerate() {
             if let Insn::Label(l) = it.insn {
                 // the first real instruction after the label(s)

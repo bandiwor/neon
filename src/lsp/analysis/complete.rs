@@ -1,6 +1,6 @@
 //! Completion and signature help.
 
-use std::collections::HashSet;
+use crate::fx::FxHashSet as HashSet;
 
 use super::Analysis;
 use crate::lsp::json::Json;
@@ -248,7 +248,7 @@ impl Analysis {
     /// Methods and fields available on a value of type `ty`.
     pub fn complete_members_of(&mut self, ty: Ty) -> Vec<Item2> {
         let mut out: Vec<Item2> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen: HashSet<String> = HashSet::default();
         let kind = self.prog.types.kind(ty).clone();
 
         if let TyKind::Adt(a, args) = &kind {
@@ -425,7 +425,7 @@ impl Analysis {
     /// Names visible at `offset`: locals, module items, the prelude, built-ins and keywords.
     pub fn complete_scope(&mut self, offset: u32) -> Vec<(char, Item2)> {
         let mut out: Vec<(char, Item2)> = Vec::new();
-        let mut seen: HashSet<String> = HashSet::new();
+        let mut seen: HashSet<String> = HashSet::default();
         let ast = self.prog.module(self.module).ast.clone();
 
         // local variables declared before the cursor in an enclosing function or closure

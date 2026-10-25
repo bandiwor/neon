@@ -14,7 +14,7 @@
 //! Every rewrite keeps run-time traps: a trapping operation is only replaced by an earlier
 //! identical one (which traps first), never dropped.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 
 use crate::builtin::Builtin;
 use crate::ir::types::*;
@@ -317,7 +317,7 @@ fn forward_values(f: &mut IrFunc) -> usize {
 
 fn algebra(f: &mut IrFunc) -> usize {
     let defs = def_counts(f);
-    let mut consts: HashMap<VReg, u64> = HashMap::new();
+    let mut consts: HashMap<VReg, u64> = HashMap::default();
     for b in &f.blocks {
         for i in &b.insts {
             if let Inst::Const { dst, val: Const::Bits(v) } = i {

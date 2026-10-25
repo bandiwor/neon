@@ -16,7 +16,7 @@ mod stmt;
 
 use pat::PatCtx;
 
-use std::collections::HashSet;
+use crate::fx::FxHashSet as HashSet;
 use std::sync::Arc;
 
 use super::builtins::Require;
@@ -118,7 +118,7 @@ impl<'a> Checker<'a> {
             obligations: Vec::new(),
             int_lits: Vec::new(),
             float_lits: Vec::new(),
-            negated: HashSet::new(),
+            negated: HashSet::default(),
             casts: Vec::new(),
             arith: Vec::new(),
             unary_checks: Vec::new(),
@@ -384,7 +384,7 @@ impl<'a> Checker<'a> {
         }
 
         // zonk node types
-        let mut seen = HashSet::new();
+        let mut seen = HashSet::default();
         for n in touched {
             if seen.insert(n) {
                 let nt = self.ty_of(n);

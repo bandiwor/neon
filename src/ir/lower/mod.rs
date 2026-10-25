@@ -14,7 +14,8 @@ mod pat;
 mod place;
 mod stmt;
 
-use std::collections::{HashMap, VecDeque};
+use std::collections::VecDeque;
+use crate::fx::FxHashMap as HashMap;
 
 use super::types::*;
 use crate::diag::{DiagBag, Diagnostic};
@@ -68,12 +69,12 @@ pub fn lower_program(prog: &mut Program, interner: &Interner, diags: &mut DiagBa
         interner,
         diags,
         out: IrProgram::default(),
-        funcs_by_key: HashMap::new(),
+        funcs_by_key: HashMap::default(),
         queue: VecDeque::new(),
-        descs: HashMap::new(),
-        strings: HashMap::new(),
-        globals: HashMap::new(),
-        consts: HashMap::new(),
+        descs: HashMap::default(),
+        strings: HashMap::default(),
+        globals: HashMap::default(),
+        consts: HashMap::default(),
         failed: false,
     };
     // Evaluate every constant up front, so a broken one is reported even if nothing uses it.

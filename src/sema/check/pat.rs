@@ -1,7 +1,7 @@
 //! Pattern checking: declares bindings and types every pattern node against
 //! the scrutinee type.
 
-use std::collections::HashMap;
+use crate::fx::FxHashMap as HashMap;
 
 use super::Checker;
 use crate::sema::ids::*;
