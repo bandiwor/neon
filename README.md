@@ -69,6 +69,38 @@ Diagnostics (with source snippets) go to stderr, program output to stdout.
   out-of-range indexing and missing map keys are run-time errors, never
   undefined behavior. Float → int casts saturate; NaN casts to 0.
 
+### Handling run-time errors: `Option` and `Result`
+
+Every operation that can stop the program has a variant that returns a value
+instead. `Option<T>` (`Some` / `None`) and `Result<T, E>` (`Ok` / `Err`) are
+defined in the prelude, with methods written in Neon itself: `is_some`,
+`is_none`, `unwrap`, `expect`, `unwrap_or`, `unwrap_or_else`, `map`,
+`and_then`, `or`, `ok_or` (and `is_ok`, `is_err`, `map_err`, `ok`, `err` for
+`Result`). A program can still declare its own `Option`; it shadows the
+built-in one.
+
+| Plain (traps) | Handled |
+|---|---|
+| `a + b`, `-`, `*`, `/`, `%`, `<<`, `>>`, `pow`, `-x` | `a.checked_add(b)`, `checked_sub`, `checked_mul`, `checked_div`, `checked_rem`, `checked_shl`, `checked_shr`, `checked_pow(n)`, `x.checked_neg()` → `Option<T>` |
+| `xs[i]` | `xs.get(i)` → `Option<T>` |
+| `xs.pop()`, `xs.remove(i)` | `xs.try_pop()`, `xs.try_remove(i)` → `Option<T>` |
+| `m[k]` | `m.get(k)` → `Option<V>` |
+| `s.parse_i64()`, `s.parse_f64()` | `s.try_parse_i64()`, `s.try_parse_f64()` → `Result<_, string>` |
+| `s.char_at(i)`, `s.substring(a, b)` | `s.get_char(i)` → `Option<char>`, `s.try_substring(a, b)` → `Result<string, string>` |
+| `s.find(sub)` (−1 if absent) | `s.index_of(sub)` → `Option<i64>` |
+| `input()` (empty string at EOF) | `read_line()` → `Option<string>` (`None` at EOF) |
+
+```neon
+match "12x".try_parse_i64() {
+    Result::Ok(n) => println(n + 1),
+    Result::Err(e) => println("bad input: " + e),   // bad input: cannot parse `12x`
+}
+let safe = 250u8.checked_add(10u8).unwrap_or(255u8);  // 255
+```
+
+What remains a trap: `panic`, `assert`, `unwrap`/`expect` on `None`/`Err`,
+stack overflow and out-of-memory.
+
 More programs live in `tests/corpus/`.
 
 ## Architecture

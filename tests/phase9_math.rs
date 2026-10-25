@@ -246,3 +246,65 @@ fn builtin_math_functions() {
         run_both(src, what);
     }
 }
+
+/// `checked_*` must return `Some(r)` exactly when the plain operator would
+/// produce `r`, and `None` exactly when it would trap.
+#[test]
+fn checked_operations_agree_with_the_trapping_operators() {
+    use neon::runtime::format::format_num;
+    let ops = [
+        (ArithOp::Add, "checked_add"),
+        (ArithOp::Sub, "checked_sub"),
+        (ArithOp::Mul, "checked_mul"),
+        (ArithOp::Div, "checked_div"),
+        (ArithOp::Rem, "checked_rem"),
+        (ArithOp::Shl, "checked_shl"),
+        (ArithOp::Shr, "checked_shr"),
+    ];
+    for ty in INT_TYPES {
+        let vals = int_values(ty);
+        for (op, method) in ops {
+            let mut src = String::new();
+            let mut expected = String::new();
+            for (a, at) in &vals {
+                for (b, bt) in &vals {
+                    src += &format!("println({at}.{method}({bt}));\n");
+                    match arith(op, ty, bits(ty, *a), bits(ty, *b)) {
+                        Ok(r) => expected += &format!("Option::Some({})\n", format_num(ty, r)),
+                        Err(_) => expected += "Option::None\n",
+                    }
+                }
+            }
+            let (out, trap) = run_both(&src, &format!("{} {method}", ty.name()));
+            assert!(trap.is_none(), "{trap:?}");
+            assert_eq!(out, expected, "{} {method}", ty.name());
+        }
+        if ty.is_signed() {
+            let mut src = String::new();
+            let mut expected = String::new();
+            for (a, at) in &vals {
+                src += &format!("println({at}.checked_neg());\n");
+                match neon::runtime::numeric::neg(ty, bits(ty, *a)) {
+                    Ok(r) => expected += &format!("Option::Some({})\n", format_num(ty, r)),
+                    Err(_) => expected += "Option::None\n",
+                }
+            }
+            let (out, _) = run_both(&src, "checked_neg");
+            assert_eq!(out, expected, "{} checked_neg", ty.name());
+        }
+        // pow with a few exponents
+        let mut src = String::new();
+        let mut expected = String::new();
+        for (a, at) in &vals {
+            for e in [0u32, 1, 2, 7, 40, 70] {
+                src += &format!("println({at}.checked_pow({e}u32));\n");
+                match neon::runtime::mathfn::pow(ty, bits(ty, *a), e as u64) {
+                    Ok(r) => expected += &format!("Option::Some({})\n", format_num(ty, r)),
+                    Err(_) => expected += "Option::None\n",
+                }
+            }
+        }
+        let (out, _) = run_both(&src, "checked_pow");
+        assert_eq!(out, expected, "{} checked_pow", ty.name());
+    }
+}

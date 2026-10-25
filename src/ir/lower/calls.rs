@@ -199,6 +199,12 @@ impl FnLower<'_, '_> {
             }
         }
 
+        if b.returns_adt() {
+            // the descriptor describes the Option / Result the builtin builds
+            let ret = self.node_ty(node);
+            desc = Some(self.cx.desc(ret));
+        }
+
         let ir = self.ir_ty_of_node(node);
         let dst = self.new_reg(ir);
         self.emit(Inst::Intrinsic { dst, b, desc, args: regs });

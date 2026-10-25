@@ -239,3 +239,37 @@ println(acc); println(s.len()); println(m); println(s);
         assert_eq!(got.output, oracle.output, "[{label}]");
     }
 }
+
+#[test]
+fn unwrapping_a_missing_value_is_a_panic_but_matching_it_is_not() {
+    let got = run_default("let xs = [1, 2]; println(xs.get(5).unwrap());", &[]);
+    assert_eq!(got.trap, Some(Trap::Panic("called `unwrap` on a `None` value".into())));
+    let got = run_default("let r = \"x\".try_parse_i64(); println(r.unwrap());", &[]);
+    assert_eq!(got.trap, Some(Trap::Panic("called `unwrap` on an `Err` value".into())));
+    let got = run_default("println([1].get(3).expect(\"no such element\"));", &[]);
+    assert_eq!(got.trap, Some(Trap::Panic("no such element".into())));
+    // the same operations, handled
+    let src = r#"
+fn describe(s: string) -> string {
+    match s.try_parse_i64() {
+        Result::Ok(n) => "number " + n.to_string(),
+        Result::Err(e) => "bad input (" + e + ")",
+    }
+}
+println(describe("12")); println(describe("1x"));
+let mut stack = [1, 2];
+let mut sum = 0;
+let mut more = true;
+while more {
+    match stack.try_pop() { Option::Some(v) => { sum += v; }, Option::None => { more = false; } }
+}
+println(sum);
+println(u8::MAX.checked_add(1u8).is_none());
+println(read_line().unwrap_or("<eof>"));
+"#;
+    let got = run_default(src, &["typed"]);
+    assert_eq!(got.trap, None, "{}", got.output);
+    assert_eq!(got.output, "number 12\nbad input (cannot parse `1x`)\n3\ntrue\ntyped\n");
+    let got = run_default(src, &[]);
+    assert_eq!(got.output.lines().last(), Some("<eof>"));
+}

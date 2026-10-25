@@ -243,6 +243,13 @@ fn declare_item(
                 kind: AdtKind::Enum { variants: variant_defs },
                 exported,
             });
+            if module.0 == 0 {
+                match interner.resolve(name) {
+                    "Option" => prog.lang_adts.option = Some(id),
+                    "Result" => prog.lang_adts.result = Some(id),
+                    _ => {}
+                }
+            }
             insert_item(prog, interner, diags, module, name, Item::Adt(id), name_span, exported);
         }
         NodeKind::TraitDecl { name, generics, items } => {

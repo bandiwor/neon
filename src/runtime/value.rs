@@ -10,6 +10,25 @@ use super::format::{format_bool, format_char, format_num};
 use super::numeric::{compare, CmpOp};
 use crate::ir::{DescId, TypeDesc};
 
+/// Variant numbers of the prelude's `Option` and `Result`, in declaration
+/// order (a test in `sema` checks them against `prelude.neon`).
+pub const SOME_TAG: u32 = 0;
+pub const NONE_TAG: u32 = 1;
+pub const OK_TAG: u32 = 0;
+pub const ERR_TAG: u32 = 1;
+
+/// The numeric type carried by the first variant (`Some(n)`) of the
+/// `Option<n>` described by `d`.
+pub fn option_payload_num(descs: &[TypeDesc], d: DescId) -> crate::runtime::numeric::NumTy {
+    match &descs[d.index()] {
+        TypeDesc::Enum { variants, .. } => match variants[0].1.first().map(|p| &descs[p.index()]) {
+            Some(TypeDesc::Num(n)) => *n,
+            other => panic!("expected a numeric payload, found {other:?}"),
+        },
+        other => panic!("expected an Option descriptor, found {other:?}"),
+    }
+}
+
 /// Read-only access to heap objects by handle.
 pub trait HeapView {
     fn str_of(&self, h: u64) -> &str;

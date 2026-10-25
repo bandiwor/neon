@@ -1,0 +1,9 @@
+// A program may still define its own Option; it shadows the built-in one.
+enum Option<T> { Some(T), Nothing }
+fn first_or(xs: [i64], d: i64) -> i64 {
+    let o = if xs.len() > 0 { Option::Some(xs[0]) } else { Option::Nothing };
+    match o { Option::Some(v) => v, Option::Nothing => d }
+}
+println(first_or([4, 5], 0));
+println(first_or([], -1));
+println([1, 2, 3].get(1));

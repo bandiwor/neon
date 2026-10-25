@@ -97,6 +97,57 @@ builtins! {
     CharIsWhitespace = "is_whitespace",
     CharToUpper = "to_upper",
     CharToLower = "to_lower",
+    // fallible variants: they return `Option` / `Result` instead of trapping
+    // (always appended, the position in `ALL` is part of the bytecode format)
+    StrTryParseI64 = "try_parse_i64",
+    StrTryParseF64 = "try_parse_f64",
+    StrGetChar = "get_char",
+    StrTrySubstring = "try_substring",
+    StrIndexOf = "index_of",
+    ArrGet = "get",
+    ArrTryPop = "try_pop",
+    ArrTryRemove = "try_remove",
+    MapGet = "get",
+    CheckedAdd = "checked_add",
+    CheckedSub = "checked_sub",
+    CheckedMul = "checked_mul",
+    CheckedDiv = "checked_div",
+    CheckedRem = "checked_rem",
+    CheckedPow = "checked_pow",
+    CheckedNeg = "checked_neg",
+    CheckedShl = "checked_shl",
+    CheckedShr = "checked_shr",
+    ReadLine = "read_line",
+}
+
+impl Builtin {
+    /// Builtins that return an `Option` / `Result`. Their descriptor operand
+    /// describes the *result* type (the VM builds the enum value from it).
+    pub fn returns_adt(self) -> bool {
+        use Builtin::*;
+        matches!(
+            self,
+            StrTryParseI64
+                | StrTryParseF64
+                | StrGetChar
+                | StrTrySubstring
+                | StrIndexOf
+                | ArrGet
+                | ArrTryPop
+                | ArrTryRemove
+                | MapGet
+                | CheckedAdd
+                | CheckedSub
+                | CheckedMul
+                | CheckedDiv
+                | CheckedRem
+                | CheckedPow
+                | CheckedNeg
+                | CheckedShl
+                | CheckedShr
+                | ReadLine
+        )
+    }
 }
 
 #[cfg(test)]

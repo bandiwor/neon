@@ -119,6 +119,23 @@ pub fn checked_index(ty: NumTy, idx: u64, len: usize) -> Result<usize, Trap> {
     }
 }
 
+/// `checked_add`, `checked_pow`, ...: the result, or `None` where the plain
+/// operation would trap (overflow, division by zero, a bad shift amount).
+pub fn checked_op(b: Builtin, ty: NumTy, a: u64, x: u64) -> Option<u64> {
+    match b {
+        Builtin::CheckedAdd => arith(ArithOp::Add, ty, a, x).ok(),
+        Builtin::CheckedSub => arith(ArithOp::Sub, ty, a, x).ok(),
+        Builtin::CheckedMul => arith(ArithOp::Mul, ty, a, x).ok(),
+        Builtin::CheckedDiv => arith(ArithOp::Div, ty, a, x).ok(),
+        Builtin::CheckedRem => arith(ArithOp::Rem, ty, a, x).ok(),
+        Builtin::CheckedShl => arith(ArithOp::Shl, ty, a, x).ok(),
+        Builtin::CheckedShr => arith(ArithOp::Shr, ty, a, x).ok(),
+        Builtin::CheckedPow => pow(ty, a, x).ok(),
+        Builtin::CheckedNeg => neg(ty, a).ok(),
+        other => panic!("{other:?} is not a checked operation"),
+    }
+}
+
 /// An `i64` quantity (a length, position) as the integer type `ty` expects.
 pub fn to_i64_bits(v: i64) -> u64 {
     cast(NumTy::I64, NumTy::I64, v as u64)

@@ -1,8 +1,8 @@
 //! Typing of builtin functions, methods and constants.
 
 use super::infer::InferCtx;
-use super::program::{ConstVal, Program};
-use super::types::{Prim, Ty, TyKind};
+use super::program::{ConstVal, LangAdts, Program};
+use super::types::{Prim, Ty, TyKind, TypeTable};
 use crate::builtin::Builtin;
 
 /// A deferred requirement on a type, verified once inference has finished.
@@ -44,9 +44,19 @@ impl BuiltinSig {
     }
 }
 
+/// `Option<x>` / `Result<ok, err>` from the prelude's enums.
+fn option_of(t: &mut TypeTable, la: LangAdts, x: Ty) -> Option<Ty> {
+    Some(t.adt(la.option?, vec![x]))
+}
+
+fn result_of(t: &mut TypeTable, la: LangAdts, ok: Ty, err: Ty) -> Option<Ty> {
+    Some(t.adt(la.result?, vec![ok, err]))
+}
+
 /// Signature of the builtin method `name` on a receiver of type `recv`
 /// (already resolved at the top level). `None` if there is no such method.
 pub fn builtin_method(prog: &mut Program, recv: Ty, name: &str) -> Option<BuiltinSig> {
+    let la = prog.lang_adts;
     let t = &mut prog.types;
     let (i64t, boolt, strt, chart, unit) =
         (t.prim(Prim::I64), t.bool(), t.prim(Prim::Str), t.prim(Prim::Char), t.unit());
@@ -71,6 +81,14 @@ pub fn builtin_method(prog: &mut Program, recv: Ty, name: &str) -> Option<Builti
                 "parse_i64" => sig(Builtin::StrParseI64, vec![], i64t),
                 "parse_f64" => sig(Builtin::StrParseF64, vec![], t.prim(Prim::F64)),
                 "to_string" => sig(Builtin::ToString, vec![], strt),
+                "try_parse_i64" => sig(Builtin::StrTryParseI64, vec![], result_of(t, la, i64t, strt)?),
+                "try_parse_f64" => {
+                    let f64t = t.prim(Prim::F64);
+                    sig(Builtin::StrTryParseF64, vec![], result_of(t, la, f64t, strt)?)
+                }
+                "get_char" => sig(Builtin::StrGetChar, vec![i64t], option_of(t, la, chart)?),
+                "try_substring" => sig(Builtin::StrTrySubstring, vec![i64t, i64t], result_of(t, la, strt, strt)?),
+                "index_of" => sig(Builtin::StrIndexOf, vec![strt], option_of(t, la, i64t)?),
                 _ => None,
             }
         }
@@ -81,6 +99,9 @@ pub fn builtin_method(prog: &mut Program, recv: Ty, name: &str) -> Option<Builti
                 "is_empty" => sig(Builtin::ArrIsEmpty, vec![], boolt),
                 "push" => msig(Builtin::ArrPush, vec![e], unit),
                 "pop" => msig(Builtin::ArrPop, vec![], e),
+                "get" => sig(Builtin::ArrGet, vec![i64t], option_of(t, la, e)?),
+                "try_pop" => msig(Builtin::ArrTryPop, vec![], option_of(t, la, e)?),
+                "try_remove" => msig(Builtin::ArrTryRemove, vec![i64t], option_of(t, la, e)?),
                 "clear" => msig(Builtin::ArrClear, vec![], unit),
                 "contains" => sig(Builtin::ArrContains, vec![e], boolt)?.requiring(Require::Primitive, e),
                 "insert" => msig(Builtin::ArrInsert, vec![i64t, e], unit),
@@ -104,6 +125,7 @@ pub fn builtin_method(prog: &mut Program, recv: Ty, name: &str) -> Option<Builti
                 "is_empty" => sig(Builtin::MapIsEmpty, vec![], boolt),
                 "insert" => msig(Builtin::MapInsert, vec![k, v], unit),
                 "get_or" => sig(Builtin::MapGetOr, vec![k, v], v),
+                "get" => sig(Builtin::MapGet, vec![k], option_of(t, la, v)?),
                 "contains_key" => sig(Builtin::MapContainsKey, vec![k], boolt),
                 "remove" => msig(Builtin::MapRemove, vec![k], boolt),
                 "keys" => sig(Builtin::MapKeys, vec![], keys),
@@ -153,6 +175,18 @@ pub fn builtin_method(prog: &mut Program, recv: Ty, name: &str) -> Option<Builti
                 "max" => sig(Builtin::Max, vec![this], this),
                 "pow" if p.is_int() => sig(Builtin::Pow, vec![t.prim(Prim::U32)], this),
                 "pow" => sig(Builtin::Pow, vec![this], this),
+                "checked_add" if p.is_int() => sig(Builtin::CheckedAdd, vec![this], option_of(t, la, this)?),
+                "checked_sub" if p.is_int() => sig(Builtin::CheckedSub, vec![this], option_of(t, la, this)?),
+                "checked_mul" if p.is_int() => sig(Builtin::CheckedMul, vec![this], option_of(t, la, this)?),
+                "checked_div" if p.is_int() => sig(Builtin::CheckedDiv, vec![this], option_of(t, la, this)?),
+                "checked_rem" if p.is_int() => sig(Builtin::CheckedRem, vec![this], option_of(t, la, this)?),
+                "checked_shl" if p.is_int() => sig(Builtin::CheckedShl, vec![this], option_of(t, la, this)?),
+                "checked_shr" if p.is_int() => sig(Builtin::CheckedShr, vec![this], option_of(t, la, this)?),
+                "checked_neg" if p.is_signed() => sig(Builtin::CheckedNeg, vec![], option_of(t, la, this)?),
+                "checked_pow" if p.is_int() => {
+                    let u32t = t.prim(Prim::U32);
+                    sig(Builtin::CheckedPow, vec![u32t], option_of(t, la, this)?)
+                }
                 "sqrt" if p.is_float() => sig(Builtin::Sqrt, vec![], this),
                 "sin" if p.is_float() => sig(Builtin::Sin, vec![], this),
                 "cos" if p.is_float() => sig(Builtin::Cos, vec![], this),
@@ -182,6 +216,7 @@ pub struct BuiltinFn {
 
 pub fn builtin_fn(prog: &mut Program, infer: &mut InferCtx, name: &str) -> Option<BuiltinFn> {
     use super::infer::VarKind;
+    let la = prog.lang_adts;
     let t = &mut prog.types;
     let (strt, boolt, unit) = (t.prim(Prim::Str), t.bool(), t.unit());
     Some(match name {
@@ -191,6 +226,10 @@ pub fn builtin_fn(prog: &mut Program, infer: &mut InferCtx, name: &str) -> Optio
             BuiltinFn { builtin: b, params: vec![any], min_args: if name == "print" { 1 } else { 0 }, ret: unit }
         }
         "input" => BuiltinFn { builtin: Builtin::Input, params: vec![], min_args: 0, ret: strt },
+        "read_line" => {
+            let ret = option_of(t, la, strt)?;
+            BuiltinFn { builtin: Builtin::ReadLine, params: vec![], min_args: 0, ret }
+        }
         "panic" => BuiltinFn { builtin: Builtin::Panic, params: vec![strt], min_args: 1, ret: t.never() },
         "assert" => BuiltinFn { builtin: Builtin::Assert, params: vec![boolt, strt], min_args: 1, ret: unit },
         _ => return None,

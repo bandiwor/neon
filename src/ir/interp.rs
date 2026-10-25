@@ -464,6 +464,30 @@ impl Interp<'_> {
         s
     }
 
+    fn some(&mut self, v: u64) -> u64 {
+        self.alloc(Obj::Enum(crate::runtime::value::SOME_TAG, vec![v]))
+    }
+
+    fn none(&mut self) -> u64 {
+        self.alloc(Obj::Enum(crate::runtime::value::NONE_TAG, vec![]))
+    }
+
+    fn option(&mut self, v: Option<u64>) -> u64 {
+        match v {
+            Some(v) => self.some(v),
+            None => self.none(),
+        }
+    }
+
+    fn ok(&mut self, v: u64) -> u64 {
+        self.alloc(Obj::Enum(crate::runtime::value::OK_TAG, vec![v]))
+    }
+
+    fn err_str(&mut self, message: String) -> u64 {
+        let m = self.alloc_str(message);
+        self.alloc(Obj::Enum(crate::runtime::value::ERR_TAG, vec![m]))
+    }
+
     fn intrinsic(&mut self, b: Builtin, desc: Option<DescId>, a: &[u64]) -> Result<u64, Trap> {
         use Builtin::*;
         let char_at = |s: &str, i: usize| s.chars().nth(i);
@@ -672,6 +696,83 @@ impl Interp<'_> {
                 self.map_insert(a[0], a[1], 0);
                 fresh as u64
             }
+
+            StrTryParseI64 | StrTryParseF64 => {
+                let parsed = if b == StrTryParseI64 {
+                    mathfn::parse_i64(self.str_of(a[0]))
+                } else {
+                    mathfn::parse_f64(self.str_of(a[0]))
+                };
+                match parsed {
+                    Ok(v) => self.ok(v),
+                    Err(e) => self.err_str(e.to_string()),
+                }
+            }
+            StrGetChar => {
+                let i = a[1] as i64;
+                let c = (i >= 0).then(|| self.str_of(a[0]).chars().nth(i as usize)).flatten().map(|c| c as u64);
+                self.option(c)
+            }
+            StrTrySubstring => {
+                let s = self.str_of(a[0]);
+                let n = s.chars().count();
+                let (lo, hi) = (a[1] as i64, a[2] as i64);
+                if lo < 0 || hi < lo || hi as usize > n {
+                    let index = if lo < 0 || hi < lo { lo as i128 } else { hi as i128 };
+                    self.err_str(Trap::IndexOutOfBounds { index, len: n }.to_string())
+                } else {
+                    let sub: String = s.chars().skip(lo as usize).take((hi - lo) as usize).collect();
+                    let v = self.alloc_str(sub);
+                    self.ok(v)
+                }
+            }
+            StrIndexOf => {
+                let (s, sub) = (self.str_of(a[0]), self.str_of(a[1]));
+                let at = s.find(sub).map(|byte| s[..byte].chars().count() as u64);
+                self.option(at)
+            }
+            ArrGet => {
+                let i = a[1] as i64;
+                let e = (i >= 0).then(|| self.array_of(a[0]).get(i as usize).copied()).flatten();
+                self.option(e)
+            }
+            ArrTryPop => {
+                let e = match &mut self.heap[a[0] as usize] {
+                    Obj::Array(v) => v.pop(),
+                    other => panic!("pop on {other:?}"),
+                };
+                self.option(e)
+            }
+            ArrTryRemove => {
+                let len = self.array_of(a[0]).len();
+                let i = a[1] as i64;
+                let e = if i >= 0 && (i as usize) < len {
+                    match &mut self.heap[a[0] as usize] {
+                        Obj::Array(v) => Some(v.remove(i as usize)),
+                        other => panic!("remove on {other:?}"),
+                    }
+                } else {
+                    None
+                };
+                self.option(e)
+            }
+            MapGet => {
+                let e = self.map_find(a[0], a[1]).map(|i| self.map_ref(a[0]).entries[i].1);
+                self.option(e)
+            }
+            CheckedAdd | CheckedSub | CheckedMul | CheckedDiv | CheckedRem | CheckedPow | CheckedShl | CheckedShr
+            | CheckedNeg => {
+                let ty = crate::runtime::value::option_payload_num(&self.prog.descs, desc.expect("result descriptor"));
+                let x = if b == CheckedNeg { 0 } else { a[1] };
+                self.option(mathfn::checked_op(b, ty, a[0], x))
+            }
+            ReadLine => match self.input.pop_front() {
+                Some(l) => {
+                    let s = self.alloc_str(l);
+                    self.some(s)
+                }
+                None => self.none(),
+            },
 
             Abs => mathfn::abs(self.num_ty(desc), a[0])?,
             Pow => mathfn::pow(self.num_ty(desc), a[0], a[1])?,

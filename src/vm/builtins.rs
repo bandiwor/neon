@@ -5,7 +5,7 @@ use super::Vm;
 use crate::builtin::Builtin;
 use crate::ir::TypeDesc;
 use crate::runtime::numeric::NumTy;
-use crate::runtime::value::{value_cmp, value_eq};
+use crate::runtime::value::{option_payload_num, value_cmp, value_eq, ERR_TAG, NONE_TAG, OK_TAG, SOME_TAG};
 use crate::runtime::{mathfn, HeapView, Trap};
 
 impl Vm<'_, '_> {
@@ -22,6 +22,31 @@ impl Vm<'_, '_> {
             Some(TypeDesc::Array(e)) | Some(TypeDesc::Set(e)) => e.0,
             Some(TypeDesc::Map(k, _)) => k.0,
             other => panic!("expected a collection descriptor, got {other:?}"),
+        }
+    }
+
+    fn some(&mut self, desc: Option<u32>, v: u64) -> Result<u64, Trap> {
+        self.heap.alloc_enum(desc.expect("result descriptor"), SOME_TAG, vec![v])
+    }
+
+    fn none(&mut self, desc: Option<u32>) -> Result<u64, Trap> {
+        self.heap.alloc_enum(desc.expect("result descriptor"), NONE_TAG, vec![])
+    }
+
+    fn ok(&mut self, desc: Option<u32>, v: u64) -> Result<u64, Trap> {
+        self.heap.alloc_enum(desc.expect("result descriptor"), OK_TAG, vec![v])
+    }
+
+    fn err_str(&mut self, desc: Option<u32>, message: String) -> Result<u64, Trap> {
+        let m = self.heap.alloc_str(message)?;
+        self.heap.alloc_enum(desc.expect("result descriptor"), ERR_TAG, vec![m])
+    }
+
+    /// `Some(x)` / `None` from an optional value.
+    fn option(&mut self, desc: Option<u32>, v: Option<u64>) -> Result<u64, Trap> {
+        match v {
+            Some(v) => self.some(desc, v),
+            None => self.none(desc),
         }
     }
 
@@ -222,6 +247,83 @@ impl Vm<'_, '_> {
                 0
             }
             SetInsert => self.heap.map_insert(a[0], a[1], 0)? as u64,
+
+            StrTryParseI64 | StrTryParseF64 => {
+                let parsed = if b == StrTryParseI64 {
+                    mathfn::parse_i64(h.str_of(a[0]))
+                } else {
+                    mathfn::parse_f64(h.str_of(a[0]))
+                };
+                match parsed {
+                    Ok(v) => self.ok(desc, v)?,
+                    Err(e) => self.err_str(desc, e.to_string())?,
+                }
+            }
+            StrGetChar => {
+                let i = a[1] as i64;
+                let c = (i >= 0).then(|| h.str_of(a[0]).chars().nth(i as usize)).flatten().map(|c| c as u64);
+                self.option(desc, c)?
+            }
+            StrTrySubstring => {
+                let s = h.str_of(a[0]);
+                let n = s.chars().count();
+                let (lo, hi) = (a[1] as i64, a[2] as i64);
+                if lo < 0 || hi < lo || hi as usize > n {
+                    let index = if lo < 0 || hi < lo { lo as i128 } else { hi as i128 };
+                    self.err_str(desc, Trap::IndexOutOfBounds { index, len: n }.to_string())?
+                } else {
+                    let sub: String = s.chars().skip(lo as usize).take((hi - lo) as usize).collect();
+                    let v = self.heap.alloc_str(sub)?;
+                    self.ok(desc, v)?
+                }
+            }
+            StrIndexOf => {
+                let (s, sub) = (h.str_of(a[0]), h.str_of(a[1]));
+                let at = s.find(sub).map(|byte| s[..byte].chars().count() as u64);
+                self.option(desc, at)?
+            }
+            ArrGet => {
+                let v = h.array_of(a[0]);
+                let i = a[1] as i64;
+                let e = (i >= 0).then(|| v.get(i as usize).copied()).flatten();
+                self.option(desc, e)?
+            }
+            ArrTryPop => {
+                let e = self.heap.with_array(a[0], |arr| arr.pop())?;
+                self.option(desc, e)?
+            }
+            ArrTryRemove => {
+                let len = h.array_of(a[0]).len();
+                let i = a[1] as i64;
+                let e = if i >= 0 && (i as usize) < len {
+                    Some(self.heap.with_array(a[0], |arr| arr.remove(i as usize))?)
+                } else {
+                    None
+                };
+                self.option(desc, e)?
+            }
+            MapGet => {
+                let e = h.map_find(a[0], a[1]).map(|i| h.map_entries_ref(a[0])[i].1);
+                self.option(desc, e)?
+            }
+            CheckedAdd | CheckedSub | CheckedMul | CheckedDiv | CheckedRem | CheckedPow | CheckedShl | CheckedShr => {
+                let ty = option_payload_num(&self.prog.descs, crate::ir::DescId(desc.expect("result descriptor")));
+                self.option(desc, mathfn::checked_op(b, ty, a[0], a[1]))?
+            }
+            CheckedNeg => {
+                let ty = option_payload_num(&self.prog.descs, crate::ir::DescId(desc.expect("result descriptor")));
+                self.option(desc, mathfn::checked_op(b, ty, a[0], 0))?
+            }
+            ReadLine => {
+                let line = self.io.input().map_err(Trap::Io)?;
+                match line {
+                    Some(l) => {
+                        let s = self.heap.alloc_str(l)?;
+                        self.some(desc, s)?
+                    }
+                    None => self.none(desc)?,
+                }
+            }
 
             Abs => mathfn::abs(self.num_ty(desc), a[0])?,
             Pow => mathfn::pow(self.num_ty(desc), a[0], a[1])?,

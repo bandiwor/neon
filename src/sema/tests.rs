@@ -792,3 +792,30 @@ fn mono_time_resolution_of_operators_in_generic_code() {
     let strt = o.prog.types.prim(Prim::Bool);
     assert_eq!(resolve_trait_method(&mut o.prog, m, &[strt, strt]), None);
 }
+
+#[test]
+fn prelude_option_and_result_have_the_variant_order_the_vm_assumes() {
+    use crate::runtime::value::{ERR_TAG, NONE_TAG, OK_TAG, SOME_TAG};
+    let (prog, interner) = {
+        let mut map = crate::diag::SourceMap::new();
+        let mut interner = crate::syntax::Interner::new();
+        let mut diags = crate::diag::DiagBag::new();
+        let prog = crate::sema::analyze_source(
+            "main.neon",
+            "",
+            &crate::vfs::MemVfs::new(),
+            &mut map,
+            &mut interner,
+            &mut diags,
+        );
+        assert!(!diags.has_errors());
+        (prog, interner)
+    };
+    let variant = |adt: crate::sema::AdtId, name: &str| {
+        prog.adt(adt).variants().iter().position(|v| interner.resolve(v.name) == name).unwrap() as u32
+    };
+    let opt = prog.lang_adts.option.expect("Option");
+    let res = prog.lang_adts.result.expect("Result");
+    assert_eq!((variant(opt, "Some"), variant(opt, "None")), (SOME_TAG, NONE_TAG));
+    assert_eq!((variant(res, "Ok"), variant(res, "Err")), (OK_TAG, ERR_TAG));
+}

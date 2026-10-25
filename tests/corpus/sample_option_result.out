@@ -1,0 +1,32 @@
+Option::Some(127)
+Option::None
+Option::None
+Option::None
+Option::None
+Option::Some(4611686018427387904)
+Option::None
+Option::None
+Option::Some(20)
+Option::None
+Option::None
+Option::Some(2)
+Option::Some(1)
+Option::None
+Option::Some(1)
+Option::None
+Result::Ok(42)
+Result::Err("cannot parse `x`")
+Result::Ok(2.5)
+Option::Some('é')
+Option::None
+Result::Ok("bc")
+Result::Err("index 9 out of bounds (length 3)")
+Option::Some(2)
+Option::None
+40
+-1
+13
+failed: cannot parse `zz`
+true
+Option::None
+true

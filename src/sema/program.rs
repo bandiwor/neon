@@ -416,6 +416,13 @@ impl LangItems {
     }
 }
 
+/// The prelude's `Option` and `Result` enums, which fallible builtins return.
+#[derive(Debug, Default, Clone, Copy)]
+pub struct LangAdts {
+    pub option: Option<AdtId>,
+    pub result: Option<AdtId>,
+}
+
 // ---- the program ----------------------------------------------------------------------
 
 /// Which impls exist, for method and trait lookup.
@@ -437,6 +444,7 @@ pub struct Program {
     pub locals: Vec<LocalDef>,
     pub symbols: SymbolTable,
     pub lang: LangItems,
+    pub lang_adts: LangAdts,
     pub impl_index: ImplIndex,
 }
 
