@@ -29,7 +29,8 @@ VG_FLAGS=(
 mapfile -t BINS < <(
     cargo test --no-run --message-format=json 2>/dev/null |
         sed -n 's/.*"executable":"\([^"]*\)".*/\1/p' |
-        sort -u
+        sort -u |
+        grep -v '/neon$' || true # the plain CLI binary is exercised separately below
 )
 
 if [ "${#BINS[@]}" -eq 0 ]; then
