@@ -36,6 +36,7 @@ neon check <file>     report errors without running
 neon disasm <file>    print the bytecode
 neon ir <file>        print the optimized intermediate representation
 neon repl             interactive session
+neon lsp              language server on stdin/stdout (see "Editor support")
 
 --no-opt  --no-peephole      turn optimizers off
 --gc-limit 64k               cap the heap; exceeding it is a run-time error
@@ -64,7 +65,8 @@ Diagnostics (with source snippets) go to stderr, program output to stdout.
   overflow or divide by zero (`const X: i8 = 100 + 100;` is an error, even if
   `X` is never used). `const` is module-level only; its value must be a number,
   `bool`, `char` or `string`.
-* **Control flow**: `if`/`else` and `match` are expressions; `while`, `for x in
+* **Control flow**: `if`/`elif`/`else` and `match` are expressions (`else if`
+  is an error with a hint; so is `let mut`, write `var`); `while`, `for x in
   xs`, ranges `a..b` / `a..=b`, `break`, `continue`, `return`.
 * **Patterns**: literals, ranges, `|` alternatives, bindings, enum variants with
   nested payload patterns, `_`, and `if` guards. Matches must be exhaustive.
@@ -135,6 +137,22 @@ stack overflow and out-of-memory.
 
 More programs live in `tests/corpus/`.
 
+## Editor support
+
+`neon lsp` is a language server (stdio, no dependencies). It reports the
+compiler's own diagnostics (with `help:` notes) and offers hover, go to
+definition, references, rename, document and workspace symbols, completion,
+signature help, document highlights and semantic tokens. Unsaved buffers are
+analyzed through an overlay file system, and the importers of a changed module
+are re-analyzed. Rename and references work across the import graph of the open
+document; files that are not reachable from it are not searched.
+
+`editors/nvim/` is a Neovim plugin: filetype detection, syntax highlighting,
+indentation, `:NeonRun`/`:NeonCheck`/`:NeonDisasm`/`:NeonIr`/`:NeonRepl`, and
+the client configuration for the server. Setup with lazy.nvim (Mason cannot
+install `neon`, it is built with cargo) is in
+[`editors/nvim/README.md`](editors/nvim/README.md).
+
 ## Architecture
 
 ```
@@ -154,6 +172,7 @@ source ─▶ lexer ─▶ parser ─▶ sema ─▶ IR ─▶ IR optimizer ─�
 | `gc/` | Handle-based object heap, upvalue cells, exact mark-and-sweep, root scanning from stack maps. |
 | `vm/` | The register machine and the `VmIo` trait. |
 | `runtime/` | Numeric semantics, formatting and builtins shared by the constant folder, the interpreter and the VM, so `127i8 + 1` means the same thing at compile time and at run time. |
+| `lsp/` | Language server (`neon lsp`): JSON-RPC over stdio, a std-only JSON codec, an overlay VFS for unsaved buffers, and features built on the same analysis the compiler uses. |
 | `cli.rs`, `repl.rs` | The command line and the replay-based REPL, written against traits. |
 
 ### Execution model
@@ -182,7 +201,7 @@ is part of the checks below.
 ## Testing
 
 ```sh
-cargo test                                    # unit + integration tests
+cargo test                                    # unit + integration tests (the editor tests skip when vim/nvim is absent)
 cargo build --lib --target wasm32-unknown-unknown
 scripts/valgrind_test.sh                      # every test binary and the CLI under Valgrind
 ```
