@@ -3,7 +3,7 @@
 A statically typed language with a register bytecode VM, written in pure Rust
 (edition 2021, **standard library only** — no third-party crates).
 
-Status: **Phase 1 of 10** — VFS, diagnostics and spans.
+Status: **Phase 2 of 10** — VFS, diagnostics, spans, lexer and string interner.
 
 ## Design constraints
 
@@ -21,12 +21,13 @@ Status: **Phase 1 of 10** — VFS, diagnostics and spans.
 src/
   vfs/    Vfs trait, OsVfs (non-wasm only), MemVfs, lexical path helpers
   diag/   FileId/Span, SourceMap (offset -> line/col), Diagnostic, DiagBag, ASCII Emitter
+  syntax/ Interner/Symbol, LitPool, tokens, resilient streaming Lexer
   main.rs CLI entry point
 tests/    integration tests
 scripts/  valgrind_test.sh, valgrind.supp
 ```
 
-Later phases add `syntax/`, `sema/`, `ir/`, `bytecode/`, `compiler/`, `gc/`, `vm/`.
+Later phases extend `syntax/` (AST, parser) and add `sema/`, `ir/`, `bytecode/`, `compiler/`, `gc/`, `vm/`.
 
 ## Checks
 
