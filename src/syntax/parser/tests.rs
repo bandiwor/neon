@@ -672,3 +672,12 @@ fn the_old_spellings_are_reported_once_and_still_parse() {
     let p = parse("let mut = 3; let y = mut + 1;");
     assert!(p.diags.is_empty(), "{:?}", p.messages());
 }
+
+#[test]
+fn question_mark_is_a_postfix_operator() {
+    assert_eq!(expr("a?"), "(try a)");
+    assert_eq!(expr("a.b()?.c()?"), "(try (mcall (try (mcall a b)) c))");
+    assert_eq!(expr("f(x?)?"), "(try (call f (try x)))");
+    assert_eq!(expr("a? + b?"), "(+ (try a) (try b))");
+    assert_eq!(expr("-a?"), "(- (try a))");
+}

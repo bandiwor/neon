@@ -1,6 +1,7 @@
 //! Expression checking.
 
 use super::{Checker, Frame, LoopCtx};
+use crate::diag::Span;
 use crate::sema::infer::VarKind;
 use crate::sema::program::*;
 use crate::sema::types::{Prim, Ty, TyKind};
@@ -85,6 +86,7 @@ impl Checker<'_> {
             }
             NodeKind::Field { base, name } => self.field(id, base, name),
             NodeKind::Index { base, index } => self.index(id, base, index),
+            NodeKind::Try { expr } => self.try_expr(expr, span),
             NodeKind::Range { .. } => {
                 self.err(span, "E0218", "ranges can only be used as the iterable of a `for` loop", "not allowed here");
                 self.error_ty()
@@ -381,5 +383,59 @@ impl Checker<'_> {
         self.info().closures.insert(id, ClosureInfo { params: locals, captures: frame.captures, ret: ret_ty });
         self.closure_nodes.push(id);
         self.prog.types.func(ptys, ret_ty)
+    }
+}
+
+impl Checker<'_> {
+    /// `operand?`: the value inside an `Option` / `Result`, or an early return
+    /// of the failure. The enclosing function must return the same family
+    /// (`Option<_>` for an `Option`, `Result<_, E>` with the same `E` for a
+    /// `Result`).
+    fn try_expr(&mut self, operand: NodeId, span: Span) -> Ty {
+        let t = self.expr(operand, None);
+        let t = self.shallow(t);
+        let la = self.prog.lang_adts;
+        let (is_option, payload, err) = match self.prog.types.kind(t).clone() {
+            TyKind::Adt(adt, args) if Some(adt) == la.option => (true, args[0], None),
+            TyKind::Adt(adt, args) if Some(adt) == la.result => (false, args[0], Some(args[1])),
+            TyKind::Error => return self.error_ty(),
+            _ => {
+                let shown = self.show(t);
+                self.err(
+                    span,
+                    "E0260",
+                    format!("the `?` operator needs an `Option` or a `Result`, found `{shown}`"),
+                    "cannot use `?` here",
+                );
+                return self.error_ty();
+            }
+        };
+        if self.top_level && self.frames.len() == 1 {
+            self.err(span, "E0262", "`?` outside of a function", "there is no function to return from");
+            return payload;
+        }
+        let ret = self.frames.last().map(|f| f.ret).unwrap_or_else(|| self.unit());
+        let rest = self.fresh(span);
+        let wanted = if is_option {
+            self.prog.types.adt(la.option.expect("Option"), vec![rest])
+        } else {
+            self.prog.types.adt(la.result.expect("Result"), vec![rest, err.expect("error type")])
+        };
+        if self.infer.unify(&mut self.prog.types, ret, wanted).is_err() {
+            let (family, shown_ret) = (if is_option { "Option" } else { "Result" }, self.show(ret));
+            let help = if is_option {
+                "the function must return an `Option<_>`; convert with `.ok_or(error)` to use `?` in a `Result` function"
+            } else {
+                "the function must return a `Result<_, E>` with the same error type"
+            };
+            self.err_help(
+                span,
+                "E0261",
+                format!("`?` on a `{family}` cannot be used in a function that returns `{shown_ret}`"),
+                "the early return does not fit the function's return type",
+                help,
+            );
+        }
+        payload
     }
 }

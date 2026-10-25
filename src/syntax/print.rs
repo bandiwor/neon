@@ -298,6 +298,7 @@ impl Printer<'_> {
                 self.close();
             }
             Index { base, index } => self.form("index", &[base, index]),
+            Try { expr } => self.form("try", &[expr]),
             Range { start, end, inclusive } => {
                 self.open(if inclusive { "..=" } else { ".." });
                 for part in [start, end] {

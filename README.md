@@ -98,6 +98,28 @@ match "12x".try_parse_i64() {
 let safe = 250u8.checked_add(10u8).unwrap_or(255u8);  // 255
 ```
 
+### The `?` operator
+
+`expr?` unwraps a `Some` / `Ok` and otherwise returns the failure from the
+enclosing function (`None`, or `Err(e)` with the same error type):
+
+```neon
+fn total(items: [string]) -> Result<i64, string> {
+    var sum: i64 = 0;
+    for s in items { sum += s.trim().try_parse_i64()?; }
+    Result::Ok(sum)
+}
+fn first_even(xs: [i64]) -> Option<i64> {
+    let first = xs.get(0)?;
+    if first % 2 == 0 { Option::Some(first) } else { Option::None }
+}
+```
+
+It works in functions and closures, chains (`a.b()?.c()?`), and the compiler
+checks that the function returns the same family: `?` on an `Option` needs an
+`Option<_>` return type (use `.ok_or(error)` to turn it into a `Result`), `?` on
+a `Result<_, E>` needs `Result<_, E>`.
+
 What remains a trap: `panic`, `assert`, `unwrap`/`expect` on `None`/`Err`,
 stack overflow and out-of-memory.
 

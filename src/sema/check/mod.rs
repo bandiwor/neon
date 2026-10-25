@@ -135,6 +135,18 @@ impl<'a> Checker<'a> {
         self.diags.report(Diagnostic::error(message).with_code(code).with_label(span, label));
     }
 
+    /// Like [`err`](Self::err), with a `help:` line.
+    pub fn err_help(
+        &mut self,
+        span: Span,
+        code: &'static str,
+        message: impl Into<String>,
+        label: impl Into<String>,
+        help: impl Into<String>,
+    ) {
+        self.diags.report(Diagnostic::error(message).with_code(code).with_label(span, label).with_help(help));
+    }
+
     pub fn name(&self, s: Symbol) -> &str {
         self.interner.resolve(s)
     }

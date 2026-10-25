@@ -1,0 +1,17 @@
+Result::Ok(42)
+Result::Err("cannot parse `x`")
+Result::Err("cannot parse `q`")
+Option::Some(4)
+Option::None
+Option::None
+Option::Some(12)
+Option::None
+Result::Ok(42)
+Result::Err("overflow")
+Result::Err("cannot parse `nope`")
+Result::Ok(42)
+Result::Err("cannot parse `z`")
+Option::Some(12)
+Option::None
+Result::Ok(6)
+Result::Err("cannot parse `two`")

@@ -40,6 +40,8 @@ pub(super) struct FnLower<'l, 'a> {
     pub unit: Option<VReg>,
     /// The closure's captured variables, in upvalue order (empty otherwise).
     pub captures: Vec<LocalId>,
+    /// The (instantiated) return type of the function, which `?` builds early returns of.
+    pub ret_ty: Ty,
 }
 
 /// An `IrFunc` with its signature but no body, for call sites to refer to.
@@ -104,6 +106,16 @@ pub(super) fn lower_instance(cx: &mut Lowerer<'_>, id: FuncId, key: FuncKey) {
     let args = match &key {
         FuncKey::Fn(_, a) | FuncKey::Closure(_, _, a) => a.clone(),
     };
+    let ret_ty = match &key {
+        FuncKey::Fn(f, a) => {
+            let r = cx.prog.fns[f.index()].ret;
+            cx.prog.types.subst(r, a)
+        }
+        FuncKey::Closure(m, node, a) => {
+            let r = cx.prog.modules[m.index()].info.closures[node].ret;
+            cx.prog.types.subst(r, a)
+        }
+    };
     let mut fl = FnLower {
         cx,
         ast,
@@ -117,6 +129,7 @@ pub(super) fn lower_instance(cx: &mut Lowerer<'_>, id: FuncId, key: FuncKey) {
         loops: Vec::new(),
         unit: None,
         captures: Vec::new(),
+        ret_ty,
     };
     let entry = fl.f.new_block();
     fl.cur = entry;

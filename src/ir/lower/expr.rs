@@ -105,6 +105,7 @@ impl FnLower<'_, '_> {
                 self.emit(Inst::GetField { dst, obj, idx });
                 dst
             }
+            NodeKind::Try { expr } => self.try_expr(expr),
             NodeKind::Index { base, index } => {
                 let regs = self.operands(&[base, index]);
                 self.index_get(id, base, regs[0], index, regs[1])
@@ -492,5 +493,50 @@ impl FnLower<'_, '_> {
             self.emit(Inst::Intrinsic { dst: res, b: append, desc: Some(desc), args: vec![dst, v] });
         }
         dst
+    }
+}
+
+impl FnLower<'_, '_> {
+    /// `operand?`: continue with the payload of `Some` / `Ok`, or return
+    /// `None` / `Err(e)` (rebuilt at the function's own return type).
+    fn try_expr(&mut self, operand: NodeId) -> VReg {
+        use crate::runtime::value::{ERR_TAG, NONE_TAG, OK_TAG, SOME_TAG};
+        let v = self.expr(operand);
+        let operand_ty = self.node_ty(operand);
+        let la = self.cx.prog.lang_adts;
+        let TyKind::Adt(adt, args) = self.cx.prog.types.kind(operand_ty).clone() else {
+            self.cx.error("internal error: `?` on a non-enum");
+            return self.unit();
+        };
+        let is_option = Some(adt) == la.option;
+        let ok_tag = if is_option { SOME_TAG } else { OK_TAG };
+
+        let cont = self.new_block();
+        let early = self.new_block();
+        self.terminate(Term::BranchTag { obj: v, tag: ok_tag, then: cont, els: early });
+
+        // the failure path: build `None` / `Err(e)` of the function's return type and return it
+        self.switch_to(early);
+        let ret_desc = {
+            let t = self.ret_ty;
+            self.cx.desc(t)
+        };
+        let failure = self.new_reg(IrTy::Ref);
+        if is_option {
+            self.emit(Inst::NewEnum { dst: failure, desc: ret_desc, tag: NONE_TAG, fields: vec![] });
+        } else {
+            let err_ir = self.cx.ir_ty(args[1]);
+            let e = self.new_reg(err_ir);
+            self.emit(Inst::EnumField { dst: e, obj: v, idx: 0 });
+            self.emit(Inst::NewEnum { dst: failure, desc: ret_desc, tag: ERR_TAG, fields: vec![e] });
+        }
+        self.terminate(Term::Return(failure));
+
+        // the success path continues here with the payload
+        self.switch_to(cont);
+        let payload_ir = self.cx.ir_ty(args[0]);
+        let payload = self.new_reg(payload_ir);
+        self.emit(Inst::EnumField { dst: payload, obj: v, idx: 0 });
+        payload
     }
 }

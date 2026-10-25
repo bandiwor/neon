@@ -258,6 +258,10 @@ pub enum NodeKind {
     UnitLit,
     /// A single-segment path without generic arguments.
     Ident(Symbol),
+    /// `expr?`: unwrap an `Option` / `Result`, or return the failure from the function.
+    Try {
+        expr: NodeId,
+    },
     /// Any other path (`Option::Some`, `m::f`, `parse::<i32>`); elements are `PathSegment`s.
     Path {
         segments: NodeList,

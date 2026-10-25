@@ -819,3 +819,38 @@ fn prelude_option_and_result_have_the_variant_order_the_vm_assumes() {
     assert_eq!((variant(opt, "Some"), variant(opt, "None")), (SOME_TAG, NONE_TAG));
     assert_eq!((variant(res, "Ok"), variant(res, "Err")), (OK_TAG, ERR_TAG));
 }
+
+fn error_codes(o: &Out) -> Vec<&'static str> {
+    o.diags.iter().filter_map(|d| d.code).collect()
+}
+
+#[test]
+fn question_mark_typechecks_in_matching_functions() {
+    let o = run("fn a(s: string) -> Option<i64> { let n = s.index_of(\"x\")?; Option::Some(n + 1) }\n\
+                 fn b(s: string) -> Result<i64, string> { let n = s.try_parse_i64()?; Result::Ok(n) }\n\
+                 fn c() -> Option<i64> { let v = [1, 2].get(0)?; let w = [3].get(0)?; Option::Some(v + w) }");
+    assert!(!o.diags.has_errors(), "{}", o.rendered());
+}
+
+#[test]
+fn question_mark_rejects_the_wrong_operand_and_the_wrong_function() {
+    // not an Option / Result
+    let o = run("fn f() -> Option<i64> { let n = 5?; Option::Some(n) }");
+    assert_eq!(error_codes(&o), ["E0260"], "{}", o.rendered());
+    assert!(o.rendered().contains("needs an `Option` or a `Result`"));
+    // function returns something else
+    let o = run("fn f(s: string) -> i64 { s.try_parse_i64()? }");
+    assert_eq!(error_codes(&o), ["E0261"], "{}", o.rendered());
+    let o = run("fn f(s: string) { let n = s.index_of(\"a\")?; println(n); }");
+    assert_eq!(error_codes(&o), ["E0261"], "{}", o.rendered());
+    // an Option inside a Result function: suggest ok_or
+    let o = run("fn f(s: string) -> Result<i64, string> { let n = s.index_of(\"a\")?; Result::Ok(n) }");
+    assert_eq!(error_codes(&o), ["E0261"], "{}", o.rendered());
+    assert!(o.rendered().contains("ok_or"), "{}", o.rendered());
+    // different error types
+    let o = run("fn f(s: string) -> Result<i64, i64> { let n = s.try_parse_i64()?; Result::Ok(n) }");
+    assert_eq!(error_codes(&o), ["E0261"], "{}", o.rendered());
+    // no function around
+    let o = run("let n = \"1\".try_parse_i64()?;");
+    assert_eq!(error_codes(&o), ["E0262"], "{}", o.rendered());
+}

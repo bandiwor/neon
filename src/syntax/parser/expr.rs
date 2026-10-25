@@ -199,6 +199,10 @@ impl Parser<'_> {
                     self.expect(TokenKind::RBracket)?;
                     e = self.node(NodeKind::Index { base: e, index }, lo);
                 }
+                TokenKind::Question => {
+                    self.bump();
+                    e = self.node(NodeKind::Try { expr: e }, lo);
+                }
                 TokenKind::Dot => {
                     self.bump();
                     let (name, _) = self.expect_ident()?;

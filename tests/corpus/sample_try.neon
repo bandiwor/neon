@@ -1,0 +1,52 @@
+// The ? operator unwraps Some/Ok or returns None/Err from the enclosing function.
+fn parse_sum(a: string, b: string) -> Result<i64, string> {
+    let x = a.try_parse_i64()?;
+    let y = b.try_parse_i64()?;
+    Result::Ok(x + y)
+}
+fn first_even(xs: [i64]) -> Option<i64> {
+    let first = xs.get(0)?;
+    if first % 2 == 0 { Option::Some(first) } else { Option::None }
+}
+fn div_all(xs: [i64], d: i64) -> Option<i64> {
+    var total: i64 = 0;
+    for x in xs { total = total.checked_add(x.checked_div(d)?)?; }
+    Option::Some(total)
+}
+fn chain(s: string) -> Result<i64, string> {
+    let n = s.try_parse_i64()?;
+    let doubled = n.checked_mul(2).ok_or("overflow")?;
+    Result::Ok(doubled)
+}
+println(parse_sum("20", "22"));
+println(parse_sum("20", "x"));
+println(parse_sum("q", "22"));
+println(first_even([4, 5]));
+println(first_even([3]));
+println(first_even([]));
+println(div_all([10, 20, 30], 5));
+println(div_all([10, 20, 30], 0));
+println(chain("21"));
+println(chain("9223372036854775807"));
+println(chain("nope"));
+let f = |s: string| => { let n = s.try_parse_i64()?; Result::Ok(n + 1) };
+println(f("41")); println(f("z"));
+// an early return after a closure captured a variable
+fn with_closure(s: string) -> Option<i64> {
+    var count = 0;
+    let bump = || => { count += 1; count };
+    bump();
+    let n = s.try_parse_i64().ok()?;
+    bump();
+    Option::Some(n + count)
+}
+println(with_closure("10"));
+println(with_closure("x"));
+// `?` on a method-call chain and inside a loop
+fn sum_all(items: [string]) -> Result<i64, string> {
+    var total: i64 = 0;
+    for s in items { total += s.trim().try_parse_i64()?; }
+    Result::Ok(total)
+}
+println(sum_all([" 1", "2 ", " 3 "]));
+println(sum_all(["1", "two", "3"]));

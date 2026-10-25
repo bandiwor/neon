@@ -119,6 +119,7 @@ impl<'a> Lexer<'a> {
             ',' => Comma,
             ';' => Semi,
             '~' => Tilde,
+            '?' => Question,
             ':' => self.pick(':', ColonColon, Colon),
             '.' => {
                 if self.eat('.') {
@@ -700,14 +701,14 @@ mod tests {
     #[test]
     fn operators_use_longest_match() {
         let out = lex(
-            ":: : . .. ..= -> => + - * / % & | ^ ~ << >> ! && || == != < <= > >= = += -= *= /= %= &= |= ^= <<= >>=",
+            ":: : . .. ..= -> => + - * / % & | ^ ~ ? << >> ! && || == != < <= > >= = += -= *= /= %= &= |= ^= <<= >>=",
         );
         assert_eq!(
             out.kinds(),
             vec![
                 ColonColon, Colon, Dot, DotDot, DotDotEq, Arrow, FatArrow, Plus, Minus, Star, Slash, Percent, Amp,
-                Pipe, Caret, Tilde, Shl, Shr, Bang, AmpAmp, PipePipe, EqEq, BangEq, Lt, Le, Gt, Ge, Eq, PlusEq,
-                MinusEq, StarEq, SlashEq, PercentEq, AmpEq, PipeEq, CaretEq, ShlEq, ShrEq
+                Pipe, Caret, Tilde, Question, Shl, Shr, Bang, AmpAmp, PipePipe, EqEq, BangEq, Lt, Le, Gt, Ge, Eq,
+                PlusEq, MinusEq, StarEq, SlashEq, PercentEq, AmpEq, PipeEq, CaretEq, ShlEq, ShrEq
             ]
         );
         assert!(out.diags.is_empty());
@@ -934,9 +935,9 @@ mod tests {
 
     #[test]
     fn unknown_characters_are_grouped() {
-        let out = lex("a ?? b");
+        let out = lex("a @@ b");
         assert_eq!(out.error_codes(), vec!["E0001"]);
-        assert!(out.error_messages()[0].contains("unknown characters `??`"));
+        assert!(out.error_messages()[0].contains("unknown characters `@@`"));
         let k = out.kinds();
         assert_eq!((k.len(), k[1]), (3, Error));
 
