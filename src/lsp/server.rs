@@ -6,6 +6,7 @@ use std::io::{self, BufRead, Write};
 use super::analysis::complete::{call_context, closing_delimiters, completion_context, CompletionContext};
 use super::analysis::{Analysis, TOKEN_MODIFIERS, TOKEN_TYPES};
 use super::json::Json;
+use super::position::LineIndex;
 use super::uri::{path_to_uri, uri_to_path};
 use crate::vfs::{path, Vfs};
 
@@ -339,6 +340,25 @@ impl<'v, W: Write> Server<'v, W> {
             Ok((line, ch))
         };
         match method {
+            "textDocument/formatting" => {
+                let text = match self.docs.get(&uri) {
+                    Some(d) => d.text.clone(),
+                    None => return Err((REQUEST_FAILED, format!("document `{uri}` is not open"))),
+                };
+                // source that does not parse is left alone: no edits, no error popup
+                let edits = match crate::fmt::format_source(&text) {
+                    Ok(out) if out != text => {
+                        let (line, ch) = LineIndex::new(&text).position(text.len());
+                        let pos = |l: u32, c: u32| Json::object(vec![("line", l.into()), ("character", c.into())]);
+                        vec![Json::object(vec![
+                            ("range", Json::object(vec![("start", pos(0, 0)), ("end", pos(line, ch))])),
+                            ("newText", out.into()),
+                        ])]
+                    }
+                    _ => Vec::new(),
+                };
+                Ok(Json::Arr(edits))
+            }
             "textDocument/hover" => {
                 let (line, ch) = position()?;
                 let a = self.analysis_of(&uri)?;
@@ -487,6 +507,7 @@ fn initialize_result() -> Json {
                     ]),
                 ),
                 ("hoverProvider", true.into()),
+                ("documentFormattingProvider", true.into()),
                 ("definitionProvider", true.into()),
                 ("referencesProvider", true.into()),
                 ("documentHighlightProvider", true.into()),

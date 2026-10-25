@@ -25,6 +25,11 @@ pub trait Vfs: fmt::Debug {
     /// Reads the whole file as UTF-8 text.
     fn read_to_string(&self, path: &str) -> io::Result<String>;
 
+    /// Replaces the contents of `path`. Read-only file systems keep the default.
+    fn write(&self, path: &str, _contents: &str) -> io::Result<()> {
+        Err(io::Error::new(io::ErrorKind::Unsupported, format!("cannot write {path}: file system is read-only")))
+    }
+
     /// Whether `path` names a file or directory.
     fn exists(&self, path: &str) -> bool;
 

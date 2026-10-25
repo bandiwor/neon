@@ -17,6 +17,7 @@ local M = {}
 ---@field semantic_tokens boolean use the server's semantic highlighting (default: true)
 ---@field keymaps boolean         set buffer-local LSP keymaps (default: false)
 ---@field commands boolean        define :NeonRun, :NeonCheck, ... (default: true)
+---@field format_on_save boolean  run `neon fmt` through the language server before writing (default: false)
 M.defaults = {
   cmd = { "neon", "lsp" },
   lsp = true,
@@ -26,6 +27,7 @@ M.defaults = {
   semantic_tokens = true,
   keymaps = false,
   commands = true,
+  format_on_save = false,
 }
 
 M.config = vim.deepcopy(M.defaults)
@@ -66,6 +68,7 @@ local function set_keymaps(bufnr)
   map("K", vim.lsp.buf.hover, "hover")
   map("<leader>rn", vim.lsp.buf.rename, "rename")
   map("<leader>ds", vim.lsp.buf.document_symbol, "document symbols")
+  map("<leader>f", M.format, "format")
   vim.keymap.set("i", "<C-s>", vim.lsp.buf.signature_help, { buffer = bufnr, desc = "Neon: signature help" })
 end
 
@@ -99,6 +102,35 @@ function M.start(bufnr)
   }, { bufnr = bufnr })
 end
 
+--- Formats the current buffer: through the language server when one is attached, otherwise
+--- by piping the text through `neon fmt`. Source with syntax errors is left untouched.
+function M.format(bufnr)
+  bufnr = bufnr or vim.api.nvim_get_current_buf()
+  local clients = vim.lsp.get_clients and vim.lsp.get_clients({ bufnr = bufnr, name = "neon" })
+    or vim.lsp.get_active_clients({ bufnr = bufnr, name = "neon" })
+  if #clients > 0 then
+    vim.lsp.buf.format({ bufnr = bufnr, name = "neon", timeout_ms = 3000 })
+    return true
+  end
+  local lines = vim.api.nvim_buf_get_lines(bufnr, 0, -1, false)
+  local cmd = { M.config.cmd[1], "fmt", "-" }
+  if vim.fn.executable(cmd[1]) ~= 1 then
+    warn("`" .. cmd[1] .. "` was not found in $PATH")
+    return false
+  end
+  local out = vim.fn.systemlist(cmd, lines)
+  if vim.v.shell_error ~= 0 then
+    warn("cannot format: " .. table.concat(out, "\n"))
+    return false
+  end
+  if not vim.deep_equal(out, lines) then
+    local view = vim.fn.winsaveview()
+    vim.api.nvim_buf_set_lines(bufnr, 0, -1, false, out)
+    vim.fn.winrestview(view)
+  end
+  return true
+end
+
 --- Runs `neon <subcommand> <file>` in a terminal split.
 local function run_in_terminal(subcommand, extra)
   local file = vim.api.nvim_buf_get_name(0)
@@ -128,6 +160,9 @@ local function define_commands()
   vim.api.nvim_create_user_command("NeonIr", function()
     run_in_terminal("ir")
   end, { desc = "Show the optimized IR of the current Neon file" })
+  vim.api.nvim_create_user_command("NeonFormat", function()
+    M.format()
+  end, { desc = "Format the current Neon buffer (neon fmt)" })
   vim.api.nvim_create_user_command("NeonRepl", function()
     vim.cmd("botright 14split | terminal " .. vim.fn.shellescape(M.config.cmd[1]) .. " repl")
     vim.cmd("startinsert")
@@ -165,6 +200,16 @@ function M.setup(opts)
         M.start(buf)
       end
     end
+  end
+  if M.config.format_on_save then
+    vim.api.nvim_create_autocmd("BufWritePre", {
+      group = group,
+      pattern = "*.neon",
+      desc = "Format Neon files on save",
+      callback = function(args)
+        M.format(args.buf)
+      end,
+    })
   end
   if M.config.commands then
     define_commands()

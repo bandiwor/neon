@@ -825,3 +825,33 @@ fn module_aliases_complete_and_navigate() {
     let changes = edit.get("changes").unwrap();
     assert!(changes.get("file:///proj/geo.neon").is_some() && changes.get(URI).is_some(), "{edit}");
 }
+
+// ---- formatting --------------------------------------------------------------------------------
+
+#[test]
+fn formatting_returns_one_edit_for_the_whole_document() {
+    let vfs = MemVfs::new();
+    let mut c = Client::new(&vfs);
+    let caps = c.request("initialize", obj(vec![("capabilities", obj(vec![]))]));
+    assert_eq!(caps.path(&["capabilities", "documentFormattingProvider"]), Some(&Json::Bool(true)));
+    let messy = "fn main() {\nlet x=1+2;\n   println(x);\n}";
+    c.open(URI, messy);
+    let params = obj(vec![
+        ("textDocument", obj(vec![("uri", URI.into())])),
+        ("options", obj(vec![("tabSize", 4u32.into()), ("insertSpaces", true.into())])),
+    ]);
+    let edits = c.request("textDocument/formatting", params.clone());
+    let edits = edits.as_array().unwrap();
+    assert_eq!(edits.len(), 1);
+    assert_eq!(range_of(&edits[0]), (0, 0, 3, 1));
+    assert_eq!(
+        edits[0].get("newText").and_then(Json::as_str),
+        Some("fn main() {\n    let x = 1 + 2;\n    println(x);\n}\n")
+    );
+
+    // already formatted: no edits; broken source: no edits and no error
+    c.open(URI, "fn main() {\n}\n");
+    assert_eq!(c.request("textDocument/formatting", params.clone()).as_array().unwrap().len(), 0);
+    c.open(URI, "fn main( {");
+    assert_eq!(c.request("textDocument/formatting", params).as_array().unwrap().len(), 0);
+}

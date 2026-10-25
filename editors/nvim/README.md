@@ -58,10 +58,11 @@ because the plugin sits in a subdirectory.
 | `semantic_tokens` | `true` | highlight with the server's semantic tokens on top of the regex syntax |
 | `capabilities` | `nil` | extra client capabilities; `nvim-cmp` / `blink.cmp` are picked up automatically |
 | `on_attach` | `nil` | `function(client, bufnr)` called after the built-in setup |
+| `format_on_save` | `false` | format the buffer before every write |
 | `commands` | `true` | define the commands below |
 
 Neovim 0.10+ already maps `K` (hover) and `grn`/`gra`/`grr` (0.11) by default;
-`keymaps = true` is for older versions or if you want the classic mappings.
+`keymaps = true` also maps `<leader>f` to the formatter, and is for older versions or if you want the classic mappings.
 
 ### Commands
 
@@ -70,9 +71,30 @@ Neovim 0.10+ already maps `K` (hover) and `grn`/`gra`/`grr` (0.11) by default;
 | `:NeonRun [options]` | run the current file in a terminal split (`--gc-stress`, `--stats`, ...) |
 | `:NeonCheck` | compile errors only |
 | `:NeonDisasm`, `:NeonIr` | bytecode / optimized IR |
+| `:NeonFormat` | format the buffer (`neon fmt`; through the server if attached, else by piping the text through `neon fmt -`) |
 | `:NeonRepl` | the REPL |
 | `:NeonLspRestart` | restart the server (e.g. after `cargo install` of a new build) |
 | `:checkhealth neon` | checks the binary, the filetype and the server |
+
+### Enter, indentation and formatting
+
+* **Enter after `{`** (also `(` and `[`) indents the next line, and typing `}` dedents it.
+* **Enter between a pair**: with the cursor in `fn new() -> Point {|}` pressing Enter gives
+
+  ```
+  fn new() -> Point {
+      |
+  }
+  ```
+
+  This works without an auto-pairs plugin (the buffer-local `<CR>` mapping
+  handles it and forwards to the previous `<CR>` mapping, e.g. nvim-cmp's, in
+  all other cases). Turn it off with `let g:neon_smart_enter = 0`.
+* **Formatting**: `:NeonFormat`, `vim.lsp.buf.format()`, `format_on_save = true`,
+  or any formatter plugin: for conform.nvim use
+  `formatters_by_ft = { neon = { "neon_fmt" } }` with
+  `formatters.neon_fmt = { command = "neon", args = { "fmt", "-" }, stdin = true }`.
+  Files with syntax errors are not touched.
 
 ## Using lspconfig instead
 
@@ -97,16 +119,16 @@ require("lspconfig").neon.setup({})
 ## Only syntax highlighting (no plugin manager)
 
 ```sh
-mkdir -p ~/.config/nvim && cp -r editors/nvim/{ftdetect,ftplugin,indent,syntax} ~/.config/nvim/
+mkdir -p ~/.config/nvim && cp -r editors/nvim/{ftdetect,ftplugin,indent,syntax,lua} ~/.config/nvim/
 ```
 
-(Vim works too for these four directories.)
+(Vim works too for `ftdetect`, `ftplugin`, `indent` and `syntax`; the smart Enter has a plain-Vimscript fallback there.)
 
 ## What the server supports
 
 Diagnostics (compiler errors with their `help:` notes, on every change, also for
 unsaved buffers), hover, go to definition, references, document highlight,
-rename, document and workspace symbols, completion (locals, items, imports,
+rename, document and workspace symbols, formatting, completion (locals, items, imports,
 struct fields and methods after `.`, enum variants after `::`), signature help,
 and semantic tokens. Rename and references work across the import graph of the
 open document.

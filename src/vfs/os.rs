@@ -20,6 +20,10 @@ impl Vfs for OsVfs {
         fs::read_to_string(path)
     }
 
+    fn write(&self, path: &str, contents: &str) -> io::Result<()> {
+        fs::write(path, contents)
+    }
+
     fn exists(&self, path: &str) -> bool {
         Path::new(path).exists()
     }

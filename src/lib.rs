@@ -13,6 +13,7 @@ pub mod cli;
 pub mod compiler;
 pub mod diag;
 pub mod driver;
+pub mod fmt;
 pub mod gc;
 pub mod ir;
 pub mod lsp;

@@ -21,6 +21,7 @@ Commands:
   disasm <file>   print the compiled bytecode
   ir <file>       print the (optimized) intermediate representation
   repl            start an interactive session
+  fmt <file>...   format source files (prints; -w rewrites, --check verifies)
   lsp             run the language server on stdin/stdout
 
 Options:
@@ -31,6 +32,8 @@ Options:
   --max-steps <n>     stop with a panic after n instructions
   --max-frames <n>    maximum call depth
   --stats             print collector statistics to stderr after the run
+  -w, --write         (fmt) rewrite the files in place
+  --check             (fmt) exit with status 1 if a file is not formatted
   -h, --help          show this help
   -V, --version       show the version
 
@@ -50,12 +53,17 @@ enum Command {
     Ir,
     Repl,
     Lsp,
+    Fmt,
 }
 
 #[derive(Debug)]
 struct Args {
     command: Command,
     file: Option<String>,
+    /// every file argument (`fmt` takes several)
+    files: Vec<String>,
+    write: bool,
+    check: bool,
     opts: Options,
     vm: VmConfig,
     stats: bool,
@@ -82,6 +90,9 @@ fn parse_args(args: &[String]) -> Parsed {
     let usage = |msg: String| Parsed::Exit(format!("error: {msg}\n\n{USAGE}"), EXIT_USAGE);
     let mut command = None;
     let mut file = None;
+    let mut files: Vec<String> = Vec::new();
+    let mut write = false;
+    let mut check = false;
     let mut opts = Options { opt: OptConfig::default(), compile: CompileOptions { peephole: true } };
     let mut vmcfg = VmConfig::default();
     let mut gc = GcConfig::default();
@@ -101,6 +112,8 @@ fn parse_args(args: &[String]) -> Parsed {
                 gc.reuse_slots = false;
             }
             "--stats" => stats = true,
+            "-w" | "--write" => write = true,
+            "--check" => check = true,
             // editors launch `neon lsp --stdio`; stdio is the only transport
             "--stdio" => {}
             "--gc-limit" => match value("--gc-limit").and_then(|v| parse_size(&v).ok_or(format!("bad size `{v}`"))) {
@@ -128,7 +141,9 @@ fn parse_args(args: &[String]) -> Parsed {
             "ir" if command.is_none() && file.is_none() => command = Some(Command::Ir),
             "repl" if command.is_none() && file.is_none() => command = Some(Command::Repl),
             "lsp" if command.is_none() && file.is_none() => command = Some(Command::Lsp),
+            "fmt" if command.is_none() && file.is_none() => command = Some(Command::Fmt),
 
+            path if command == Some(Command::Fmt) => files.push(path.to_string()),
             path => {
                 if file.is_some() {
                     return usage(format!("unexpected argument `{path}`"));
@@ -139,10 +154,10 @@ fn parse_args(args: &[String]) -> Parsed {
     }
     vmcfg.gc = gc;
     let command = command.unwrap_or(if file.is_some() { Command::Run } else { Command::Repl });
-    if !matches!(command, Command::Repl | Command::Lsp) && file.is_none() {
+    if !matches!(command, Command::Repl | Command::Lsp | Command::Fmt) && file.is_none() {
         return usage("this command needs a file".to_string());
     }
-    Parsed::Go(Args { command, file, opts, vm: vmcfg, stats })
+    Parsed::Go(Args { command, file, files, write, check, opts, vm: vmcfg, stats })
 }
 
 /// Reads the compiler's verdict: prints diagnostics and returns `None` on errors.
@@ -157,6 +172,65 @@ fn compile_or_report(c: Compiled, err: &mut dyn Write) -> Option<Compiled> {
     } else {
         Some(c)
     }
+}
+
+/// `neon fmt`: formats files (or stdin when there are none, or the name is `-`).
+fn run_fmt<R: BufRead, W: Write, E: Write>(
+    args: &Args,
+    vfs: &dyn Vfs,
+    mut stdin: R,
+    stdout: &mut W,
+    stderr: &mut E,
+) -> i32 {
+    if args.files.len() > 1 && !args.write && !args.check {
+        let _ = writeln!(stderr, "error: formatting several files needs `--write` or `--check`\n\n{USAGE}");
+        return EXIT_USAGE;
+    }
+    let mut status = EXIT_OK;
+    let inputs: Vec<&str> =
+        if args.files.is_empty() { vec!["-"] } else { args.files.iter().map(String::as_str).collect() };
+    for name in inputs {
+        let source = if name == "-" {
+            let mut text = String::new();
+            stdin.read_to_string(&mut text).map(|_| text)
+        } else {
+            vfs.read_to_string(name)
+        };
+        let source = match source {
+            Ok(s) => s,
+            Err(e) => {
+                let _ = writeln!(stderr, "error: cannot read `{name}`: {e}");
+                status = EXIT_COMPILE;
+                continue;
+            }
+        };
+        let formatted = match crate::fmt::format_source(&source) {
+            Ok(f) => f,
+            Err(e) => {
+                let _ = writeln!(stderr, "error: {name}: {e}");
+                status = EXIT_COMPILE;
+                continue;
+            }
+        };
+        // CRLF files are rewritten with LF, which counts as a difference
+        let changed = formatted != source;
+        if args.check {
+            if changed {
+                let _ = writeln!(stderr, "{name}: not formatted");
+                status = EXIT_COMPILE;
+            }
+        } else if args.write && name != "-" {
+            if changed {
+                if let Err(e) = vfs.write(name, &formatted) {
+                    let _ = writeln!(stderr, "error: cannot write `{name}`: {e}");
+                    status = EXIT_COMPILE;
+                }
+            }
+        } else {
+            let _ = stdout.write_all(formatted.as_bytes());
+        }
+    }
+    status
 }
 
 /// Runs the CLI with `args` (without the program name) and returns the exit status.
@@ -179,6 +253,9 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
     let mut stdout = stdout;
     if args.command == Command::Lsp {
         return crate::lsp::run(stdin, stdout, vfs);
+    }
+    if args.command == Command::Fmt {
+        return run_fmt(&args, vfs, stdin, &mut stdout, stderr);
     }
     if args.command == Command::Repl {
         let cfg = ReplConfig { options: args.opts, vm: args.vm, prompt: interactive };
@@ -233,7 +310,7 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
                 }
             }
         }
-        Command::Repl | Command::Lsp => unreachable!(),
+        Command::Repl | Command::Lsp | Command::Fmt => unreachable!(),
     }
 }
 
@@ -252,6 +329,35 @@ mod tests {
         let mut err = Vec::new();
         let code = main_with(&args, &vfs, std::io::Cursor::new(input.as_bytes().to_vec()), &mut out, &mut err, false);
         (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+    }
+
+    #[test]
+    fn fmt_prints_to_stdout_and_reads_stdin() {
+        let files = [("a.neon", "fn main(){\nlet x=1;\n}\n")];
+        let (code, out, err) = go(&["fmt", "a.neon"], &files, "");
+        assert_eq!((code, err.as_str()), (EXIT_OK, ""));
+        assert_eq!(out, "fn main() {\n    let x = 1;\n}\n");
+        let (code, out, _) = go(&["fmt"], &[], "fn f(){}");
+        assert_eq!((code, out.as_str()), (EXIT_OK, "fn f() {}\n"));
+        let (code, out, _) = go(&["fmt", "-"], &[], "fn f(){}");
+        assert_eq!((code, out.as_str()), (EXIT_OK, "fn f() {}\n"));
+    }
+
+    #[test]
+    fn fmt_check_reports_unformatted_files_and_refuses_broken_ones() {
+        let files = [("ok.neon", "fn f() {}\n"), ("bad.neon", "fn f(){}\n"), ("broken.neon", "fn f( {")];
+        assert_eq!(go(&["fmt", "--check", "ok.neon"], &files, "").0, EXIT_OK);
+        let (code, _, err) = go(&["fmt", "--check", "ok.neon", "bad.neon"], &files, "");
+        assert_eq!(code, EXIT_COMPILE);
+        assert!(err.contains("bad.neon: not formatted") && !err.contains("ok.neon"), "{err}");
+        let (code, _, err) = go(&["fmt", "broken.neon"], &files, "");
+        assert_eq!(code, EXIT_COMPILE);
+        assert!(err.contains("cannot format"), "{err}");
+        // several files need an explicit mode; a read-only file system cannot be written
+        assert_eq!(go(&["fmt", "ok.neon", "bad.neon"], &files, "").0, EXIT_USAGE);
+        let (code, _, err) = go(&["fmt", "--write", "bad.neon"], &files, "");
+        assert_eq!(code, EXIT_COMPILE);
+        assert!(err.contains("cannot write"), "{err}");
     }
 
     #[test]

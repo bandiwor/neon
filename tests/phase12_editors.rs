@@ -18,7 +18,7 @@ fn scratch(name: &str) -> PathBuf {
 /// Under valgrind a `fork` before `exec` reports leaks of the (soon replaced) child; the server itself
 /// is covered by `phase11_lsp`, so these process-driving tests step aside there.
 fn under_valgrind() -> bool {
-    std::env::var("LD_PRELOAD").map_or(false, |v| v.contains("vgpreload"))
+    std::env::var("LD_PRELOAD").is_ok_and(|v| v.contains("vgpreload"))
 }
 
 fn find(candidates: &[String]) -> Option<String> {
@@ -190,4 +190,96 @@ vim.cmd("qa!")
     assert!(out.contains("diag=5:mismatched types"), "{out}");
     assert!(out.contains("fn add(a: i64, b: i64) -> i64"), "{out}");
     assert!(out.contains("def=0"), "{out}");
+}
+
+/// Runs a Lua script in headless nvim with the plugin on the runtimepath; returns what it wrote to `out.txt`.
+fn run_nvim_script(nvim: &str, dir: &Path, body: &str) -> String {
+    let lua = format!(
+        "vim.opt.runtimepath:prepend({editor:?})\nvim.cmd('filetype plugin indent on | syntax on')\nlocal out = {{}}\n{body}\nvim.fn.writefile(out, {outfile:?})\nvim.cmd('qa!')\n",
+        editor = editor_dir().display().to_string(),
+        outfile = dir.join("out.txt").display().to_string(),
+    );
+    let script = dir.join("check.lua");
+    std::fs::write(&script, lua).unwrap();
+    let output = Command::new(nvim)
+        .args(["--headless", "-u", "NONE", "-i", "NONE", "-l"])
+        .arg(&script)
+        .env("HOME", dir)
+        .env("XDG_STATE_HOME", dir.join("state"))
+        .env("XDG_CACHE_HOME", dir.join("cache"))
+        .output()
+        .expect("nvim runs");
+    std::fs::read_to_string(dir.join("out.txt"))
+        .unwrap_or_else(|_| panic!("no result file; nvim said: {}", String::from_utf8_lossy(&output.stderr)))
+}
+
+#[test]
+fn nvim_enter_opens_bodies_with_indentation() {
+    let Some(nvim) = nvim() else {
+        eprintln!("skipped: nvim not installed");
+        return;
+    };
+    let dir = scratch("enter");
+    let out = run_nvim_script(
+        &nvim,
+        &dir,
+        r#"
+local function typed(keys)
+  vim.cmd("enew! | setfiletype neon")
+  vim.api.nvim_feedkeys(vim.api.nvim_replace_termcodes("i" .. keys .. "<Esc>", true, false, true), "x", false)
+  out[#out + 1] = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "|")
+end
+typed("fn new() -> Point {<CR>x")
+typed("fn new() -> Point {}<Left><CR>x")
+typed("foo([<Esc>a])<Left><Left><CR>1")
+typed("fn f() {<CR>let a = 1;<CR>}")
+typed("a<CR>b")
+vim.g.neon_smart_enter = 0
+typed("fn g() {}<Left><CR>x")
+"#,
+    );
+    let lines: Vec<&str> = out.lines().collect();
+    assert_eq!(lines[0], "fn new() -> Point {|    x");
+    assert_eq!(lines[1], "fn new() -> Point {|    x|}");
+    assert_eq!(lines[2], "foo([|    1|])");
+    assert_eq!(lines[3], "fn f() {|    let a = 1;|}");
+    assert_eq!(lines[4], "a|b");
+    assert_eq!(lines[5], "fn g() {|x}", "disabled: a plain newline");
+}
+
+#[test]
+fn nvim_format_command_with_and_without_the_server() {
+    let Some(nvim) = nvim() else {
+        eprintln!("skipped: nvim not installed");
+        return;
+    };
+    let dir = scratch("format");
+    let messy = "fn main(){\\nlet x=1+2;\\n      println(x);\\n}\\n";
+    let body = |lsp: bool| {
+        format!(
+            r#"
+require("neon").setup({{ cmd = {{ {bin:?}, "lsp" }}, lsp = {lsp} }})
+vim.cmd("enew! | setfiletype neon")
+vim.api.nvim_buf_set_lines(0, 0, -1, false, vim.split("{messy}", "\n", {{ plain = true }}))
+if {lsp} then
+  vim.lsp.start({{ name = "neon", cmd = {{ {bin:?}, "lsp" }} }}, {{ bufnr = 0 }})
+  vim.wait(10000, function() return #vim.lsp.get_clients({{ bufnr = 0 }}) > 0 end)
+end
+vim.cmd("NeonFormat")
+out[#out + 1] = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "|")
+-- broken source is left alone
+vim.api.nvim_buf_set_lines(0, 0, -1, false, {{ "fn main( {{" }})
+vim.cmd("silent! NeonFormat")
+out[#out + 1] = table.concat(vim.api.nvim_buf_get_lines(0, 0, -1, false), "|")
+"#,
+            bin = env!("CARGO_BIN_EXE_neon"),
+        )
+    };
+    let want = "fn main() {|    let x = 1 + 2;|    println(x);|}";
+    for lsp in [false, true] {
+        let out = run_nvim_script(&nvim, &dir, &body(lsp));
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(lines[0], want, "lsp={lsp}");
+        assert_eq!(lines[1], "fn main( {", "lsp={lsp}");
+    }
 }

@@ -209,3 +209,27 @@ fn disassembly_and_ir_dumps_are_available() {
     assert_eq!(r.code, 0);
     assert!(r.out.contains("fib"), "{}", r.out);
 }
+
+#[test]
+fn fmt_rewrites_files_in_place_and_every_corpus_program_is_already_formatted() {
+    let dir = std::env::temp_dir().join(format!("neon-fmt-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("m.neon");
+    let path = file.to_str().unwrap();
+    std::fs::write(&file, "fn main(){\nprintln( 1+2 );\n}").unwrap();
+    assert_eq!(run_with(&["fmt", "--check", path], "").code, 1);
+    assert_eq!(run_with(&["fmt", "--write", path], "").code, 0);
+    assert_eq!(std::fs::read_to_string(&file).unwrap(), "fn main() {\n    println(1 + 2);\n}\n");
+    assert_eq!(run_with(&["fmt", "--check", path], "").code, 0);
+    // formatting does not change what the program does
+    assert_eq!(run_with(&["run", path], "").out, "3\n");
+
+    // the checked-in programs are in the formatter's style
+    for entry in std::fs::read_dir(corpus_dir()).unwrap() {
+        let p = entry.unwrap().path();
+        if p.extension().is_some_and(|e| e == "neon") {
+            let r = run_with(&["fmt", "--check", p.to_str().unwrap()], "");
+            assert!(r.code == 0 || r.err.contains("cannot format"), "{}: {}", p.display(), r.err);
+        }
+    }
+}
