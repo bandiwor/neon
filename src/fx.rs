@@ -125,7 +125,7 @@ mod tests {
             m.insert(i, "x");
         }
         assert_eq!(m.len(), 1000);
-        assert!(m.get(&999).is_some() && m.get(&1000).is_none());
+        assert!(m.contains_key(&999) && !m.contains_key(&1000));
         let mut s: FxHashSet<String> = FxHashSet::default();
         assert!(s.insert("a".into()) && !s.insert("a".into()));
     }

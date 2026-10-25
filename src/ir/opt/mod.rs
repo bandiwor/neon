@@ -4,6 +4,7 @@
 //!   copy propagation
 //! * [`simplify`]: value forwarding / common subexpressions, algebraic identities, `print(a + b)`
 //!   splitting and dead element loads
+//! * [`strings`]: constant string concatenation and merging of adjacent constant prints
 //! * [`licm`]: loop-invariant code motion
 //! * [`dce`]: unreachable-block removal, CFG simplification and dead code
 //!   elimination
@@ -18,6 +19,7 @@ pub mod fold;
 pub mod inline;
 pub mod licm;
 pub mod simplify;
+pub mod strings;
 
 use super::types::*;
 
@@ -71,6 +73,7 @@ pub struct OptStats {
 pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
     let mut stats = OptStats::default();
     let simplify = |prog: &mut IrProgram, stats: &mut OptStats| {
+        let strings = &mut prog.strings;
         for f in &mut prog.funcs {
             // loop-invariant motion comes last: it moves work out of the places the other passes
             // pattern-match on (a hoisted `len` hides the loop condition), then a cleanup round follows
@@ -83,7 +86,7 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
                         changed |= n > 0;
                     }
                     if cfg.simplify {
-                        let n = simplify::simplify_func(f);
+                        let n = simplify::simplify_func(f) + strings::fold_strings(strings, f);
                         stats.simplified += n;
                         changed |= n > 0;
                     }

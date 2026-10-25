@@ -667,3 +667,98 @@ fn nested_loops_hoist_outward() {
     let src = "fn f(a: [i64]) -> i64 { var s = 0; var i = 0; while i < a.len() { var j = 0; while j < a.len() { s += a[i] * a[j]; j += 1; } i += 1; } s }\nprintln(f([1, 2, 3]));";
     assert_eq!(run(src), "36\n");
 }
+
+// ---- more simplifications ------------------------------------------------------------------------
+
+fn arith_count(ir: &IrProgram, op: crate::runtime::numeric::ArithOp) -> usize {
+    count(ir, |i| matches!(i, Inst::Arith { op: o, .. } if *o == op))
+}
+
+#[test]
+fn stored_values_are_forwarded_to_later_loads() {
+    let src = "struct P { x: i64 }\nfn f(var p: P) -> i64 { p.x = 5; p.x * 2 }\nprintln(f(P { x: 1 }));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count(&ir, |i| matches!(i, Inst::GetField { .. })), 0, "{ir}");
+    assert_eq!(run(src), "10\n");
+    // two names for one object: the second store is the one that counts
+    let src = "struct P { x: i64 }\nfn g(var a: P, var b: P) -> i64 { a.x = 1; b.x = 2; a.x }\nlet p = P { x: 0 };\nprintln(g(p, p)); println(g(P { x: 0 }, P { x: 0 }));";
+    assert_eq!(run(src), "2\n1\n");
+    // arrays: forwarded, aliasing respected, bounds still checked
+    let src = "fn h(var a: [i64]) -> i64 { a[0] = 7; a[0] }\nprintln(h([1]));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count(&ir, |i| matches!(i, Inst::ArrayGet { .. })), 0, "{ir}");
+    assert_eq!(run(src), "7\n");
+    let src =
+        "fn k(var a: [i64], var b: [i64]) -> i64 { a[1] = 1; b[1] = 2; a[1] }\nlet x = [0, 0];\nprintln(k(x, x));";
+    assert_eq!(run(src), "2\n");
+    assert_eq!(
+        trap_of("fn h(var a: [i64]) -> i64 { a[5] = 1; a[5] }\nprintln(h([1]));"),
+        Trap::IndexOutOfBounds { index: 5, len: 1 }
+    );
+    // a push between the store and the load
+    let src = "fn m(var a: [i64]) -> i64 { a[0] = 3; a.push(4); a[0] + a.len() }\nprintln(m([1]));";
+    assert_eq!(run(src), "5\n");
+}
+
+#[test]
+fn copies_are_read_through() {
+    let src = "fn f(a: i64) -> i64 { var b = a; var c = b; b = 5; c + b + a }\nprintln(f(10));";
+    assert_eq!(run(src), "25\n");
+    let src = "fn f(a: i64) -> i64 { var t = a; var u = t; t += 1; u }\nprintln(f(3));";
+    assert_eq!(run(src), "3\n");
+}
+
+#[test]
+fn self_operations() {
+    let src = "fn f(x: i64, y: u8) -> i64 { (x - x) + (x ^ x) + (x & x) + (x | x) + (y - y) as i64 + (x == x) as i64 + (x < x) as i64 + (x <= x) as i64 }\nprintln(f(7, 3));";
+    // x & x + x | x = 14; x == x and x <= x are 1 each
+    assert_eq!(run(src), "16\n");
+    // NaN is not equal to itself
+    assert_eq!(run("fn f(x: f64) -> bool { x == x }\nprintln(f(0.0 / 0.0)); println(f(1.0));"), "false\ntrue\n");
+    // overflow checks are not dropped by the identities
+    assert_eq!(trap_of("fn f(x: i8) -> i8 { (x + 1) - (x + 1) }\nprintln(f(127i8));"), Trap::Overflow);
+}
+
+#[test]
+fn unsigned_power_of_two_division_becomes_shifts() {
+    use crate::runtime::numeric::ArithOp;
+    let src =
+        "fn f(x: u64) -> u64 { x / 8 + x % 8 }\nprintln(f(100)); println(f(7)); println(f(18446744073709551615));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(arith_count(&ir, ArithOp::Div) + arith_count(&ir, ArithOp::Rem), 0, "{ir}");
+    assert_eq!(run(src), "16\n7\n2305843009213693958\n");
+    assert_eq!(run("fn f(x: u8) -> u8 { x / 128 + x % 128 }\nprintln(f(255u8)); println(f(3u8));"), "128\n3\n");
+    assert_eq!(run("fn f(x: u32) -> u32 { x / 2 }\nprintln(f(4294967295u32));"), "2147483647\n");
+    // signed values keep rounding toward zero
+    assert_eq!(run("fn f(x: i64) -> i64 { x / 2 * 10 + x % 2 }\nprintln(f(-7)); println(f(7));"), "-31\n31\n");
+    let (ir, _) = optimized("fn f(x: i64) -> i64 { x / 2 }\nprintln(f(-7));", only_simplify());
+    assert!(arith_count(&ir, ArithOp::Div) >= 1, "{ir}");
+}
+
+#[test]
+fn branching_on_a_negation_swaps_the_targets() {
+    let src = "fn f(a: i64) -> i64 { if !(a > 3) { 1 } else { 2 } }\nprintln(f(1)); println(f(9));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count(&ir, |i| matches!(i, Inst::BoolNot { .. })), 0, "{ir}");
+    assert_eq!(run(src), "1\n2\n");
+    let src = "fn f(a: bool, b: bool) -> i64 { if !a && !b { 1 } elif !a { 2 } else { 3 } }\nprintln(f(false, false)); println(f(false, true)); println(f(true, false));";
+    assert_eq!(run(src), "1\n2\n3\n");
+}
+
+#[test]
+fn constant_strings_are_joined_at_compile_time() {
+    use crate::builtin::Builtin;
+    let src = "println(\"a\" + \"b\" + \"c\");";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count(&ir, |i| is_intrinsic(i, Builtin::StrConcat)), 0, "{ir}");
+    assert_eq!(run(src), "abc\n");
+    // adjacent constant prints are one print
+    let src = "print(\"x = \"); print(\"1\"); println(\"!\"); println(\"next\");";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count(&ir, |i| is_intrinsic(i, Builtin::Print) || is_intrinsic(i, Builtin::Println)), 1, "{ir}");
+    assert_eq!(run(src), "x = 1!\nnext\n");
+    // a non-constant argument in between keeps the order
+    let src = "let n = 5; print(\"a\"); print(n); print(\"b\"); println(\"c\");";
+    assert_eq!(run(src), "a5bc\n");
+    assert_eq!(run("print(\"\"); println(\"\"); print(\"\");"), "\n");
+}

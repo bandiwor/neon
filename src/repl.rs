@@ -147,15 +147,19 @@ struct ReplayIo<'a> {
 }
 
 impl VmIo for ReplayIo<'_> {
+    /// The markers are single characters inside the output, wherever the optimizer happened to
+    /// cut the writes: adjacent constant prints may arrive as one chunk.
     fn print(&mut self, s: &str) {
-        if self.silent {
-            if s == MARK {
-                self.silent = false;
+        for ch in s.chars() {
+            if self.silent {
+                if ch.to_string() == MARK {
+                    self.silent = false;
+                }
+            } else if ch.to_string() == VALUE_MARK {
+                self.value_start = Some(self.output.len());
+            } else {
+                self.output.push(ch);
             }
-        } else if s == VALUE_MARK {
-            self.value_start = Some(self.output.len());
-        } else {
-            self.output.push_str(s);
         }
     }
 

@@ -583,7 +583,8 @@ fn removes_self_and_duplicate_moves() {
         ],
         &[],
     );
-    assert_eq!(out, vec![Insn::Move { dst: 2, src: 0 }, Insn::Ret { src: 2 }]);
+    // the copy is read directly: `ret r0`
+    assert_eq!(out, vec![Insn::Ret { src: 0 }]);
     assert!(stats.moves_removed >= 2);
 }
 
@@ -609,7 +610,15 @@ fn coalesces_result_moves() {
         ],
         &[],
     );
-    assert_eq!(out.len(), 4);
+    // r2 is only read by the next instruction, which reads r5 instead
+    assert_eq!(
+        out,
+        vec![
+            Insn::Arith { op: ArithOp::Add, ty: NumTy::I32, dst: 5, a: 0, b: 1 },
+            Insn::Arith { op: ArithOp::Add, ty: NumTy::I32, dst: 3, a: 5, b: 5 },
+            Insn::Ret { src: 3 },
+        ]
+    );
 }
 
 #[test]
@@ -667,6 +676,83 @@ fn rotates_loops_with_a_single_compare_header() {
     );
     assert_eq!(stats.rotated, 0);
     assert!(out.iter().any(|i| matches!(i, Insn::Jmp { .. })));
+}
+
+#[test]
+fn inverts_a_branch_that_jumps_over_a_jump() {
+    let (near, far) = (Label(0), Label(1));
+    let (out, stats) = opt(
+        vec![
+            Insn::CmpJmp { kind: FusedKind::LtS, a: 0, b: 1, to: near },
+            Insn::Jmp { to: far },
+            Insn::Label(near),
+            Insn::LoadI { dst: 2, imm: 1 },
+            Insn::Ret { src: 2 },
+            Insn::Label(far),
+            Insn::LoadI { dst: 2, imm: 2 },
+            Insn::Ret { src: 2 },
+        ],
+        &[],
+    );
+    assert!(stats.branches >= 1);
+    // `if r0 < r1 { jump far }` became `if !(r1 <= r0) { jump far }`, falling into the first block
+    assert!(matches!(out[0], Insn::CmpJmp { kind: FusedKind::LeS, a: 1, b: 0, .. }), "{out:?}");
+    assert!(!out.iter().any(|i| matches!(i, Insn::Jmp { .. })), "{out:?}");
+    // the boolean forms
+    let (out, _) = opt(
+        vec![
+            Insn::JmpIfNot { cond: 0, to: near },
+            Insn::Jmp { to: far },
+            Insn::Label(near),
+            Insn::LoadI { dst: 2, imm: 1 },
+            Insn::Ret { src: 2 },
+            Insn::Label(far),
+            Insn::LoadI { dst: 2, imm: 2 },
+            Insn::Ret { src: 2 },
+        ],
+        &[],
+    );
+    assert!(matches!(out[0], Insn::JmpIf { cond: 0, .. }), "{out:?}");
+    // floats cannot be inverted (NaN): left as they are
+    let (out, stats) = opt(
+        vec![
+            Insn::CmpJmp { kind: FusedKind::LtF64, a: 0, b: 1, to: near },
+            Insn::Jmp { to: far },
+            Insn::Label(near),
+            Insn::LoadI { dst: 2, imm: 1 },
+            Insn::Ret { src: 2 },
+            Insn::Label(far),
+            Insn::LoadI { dst: 2, imm: 2 },
+            Insn::Ret { src: 2 },
+        ],
+        &[],
+    );
+    assert_eq!(stats.branches, 0);
+    assert!(out.iter().any(|i| matches!(i, Insn::Jmp { .. })), "{out:?}");
+}
+
+#[test]
+fn jumps_to_returns_return() {
+    let end = Label(0);
+    let (out, _) = opt(
+        vec![
+            Insn::JmpIf { cond: 0, to: end },
+            Insn::LoadI { dst: 1, imm: 5 },
+            Insn::Jmp { to: end },
+            Insn::Label(end),
+            Insn::Ret { src: 1 },
+        ],
+        &[],
+    );
+    assert!(!out.iter().any(|i| matches!(i, Insn::Jmp { .. })), "{out:?}");
+    // both outcomes return the same register: no branch at all
+    let (out, _) =
+        opt(vec![Insn::JmpIf { cond: 0, to: end }, Insn::Ret { src: 1 }, Insn::Label(end), Insn::Ret { src: 1 }], &[]);
+    assert_eq!(out, vec![Insn::Ret { src: 1 }]);
+    // different registers: the branch matters
+    let (out, _) =
+        opt(vec![Insn::JmpIf { cond: 0, to: end }, Insn::Ret { src: 1 }, Insn::Label(end), Insn::Ret { src: 2 }], &[]);
+    assert_eq!(out.len(), 4, "{out:?}");
 }
 
 #[test]

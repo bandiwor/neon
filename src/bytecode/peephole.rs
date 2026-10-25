@@ -10,6 +10,10 @@
 //! * fold `loadi t, k; add/sub r, a, t` into an immediate form
 //! * rotate loops: `L: cmpjmp ..exit; body; jmp L; exit:` becomes `cmpjmp ..exit; B: body;
 //!   inverted-cmpjmp ..B; exit:`, one dispatch fewer per iteration
+//! * `cmpjmp ..L1; jmp L2; L1:` becomes one inverted `cmpjmp ..L2` (likewise `jmpif`/`jmpifnot`)
+//! * a `jmp` to a `ret` is the `ret`
+//! * `move t, s; op .., t, ..` reads `s` directly when `t` dies there
+//! * a constant loaded again into a register that still holds it is not loaded twice
 //! * remove jumps to the next instruction, thread jumps through jumps,
 //!   drop unreachable code and unused labels
 //!
@@ -32,6 +36,9 @@ pub struct PeepholeStats {
     pub immediates: usize,
     pub jumps_removed: usize,
     pub rotated: usize,
+    pub branches: usize,
+    pub forwarded: usize,
+    pub loads: usize,
 }
 
 impl PeepholeStats {
@@ -43,6 +50,9 @@ impl PeepholeStats {
             + self.immediates
             + self.jumps_removed
             + self.rotated
+            + self.branches
+            + self.forwarded
+            + self.loads
     }
 }
 
@@ -52,8 +62,12 @@ pub fn peephole(items: &mut Vec<Item>, always_live: &BitSet) -> PeepholeStats {
     for _ in 0..16 {
         let before = stats.total();
         local_rules(items, always_live, &mut stats);
+        remove_unused_labels(items);
         control_flow(items, &mut stats);
         rotate_loops(items, &mut stats);
+        branch_over_jump(items, &mut stats);
+        jump_to_return(items, &mut stats);
+        redundant_loads(items, always_live, &mut stats);
         if stats.total() == before {
             break;
         }
@@ -144,6 +158,20 @@ fn local_rules(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats
                         }
                     }
                 }
+                // 5b. read the source of a copy directly when the copy dies in the next instruction
+                (Insn::Move { dst: t, src: s }, next)
+                    if t != s && !live[i + 1].contains(*t) && {
+                        let mut probe = next.clone();
+                        replace_use(&mut probe, *t, *s)
+                    } =>
+                {
+                    let mut replaced = items[i + 1].insn.clone();
+                    replace_use(&mut replaced, *t, *s);
+                    items[i + 1].insn = replaced;
+                    items.remove(i);
+                    stats.forwarded += 1;
+                    changed = true;
+                }
                 // 6. immediates
                 (Insn::LoadI { dst: t, imm }, Insn::Arith { op, ty, dst, a, b })
                     if ty.is_int() && matches!(op, ArithOp::Add | ArithOp::Sub) && !live[i + 1].contains(*t) =>
@@ -180,6 +208,55 @@ fn local_rules(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats
             i += 1;
         }
     }
+}
+
+/// Replaces every read of `from` in `insn` by `to`; false if `insn` does not read `from` through an
+/// operand field (calls and other register-window instructions read fixed positions and are left alone).
+fn replace_use(insn: &mut Insn, from: Reg, to: Reg) -> bool {
+    use Insn::*;
+    let mut hit = false;
+    let mut sub = |r: &mut Reg| {
+        if *r == from {
+            *r = to;
+            hit = true;
+        }
+    };
+    match insn {
+        Move { src, .. } | Neg { src, .. } | BitNot { src, .. } | BoolNot { src, .. } | Cast { src, .. } => sub(src),
+        AddImm { src, .. } | SubImm { src, .. } => sub(src),
+        Arith { a, b, .. } | Bitwise { a, b, .. } | Cmp { a, b, .. } | CmpJmp { a, b, .. } => {
+            sub(a);
+            sub(b);
+        }
+        JmpIf { cond, .. } | JmpIfNot { cond, .. } => sub(cond),
+        MatchTagJmp { obj, .. } => sub(obj),
+        GetField { obj, .. } | EnumTag { obj, .. } | EnumField { obj, .. } => sub(obj),
+        SetField { obj, src, .. } => {
+            sub(obj);
+            sub(src);
+        }
+        ArrayGet { arr, idx, .. } => {
+            sub(arr);
+            sub(idx);
+        }
+        ArraySet { arr, idx, src } => {
+            sub(arr);
+            sub(idx);
+            sub(src);
+        }
+        MapGet { map, key, .. } => {
+            sub(map);
+            sub(key);
+        }
+        MapSet { map, key, val } => {
+            sub(map);
+            sub(key);
+            sub(val);
+        }
+        Ret { src } => sub(src),
+        _ => {}
+    }
+    hit
 }
 
 /// `src + v` as an immediate instruction, if `v` fits.
@@ -352,10 +429,185 @@ fn rotate_loops(items: &mut Vec<Item>, stats: &mut PeepholeStats) {
     }
 }
 
+/// `cmpjmp .., L1; jmp L2; L1:` -> one branch with the inverted condition straight to `L2`.
+fn branch_over_jump(items: &mut Vec<Item>, stats: &mut PeepholeStats) {
+    let mut i = 0;
+    while i + 1 < items.len() {
+        let Insn::Jmp { to: far } = items[i + 1].insn else {
+            i += 1;
+            continue;
+        };
+        let near = match items[i].insn.target() {
+            Some(t) if !matches!(items[i].insn, Insn::Jmp { .. } | Insn::MatchTagJmp { .. }) => t,
+            _ => {
+                i += 1;
+                continue;
+            }
+        };
+        // `near` must be the very next position after the jump
+        let mut j = i + 2;
+        let mut lands = false;
+        while let Some(Insn::Label(l)) = items.get(j).map(|x| &x.insn) {
+            if *l == near {
+                lands = true;
+                break;
+            }
+            j += 1;
+        }
+        if !lands || near == far {
+            i += 1;
+            continue;
+        }
+        let inverted = match items[i].insn.clone() {
+            Insn::CmpJmp { kind, a, b, .. } => invert(kind.cmp(), a, b)
+                .and_then(|(k, a, b)| k.fused().map(|f| Insn::CmpJmp { kind: f, a, b, to: far })),
+            Insn::JmpIfNot { cond, .. } => Some(Insn::JmpIf { cond, to: far }),
+            Insn::JmpIf { cond, .. } => Some(Insn::JmpIfNot { cond, to: far }),
+            _ => None,
+        };
+        match inverted {
+            Some(new) => {
+                items[i].insn = new;
+                items.remove(i + 1);
+                stats.branches += 1;
+            }
+            None => i += 1,
+        }
+    }
+}
+
+/// The first real instruction at or after the label `to`.
+fn instruction_at(items: &[Item], to: Label) -> Option<&Insn> {
+    let at = items.iter().position(|it| matches!(it.insn, Insn::Label(l) if l == to))?;
+    items[at + 1..].iter().map(|it| &it.insn).find(|i| !matches!(i, Insn::Label(_)))
+}
+
+/// A jump whose target is a `ret` just returns; a branch that returns the same value on both
+/// outcomes is not needed.
+fn jump_to_return(items: &mut Vec<Item>, stats: &mut PeepholeStats) {
+    let mut i = 0;
+    while i < items.len() {
+        match items[i].insn.clone() {
+            Insn::Jmp { to } => {
+                if let Some(&Insn::Ret { src }) = instruction_at(items, to) {
+                    items[i].insn = Insn::Ret { src };
+                    stats.branches += 1;
+                }
+            }
+            Insn::JmpIf { to, .. } | Insn::JmpIfNot { to, .. } | Insn::CmpJmp { to, .. } => {
+                if let (Some(Insn::Ret { src: here }), Some(&Insn::Ret { src: there })) =
+                    (items.get(i + 1).map(|x| &x.insn), instruction_at(items, to))
+                {
+                    if *here == there {
+                        items.remove(i);
+                        stats.branches += 1;
+                        continue;
+                    }
+                }
+            }
+            _ => {}
+        }
+        i += 1;
+    }
+}
+
+/// Drops a constant load into a register that is known to hold that very constant (within a
+/// straight-line stretch: labels and calls forget everything they might change).
+fn redundant_loads(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats) {
+    let mut known: HashMap<Reg, Insn> = HashMap::default();
+    let mut i = 0;
+    while i < items.len() {
+        let insn = items[i].insn.clone();
+        if matches!(insn, Insn::Label(_)) {
+            known.clear();
+            i += 1;
+            continue;
+        }
+        if matches!(insn, Insn::LoadI { .. } | Insn::LoadK { .. } | Insn::LoadStr { .. }) {
+            let dst = insn.def().expect("loads define a register");
+            if known.get(&dst) == Some(&insn) {
+                items.remove(i);
+                stats.loads += 1;
+                continue;
+            }
+            known.insert(dst, insn);
+            i += 1;
+            continue;
+        }
+        if let Some(from) = insn.clobbers_from() {
+            // the callee may also change registers captured by closures
+            known.retain(|r, _| (*r as u16) < from && !always.contains(*r));
+        }
+        if let Some(d) = insn.def() {
+            known.remove(&d);
+        }
+        i += 1;
+    }
+}
+
 fn remove_unused_labels(items: &mut Vec<Item>) {
     let used: HashSet<Label> = items.iter().filter_map(|it| it.insn.target()).collect();
     items.retain(|it| match it.insn {
         Insn::Label(l) => used.contains(&l),
         _ => true,
     });
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn items(v: Vec<Insn>) -> Vec<Item> {
+        v.into_iter().map(Item::new).collect()
+    }
+
+    fn loads(v: Vec<Insn>, always: &[u8]) -> (Vec<Insn>, usize) {
+        let mut it = items(v);
+        let mut stats = PeepholeStats::default();
+        let always: BitSet = always.iter().copied().collect();
+        redundant_loads(&mut it, &always, &mut stats);
+        (it.into_iter().map(|i| i.insn).collect(), stats.loads)
+    }
+
+    #[test]
+    fn a_second_identical_load_goes() {
+        let (out, n) = loads(
+            vec![Insn::LoadI { dst: 1, imm: 5 }, Insn::Move { dst: 2, src: 1 }, Insn::LoadI { dst: 1, imm: 5 }],
+            &[],
+        );
+        assert_eq!((out.len(), n), (2, 1));
+    }
+
+    #[test]
+    fn other_values_writes_labels_and_calls_keep_the_load() {
+        for between in [
+            Insn::LoadI { dst: 1, imm: 6 },
+            Insn::Move { dst: 1, src: 0 },
+            Insn::Label(Label(0)),
+            Insn::Call { func: 0, base: 1, nargs: 0 },
+        ] {
+            let (out, n) = loads(vec![Insn::LoadI { dst: 1, imm: 5 }, between, Insn::LoadI { dst: 1, imm: 5 }], &[]);
+            assert_eq!((out.len(), n), (3, 0), "{out:?}");
+        }
+        // a call above the register leaves it alone
+        let (out, n) = loads(
+            vec![
+                Insn::LoadI { dst: 1, imm: 5 },
+                Insn::Call { func: 0, base: 4, nargs: 0 },
+                Insn::LoadI { dst: 1, imm: 5 },
+            ],
+            &[],
+        );
+        assert_eq!((out.len(), n), (2, 1), "{out:?}");
+        // ... unless a closure may have changed it
+        let (out, n) = loads(
+            vec![
+                Insn::LoadI { dst: 1, imm: 5 },
+                Insn::Call { func: 0, base: 4, nargs: 0 },
+                Insn::LoadI { dst: 1, imm: 5 },
+            ],
+            &[1],
+        );
+        assert_eq!((out.len(), n), (3, 0), "{out:?}");
+    }
 }

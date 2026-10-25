@@ -23,7 +23,7 @@ use crate::runtime::NumTy;
 
 /// Runs all simplifications on `f`; returns how many rewrites happened.
 pub fn simplify_func(f: &mut IrFunc) -> usize {
-    forward_values(f) + algebra(f) + split_print_concat(f) + drop_inrange_loads(f)
+    forward_values(f) + algebra(f) + branch_on_negation(f) + split_print_concat(f) + drop_inrange_loads(f)
 }
 
 // ---- helpers ------------------------------------------------------------------------------------
@@ -138,12 +138,15 @@ impl Agg {
 struct Avail {
     exprs: HashMap<Key, VReg>,
     aggs: HashMap<VReg, Agg>,
+    /// `dst -> src` for registers that are currently plain copies of another register.
+    copies: HashMap<VReg, VReg>,
 }
 
 impl Avail {
     fn kill_reg(&mut self, r: VReg) {
         self.exprs.retain(|k, v| *v != r && !k.operands().contains(&r));
         self.aggs.retain(|a, g| *a != r && !g.fields().contains(&r));
+        self.copies.retain(|d, c| *d != r && *c != r);
     }
 
     fn kill_memory(&mut self) {
@@ -154,21 +157,22 @@ impl Avail {
 }
 
 /// The expression key of a pure instruction, when every register involved is stable.
-fn key_of(f: &IrFunc, inst: &Inst) -> Option<Key> {
+fn key_of(f: &IrFunc, inst: &Inst, canon: &HashMap<VReg, VReg>) -> Option<Key> {
     let ok = |rs: &[VReg]| rs.iter().all(|r| !f.pinned[r.index()]);
+    let c = |r: &VReg| canon.get(r).copied().unwrap_or(*r);
     let key = match inst {
-        Inst::Arith { op, ty, lhs, rhs, .. } => Key::Arith(*op, *ty, *lhs, *rhs),
-        Inst::Cmp { op, ty, lhs, rhs, .. } => Key::Cmp(*op, *ty, *lhs, *rhs),
-        Inst::Neg { ty, src, .. } => Key::Neg(*ty, *src),
-        Inst::BitNot { ty, src, .. } => Key::BitNot(*ty, *src),
-        Inst::BoolNot { src, .. } => Key::BoolNot(*src),
-        Inst::Cast { from, to, src, .. } => Key::Cast(*from, *to, *src),
-        Inst::GetField { obj, idx, .. } => Key::GetField(*obj, *idx),
-        Inst::EnumTag { obj, .. } => Key::EnumTag(*obj),
-        Inst::EnumField { obj, idx, .. } => Key::EnumField(*obj, *idx),
-        Inst::ArrayGet { arr, idx, idx_ty, .. } => Key::ArrayGet(*arr, *idx, *idx_ty),
+        Inst::Arith { op, ty, lhs, rhs, .. } => Key::Arith(*op, *ty, c(lhs), c(rhs)),
+        Inst::Cmp { op, ty, lhs, rhs, .. } => Key::Cmp(*op, *ty, c(lhs), c(rhs)),
+        Inst::Neg { ty, src, .. } => Key::Neg(*ty, c(src)),
+        Inst::BitNot { ty, src, .. } => Key::BitNot(*ty, c(src)),
+        Inst::BoolNot { src, .. } => Key::BoolNot(c(src)),
+        Inst::Cast { from, to, src, .. } => Key::Cast(*from, *to, c(src)),
+        Inst::GetField { obj, idx, .. } => Key::GetField(c(obj), *idx),
+        Inst::EnumTag { obj, .. } => Key::EnumTag(c(obj)),
+        Inst::EnumField { obj, idx, .. } => Key::EnumField(c(obj), *idx),
+        Inst::ArrayGet { arr, idx, idx_ty, .. } => Key::ArrayGet(c(arr), c(idx), *idx_ty),
         Inst::Intrinsic { b, desc, args, .. } if b.is_pure() || b.reads_memory_only() => {
-            Key::Intrinsic(*b, *desc, args.clone())
+            Key::Intrinsic(*b, *desc, args.iter().map(c).collect())
         }
         _ => return None,
     };
@@ -177,7 +181,7 @@ fn key_of(f: &IrFunc, inst: &Inst) -> Option<Key> {
 }
 
 /// Rewrites `inst` using what is known; returns `true` when it changed.
-fn rewrite(f: &IrFunc, inst: &mut Inst, avail: &Avail) -> bool {
+fn rewrite(f: &IrFunc, inst: &mut Inst, avail: &Avail, canon: &HashMap<VReg, VReg>) -> bool {
     let same_ty = |a: VReg, b: VReg| f.reg_ty(a) == f.reg_ty(b);
     let forwarded = match inst {
         Inst::GetField { dst, obj, idx } => match avail.aggs.get(obj) {
@@ -205,7 +209,7 @@ fn rewrite(f: &IrFunc, inst: &mut Inst, avail: &Avail) -> bool {
             return true;
         }
     }
-    if let (Some(key), Some(dst)) = (key_of(f, inst), inst.def()) {
+    if let (Some(key), Some(dst)) = (key_of(f, inst, canon), inst.def()) {
         if let Some(&have) = avail.exprs.get(&key) {
             if have != dst && same_ty(have, dst) {
                 *inst = Inst::Move { dst, src: have };
@@ -216,7 +220,7 @@ fn rewrite(f: &IrFunc, inst: &mut Inst, avail: &Avail) -> bool {
     false
 }
 
-fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail) {
+fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &HashMap<VReg, VReg>) {
     let Some(dst) = inst.def() else { return };
     let stable = |rs: &[VReg]| rs.iter().all(|r| !f.pinned[r.index()]) && !f.pinned[dst.index()];
     match inst {
@@ -234,7 +238,7 @@ fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail) {
             }
         }
         _ => {
-            if let Some(key) = key_of(f, inst) {
+            if let Some(key) = key_of(f, inst, canon) {
                 if !key.operands().contains(&dst) {
                     avail.exprs.insert(key, dst);
                 }
@@ -269,6 +273,23 @@ fn forward_values(f: &mut IrFunc) -> usize {
     }
     order.reverse();
 
+    // registers that hold the same constant all over the function count as one when comparing keys
+    let defs = def_counts(f);
+    let mut canon: HashMap<VReg, VReg> = HashMap::default();
+    let mut first_const: HashMap<(IrTy, u64), VReg> = HashMap::default();
+    for b in &f.blocks {
+        for i in &b.insts {
+            if let Inst::Const { dst, val: Const::Bits(v) } = i {
+                if defs[dst.index()] == 1 && !f.pinned[dst.index()] {
+                    let rep = *first_const.entry((f.reg_ty(*dst), *v)).or_insert(*dst);
+                    if rep != *dst {
+                        canon.insert(*dst, rep);
+                    }
+                }
+            }
+        }
+    }
+
     let mut ends: Vec<Option<Avail>> = vec![None; n];
     let mut changes = 0;
     for &b in &order {
@@ -278,21 +299,62 @@ fn forward_values(f: &mut IrFunc) -> usize {
         };
         let mut insts = std::mem::take(&mut f.blocks[b].insts);
         for inst in insts.iter_mut() {
-            if rewrite(f, inst, &avail) {
+            // read through plain copies: the original register is just as good
+            if !avail.copies.is_empty() {
+                inst.for_each_use_mut(|r| {
+                    if let Some(&c) = avail.copies.get(r) {
+                        *r = c;
+                        changes += 1;
+                    }
+                });
+            }
+            if rewrite(f, inst, &avail, &canon) {
                 changes += 1;
             }
-            if clobbers_memory(inst) {
-                avail.kill_memory();
+            // a store makes the stored value the known content of the location; other stores
+            // and calls forget what they might change
+            let mut stored: Option<(Key, VReg)> = None;
+            match &*inst {
+                Inst::SetField { obj, idx, src } => {
+                    avail.exprs.retain(|k, _| !matches!(k, Key::GetField(_, i) if i == idx));
+                    avail.aggs.retain(|_, g| matches!(g, Agg::Enum { .. }));
+                    if !f.pinned[obj.index()] && !f.pinned[src.index()] {
+                        stored = Some((Key::GetField(canon.get(obj).copied().unwrap_or(*obj), *idx), *src));
+                    }
+                }
+                Inst::ArraySet { arr, idx, idx_ty, src } => {
+                    avail.exprs.retain(|k, _| !matches!(k, Key::ArrayGet(..)));
+                    if !f.pinned[arr.index()] && !f.pinned[idx.index()] && !f.pinned[src.index()] {
+                        stored = Some((
+                            Key::ArrayGet(
+                                canon.get(arr).copied().unwrap_or(*arr),
+                                canon.get(idx).copied().unwrap_or(*idx),
+                                *idx_ty,
+                            ),
+                            *src,
+                        ));
+                    }
+                }
+                i if clobbers_memory(i) => avail.kill_memory(),
+                _ => {}
             }
             // facts are computed from the operands before the definition invalidates anything
             let mut next = Avail::default();
-            record(f, inst, &mut next);
+            record(f, inst, &mut next, &canon);
             if let Some(d) = inst.def() {
                 avail.kill_reg(d);
             }
             avail.exprs.extend(next.exprs);
             avail.aggs.extend(next.aggs);
-            if avail.exprs.len() + avail.aggs.len() > MAX_FACTS {
+            if let Inst::Move { dst, src } = *inst {
+                if dst != src && !f.pinned[dst.index()] && !f.pinned[src.index()] && f.reg_ty(dst) == f.reg_ty(src) {
+                    avail.copies.insert(dst, src);
+                }
+            }
+            if let Some((key, value)) = stored {
+                avail.exprs.insert(key, value);
+            }
+            if avail.exprs.len() + avail.aggs.len() + avail.copies.len() > MAX_FACTS {
                 avail = Avail::default();
             }
         }
@@ -302,6 +364,15 @@ fn forward_values(f: &mut IrFunc) -> usize {
         changes += before - insts.len();
         f.blocks[b].insts = insts;
 
+        match &mut f.blocks[b].term {
+            Term::Branch { cond: r, .. } | Term::BranchTag { obj: r, .. } | Term::Return(r) => {
+                if let Some(&c) = avail.copies.get(r) {
+                    *r = c;
+                    changes += 1;
+                }
+            }
+            _ => {}
+        }
         if let Term::BranchTag { obj, tag, then, els } = f.blocks[b].term {
             if let Some(Agg::Enum { tag: known, .. }) = avail.aggs.get(&obj) {
                 f.blocks[b].term = Term::Jump(if *known == tag { then } else { els });
@@ -329,28 +400,90 @@ fn algebra(f: &mut IrFunc) -> usize {
     }
     let mut changes = 0;
     for bi in 0..f.blocks.len() {
-        for ii in 0..f.blocks[bi].insts.len() {
-            let Inst::Arith { dst, op, ty, lhs, rhs } = f.blocks[bi].insts[ii] else { continue };
-            if !ty.is_int() || f.pinned[dst.index()] {
-                continue;
-            }
-            let (l, r) = (consts.get(&lhs).copied(), consts.get(&rhs).copied());
-            let movable = |s: VReg| !f.pinned[s.index()] && f.reg_ty(s) == f.reg_ty(dst);
-            use ArithOp::*;
-            let new = match (op, l, r) {
-                (Add | Sub | Or | Xor | Shl | Shr, _, Some(0)) if movable(lhs) => Some(Inst::Move { dst, src: lhs }),
-                (Add | Or | Xor, Some(0), _) if movable(rhs) => Some(Inst::Move { dst, src: rhs }),
-                (Mul | Div, _, Some(1)) if movable(lhs) => Some(Inst::Move { dst, src: lhs }),
-                (Mul, Some(1), _) if movable(rhs) => Some(Inst::Move { dst, src: rhs }),
-                (Mul | And, _, Some(0)) | (Mul | And, Some(0), _) => Some(Inst::Const { dst, val: Const::Bits(0) }),
-                (Rem, _, Some(1)) => Some(Inst::Const { dst, val: Const::Bits(0) }),
+        let mut ii = 0;
+        while ii < f.blocks[bi].insts.len() {
+            let inst = f.blocks[bi].insts[ii].clone();
+            let new: Option<Inst> = match inst {
+                Inst::Arith { dst, op, ty, lhs, rhs } if ty.is_int() && !f.pinned[dst.index()] => {
+                    let (l, r) = (consts.get(&lhs).copied(), consts.get(&rhs).copied());
+                    let movable = |s: VReg| !f.pinned[s.index()] && f.reg_ty(s) == f.reg_ty(dst);
+                    use ArithOp::*;
+                    match (op, l, r) {
+                        (Add | Sub | Or | Xor | Shl | Shr, _, Some(0)) if movable(lhs) => {
+                            Some(Inst::Move { dst, src: lhs })
+                        }
+                        (Add | Or | Xor, Some(0), _) if movable(rhs) => Some(Inst::Move { dst, src: rhs }),
+                        (Mul | Div, _, Some(1)) if movable(lhs) => Some(Inst::Move { dst, src: lhs }),
+                        (Mul, Some(1), _) if movable(rhs) => Some(Inst::Move { dst, src: rhs }),
+                        (Mul | And, _, Some(0)) | (Mul | And, Some(0), _) => {
+                            Some(Inst::Const { dst, val: Const::Bits(0) })
+                        }
+                        (Rem, _, Some(1)) => Some(Inst::Const { dst, val: Const::Bits(0) }),
+                        // `x - x`, `x ^ x` are 0 whatever x is; `x & x`, `x | x` are x
+                        (Sub | Xor, ..) if lhs == rhs => Some(Inst::Const { dst, val: Const::Bits(0) }),
+                        (And | Or, ..) if lhs == rhs && movable(lhs) => Some(Inst::Move { dst, src: lhs }),
+                        // unsigned division and remainder by a power of two: no zero check, no divide
+                        (Div | Rem, _, Some(c)) if !ty.is_signed() && c > 1 && c.is_power_of_two() => {
+                            let (op, amount_ty, amount) =
+                                if op == Div { (Shr, NumTy::I64, c.trailing_zeros() as u64) } else { (And, ty, c - 1) };
+                            let k = f.new_reg(IrTy::Num(amount_ty));
+                            f.blocks[bi].insts.insert(ii, Inst::Const { dst: k, val: Const::Bits(amount) });
+                            ii += 1;
+                            Some(Inst::Arith { dst, op, ty, lhs, rhs: k })
+                        }
+                        _ => None,
+                    }
+                }
+                // comparing a value with itself (not floats: NaN)
+                Inst::Cmp { dst, op, ty, lhs, rhs }
+                    if lhs == rhs && !f.pinned[dst.index()] && matches!(ty, CmpTy::Str | CmpTy::Num(_)) =>
+                {
+                    let int_like = match ty {
+                        CmpTy::Str => true,
+                        CmpTy::Num(n) => n.is_int(),
+                    };
+                    int_like.then_some(Inst::Const {
+                        dst,
+                        val: Const::Bits(matches!(op, CmpOp::Eq | CmpOp::Le | CmpOp::Ge) as u64),
+                    })
+                }
+                Inst::Cast { dst, from, to, src }
+                    if from == to
+                        && !f.pinned[dst.index()]
+                        && !f.pinned[src.index()]
+                        && f.reg_ty(dst) == f.reg_ty(src) =>
+                {
+                    Some(Inst::Move { dst, src })
+                }
                 _ => None,
             };
             if let Some(new) = new {
                 f.blocks[bi].insts[ii] = new;
                 changes += 1;
             }
+            ii += 1;
         }
+    }
+    changes
+}
+
+/// `v = !c; branch v ? A : B` is `branch c ? B : A` when `v` has no other use.
+fn branch_on_negation(f: &mut IrFunc) -> usize {
+    let uses = use_counts(f);
+    let defs = def_counts(f);
+    let mut changes = 0;
+    for b in &mut f.blocks {
+        let Term::Branch { cond, then, els } = b.term else { continue };
+        if uses[cond.index()] != 1 || defs[cond.index()] != 1 || f.pinned[cond.index()] {
+            continue;
+        }
+        let Some(pos) = b.insts.iter().rposition(|i| i.def() == Some(cond)) else { continue };
+        let Inst::BoolNot { src, .. } = b.insts[pos] else { continue };
+        if f.pinned[src.index()] || b.insts[pos + 1..].iter().any(|i| i.def() == Some(src)) {
+            continue;
+        }
+        b.term = Term::Branch { cond: src, then: els, els: then };
+        changes += 1;
     }
     changes
 }
@@ -393,7 +526,7 @@ fn split_print_concat(f: &mut IrFunc) -> usize {
             };
             // the pieces must still hold the same strings at the print
             let stable = f.blocks[bi].insts[ci + 1..ii].iter().all(|i| {
-                i.def().map_or(true, |d| d != a && d != b) && !matches!(i, Inst::Call { .. } | Inst::CallClosure { .. })
+                i.def().is_none_or(|d| d != a && d != b) && !matches!(i, Inst::Call { .. } | Inst::CallClosure { .. })
             });
             if !stable || f.pinned[a.index()] && ii != ci + 1 || f.pinned[b.index()] && ii != ci + 1 {
                 ii += 1;
@@ -460,8 +593,8 @@ fn drop_inrange_loads(f: &mut IrFunc) -> usize {
     let uses = use_counts(f);
     let defs = def_counts(f);
     let mut changes = 0;
-    for bi in 0..f.blocks.len() {
-        let [p] = preds[bi].as_slice() else { continue };
+    for (bi, pred) in preds.iter().enumerate() {
+        let [p] = pred.as_slice() else { continue };
         let p = *p;
         let Term::Branch { cond, then, els } = f.blocks[p].term else { continue };
         if then.index() != bi || els.index() == bi || p == bi {
