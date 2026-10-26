@@ -840,14 +840,14 @@ fn function_effects_are_computed_from_the_call_graph() {
     assert_eq!(e("len_of"), Effects::READS);
     assert_eq!(e("len_of").purity(), Purity::Pure);
     assert_eq!(e("field"), Effects::READS);
-    assert_eq!(e("show"), Effects::IO);
+    assert_eq!(e("show"), Effects::IO | Effects::READS, "printing looks at what it prints");
     assert_eq!(e("show").purity(), Purity::Impure);
     assert_eq!(e("push"), Effects::WRITES);
     assert_eq!(e("mk"), Effects::ALLOCS);
     assert_eq!(e("mk").purity(), Purity::Const);
     // calls take on what the callee does
     assert_eq!(e("indirect"), Effects::NONE);
-    assert_eq!(e("noisy"), Effects::IO);
+    assert_eq!(e("noisy"), Effects::IO | Effects::READS);
     // recursion and loops may not terminate
     for name in ["fact", "even", "odd", "spin"] {
         assert!(e(name).diverges(), "{name}: {}", e(name));
@@ -1258,4 +1258,152 @@ fn global_values_are_forwarded_and_unread_globals_disappear() {
     assert_eq!(run(src), "3\n");
     // globals read in closures
     assert_eq!(run("var g = 0;\nlet inc = || => { g += 1; g };\ninc(); inc(); println(g);"), "2\n");
+}
+
+#[test]
+fn constants_propagate_through_joins_and_untaken_branches() {
+    let only_fold = || OptConfig { fold: true, dce: true, ..OptConfig::none() };
+    // both arms store the same constant
+    let src = "fn f(c: bool) -> i64 { var x = 1; if c { x = 2; } else { x = 2; } x + 1 }\nprintln(f(true)); println(f(false));";
+    let (ir, _) = optimized(src, only_fold());
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::Arith { .. })), 0, "{ir}");
+    assert_eq!(run(src), "3\n3\n");
+    // only one arm is ever taken, so only its value reaches the join
+    let src = "fn f() -> i64 { var x = 5; var y = 0; if x > 3 { y = 1; } else { y = 2; } y * 10 }\nprintln(f());";
+    let (ir, _) = optimized(src, only_fold());
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::Arith { .. } | Inst::Cmp { .. })), 0, "{ir}");
+    assert!(fn_named(&ir, "f").blocks.len() <= 2, "{ir}");
+    assert_eq!(run(src), "10\n");
+    // different constants on the two arms, a parameter, and a loop-carried value stay computed
+    let src = "fn f(c: bool) -> i64 { var x = 1; if c { x = 2; } x + 1 }\nprintln(f(true)); println(f(false));";
+    let (ir, _) = optimized(src, only_fold());
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::Arith { .. })), 1, "{ir}");
+    assert_eq!(run(src), "3\n2\n");
+    let src = "fn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { s += i; i += 1; } s }\nprintln(f(5));";
+    let (ir, _) = optimized(src, only_fold());
+    assert!(count_in(&ir, "f", |i| matches!(i, Inst::Arith { .. })) >= 2, "{ir}");
+    assert_eq!(run(src), "10\n");
+    // a loop whose exit test is decided by constants collapses to its result
+    let src = "fn f() -> i64 { var i = 0; while i < 0 { i += 1; } i + 7 }\nprintln(f());";
+    let (ir, _) = optimized(src, only_fold());
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::Arith { .. })), 0, "{ir}");
+    assert_eq!(run(src), "7\n");
+    // an operation that would trap stays and traps
+    let src = "fn f(z: i64) -> i64 { var d = 0; if z > 100 { d = 1; } 10 / d }\nprintln(f(1));";
+    assert_eq!(trap_of(src), Trap::DivideByZero);
+    // captured variables change behind the analysis
+    let src = "fn f() -> i64 { var x = 1; let bump = || => { x += 1; }; bump(); bump(); x }\nprintln(f());";
+    assert_eq!(run(src), "3\n");
+}
+
+#[test]
+fn overwritten_stores_are_dropped_but_observed_ones_stay() {
+    let cfg = only_simplify;
+    let sets = |ir: &IrProgram, name: &str| {
+        count_in(ir, name, |i| matches!(i, Inst::SetField { .. } | Inst::ArraySet { .. } | Inst::SetGlobal { .. }))
+    };
+    // consecutive stores to a global
+    let src = "var g = 0;\nfn f() { g = 1; g = 2; }\nf(); println(g);";
+    let (ir, _) = optimized(src, cfg());
+    assert_eq!(sets(&ir, "f"), 1, "{ir}");
+    assert_eq!(run(src), "2\n");
+    // a read in between keeps the first store
+    let src = "var g = 0;\nfn f() { g = 1; println(g); g = 2; }\nf(); println(g);";
+    let (ir, _) = optimized(src, cfg());
+    assert_eq!(sets(&ir, "f"), 2, "{ir}");
+    assert_eq!(run(src), "1\n2\n");
+    // a call in between may read it
+    let src = "var g = 0;\nfn show() { println(g); }\nfn f() { g = 1; show(); g = 2; }\nf(); show();";
+    let (ir, _) = optimized(src, cfg());
+    assert_eq!(sets(&ir, "f"), 2, "{ir}");
+    assert_eq!(run(src), "1\n2\n");
+    // fields and elements
+    let src = "struct P { x: i64, y: i64 }\nfn f(var p: P, var a: [i64]) { p.x = 1; p.y = 5; p.x = 2; a[0] = 7; a[0] = 8; }\nvar p = P { x: 0, y: 0 }; var a = [0, 0];\nf(p, a); println(p.x); println(p.y); println(a[0]);";
+    let (ir, _) = optimized(src, cfg());
+    assert_eq!(sets(&ir, "f"), 3, "{ir}");
+    assert_eq!(run(src), "2\n5\n8\n");
+    // a different index may alias: the first store survives a read of another element
+    let src = "fn f(var a: [i64], i: i64, j: i64) -> i64 { a[i] = 1; let v = a[j]; a[i] = 2; v }\nvar a = [0, 0]; println(f(a, 0, 0)); println(a[0]);";
+    assert_eq!(run(src), "1\n2\n");
+    // an out-of-range store still traps even when the same slot is stored again
+    assert_eq!(
+        trap_of("fn f(var a: [i64]) { a[5] = 1; a[5] = 2; }\nf([1]);"),
+        Trap::IndexOutOfBounds { index: 5, len: 1 }
+    );
+}
+
+#[test]
+fn small_constant_loops_are_unrolled() {
+    let cfg = || OptConfig { unroll: true, ..only_simplify() };
+    let branches = |ir: &IrProgram, name: &str| {
+        fn_named(ir, name).blocks.iter().filter(|b| matches!(b.term, Term::Branch { .. })).count()
+    };
+    // everything is known: no loop and no arithmetic left
+    let src = "fn f() -> i64 { var s = 0; var i = 0; while i < 4 { s += i * 2; i += 1; } s }\nprintln(f());";
+    let (ir, stats) = optimized(src, cfg());
+    assert_eq!(stats.unrolled, 1, "{ir}");
+    assert_eq!(branches(&ir, "f"), 0, "{ir}");
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::Arith { .. })), 0, "{ir}");
+    assert_eq!(run(src), "12\n");
+    // the body keeps its effects, in order
+    let src = "fn f() { var i = 0; while i < 3 { println(i); i += 1; } }\nf();";
+    let (ir, _) = optimized(src, cfg());
+    assert_eq!(branches(&ir, "f"), 0, "{ir}");
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::Intrinsic { .. })), 3, "{ir}");
+    assert_eq!(run(src), "0\n1\n2\n");
+    // a break inside
+    let src = "fn f() -> i64 { var i = 0; while i < 6 { if i == 3 { break; } i += 1; } i }\nprintln(f());";
+    let (ir, _) = optimized(src, cfg());
+    assert_eq!(branches(&ir, "f"), 0, "{ir}");
+    assert_eq!(run(src), "3\n");
+    // nested loops: the inner one goes first, then the outer one is small enough
+    let src = "fn f() -> i64 { var s = 0; var i = 0; while i < 3 { var j = 0; while j < 2 { s += 1; j += 1; } i += 1; } s }\nprintln(f());";
+    let (ir, stats) = optimized(src, cfg());
+    assert_eq!(stats.unrolled, 2, "{ir}");
+    assert_eq!(branches(&ir, "f"), 0, "{ir}");
+    assert_eq!(run(src), "6\n");
+    // exactly as many iterations as there are copies; one more is left as a loop
+    let src = "fn f() -> i64 { var s = 0; var i = 0; while i < 8 { s += 1; i += 1; } s }\nprintln(f());";
+    let (ir, _) = optimized(src, cfg());
+    assert_eq!(branches(&ir, "f"), 0, "{ir}");
+    assert_eq!(run(src), "8\n");
+    let src = "fn f() -> i64 { var s = 0; var i = 0; while i < 9 { s += 1; i += 1; } s }\nprintln(f());";
+    let (ir, stats) = optimized(src, cfg());
+    assert_eq!(stats.unrolled, 0, "{ir}");
+    assert_eq!(branches(&ir, "f"), 1, "{ir}");
+    assert_eq!(run(src), "9\n");
+    // a bound that is not known stays a loop
+    let src = "fn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { s += i; i += 1; } s }\nprintln(f(5));";
+    let (ir, stats) = optimized(src, cfg());
+    assert_eq!(stats.unrolled, 0, "{ir}");
+    assert_eq!(branches(&ir, "f"), 1, "{ir}");
+    assert_eq!(run(src), "10\n");
+    // never entered
+    assert_eq!(run("fn f() -> i64 { var i = 5; while i < 3 { i += 1; } i }\nprintln(f());"), "5\n");
+}
+
+#[test]
+fn values_are_shared_across_joins_when_every_path_agrees() {
+    let muls = |ir: &IrProgram, name: &str| {
+        count_in(ir, name, |i| matches!(i, Inst::Arith { op: crate::runtime::numeric::ArithOp::Mul, .. }))
+    };
+    // computed before the branch, needed again after the join
+    let src = "fn f(a: i64, b: i64, c: bool) -> i64 { let x = a * b; var y = 0; if c { y = 1; } else { y = 2; } x + a * b + y }\nprintln(f(3, 4, true)); println(f(3, 4, false));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(muls(&ir, "f"), 1, "{ir}");
+    assert_eq!(run(src), "25\n26\n");
+    // computed on both arms of the diamond
+    let src = "fn f(a: i64, b: i64, c: bool) -> i64 { var y = 0; if c { y = a * b; } else { y = a * b + 1; } y + a * b }\nprintln(f(3, 4, true)); println(f(3, 4, false));";
+    assert_eq!(run(src), "24\n25\n");
+    // one arm changes an operand: the product is not available after the join
+    let src = "fn f(a: i64, b: i64, c: bool) -> i64 { var p = a; let x = p * b; if c { p = p + 1; } x + p * b }\nprintln(f(3, 4, true)); println(f(3, 4, false));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(muls(&ir, "f"), 2, "{ir}");
+    assert_eq!(run(src), "28\n24\n");
+    // one arm writes memory that the load depends on
+    let src = "fn f(var a: [i64], c: bool) -> i64 { let x = a[0]; if c { a[0] = 9; } x + a[0] }\nvar a = [1]; println(f(a, true)); var b = [1]; println(f(b, false));";
+    assert_eq!(run(src), "10\n2\n");
+    // loop headers start empty: a value changed by the loop body is not reused
+    let src = "fn f(n: i64, b: i64) -> i64 { var p = 1; var s = 0; var i = 0; let x = p * b; while i < n { p = p + 1; s += p * b; i += 1; } s + x + p * b }\nprintln(f(3, 2));";
+    assert_eq!(run(src), "28\n");
 }

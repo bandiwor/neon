@@ -10,6 +10,9 @@
 //! * [`tail`]: self tail calls to loops, return duplication, branch threading, boolean diamonds
 //! * [`copies`]: global copy propagation (available copies across blocks and loops)
 //! * [`globals`]: stores to globals nobody reads, unused global slots
+//! * [`sccp`]: constant propagation over the whole CFG, ignoring branches that are never taken
+//! * [`stores`]: stores overwritten before anything can read them
+//! * [`unroll`]: small loops with a constant trip count become straight-line code
 //! * [`licm`]: loop-invariant code motion
 //! * [`dce`]: unreachable-block removal, CFG simplification and dead code
 //!   elimination
@@ -25,10 +28,13 @@ pub mod fold;
 pub mod globals;
 pub mod inline;
 pub mod licm;
+pub mod sccp;
 pub mod simplify;
 pub mod sroa;
+pub mod stores;
 pub mod strings;
 pub mod tail;
+pub mod unroll;
 
 use super::types::*;
 
@@ -38,6 +44,8 @@ pub struct OptConfig {
     pub dce: bool,
     pub simplify: bool,
     pub licm: bool,
+    /// Fully unroll small loops whose trip count is known.
+    pub unroll: bool,
     pub inline: bool,
     /// Callees with at most this many instructions are inlined.
     pub inline_threshold: usize,
@@ -52,6 +60,7 @@ impl Default for OptConfig {
             dce: true,
             simplify: true,
             licm: true,
+            unroll: true,
             inline: true,
             inline_threshold: 30,
             max_regs: 160,
@@ -62,7 +71,15 @@ impl Default for OptConfig {
 impl OptConfig {
     /// No optimization at all.
     pub fn none() -> OptConfig {
-        OptConfig { fold: false, dce: false, simplify: false, licm: false, inline: false, ..OptConfig::default() }
+        OptConfig {
+            fold: false,
+            dce: false,
+            simplify: false,
+            licm: false,
+            unroll: false,
+            inline: false,
+            ..OptConfig::default()
+        }
     }
 }
 
@@ -72,6 +89,7 @@ pub struct OptStats {
     pub folded: usize,
     pub simplified: usize,
     pub hoisted: usize,
+    pub unrolled: usize,
     pub inlined_calls: usize,
     pub removed_insts: usize,
     pub removed_blocks: usize,
@@ -97,12 +115,20 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
                         stats.folded += n;
                         changed |= n > 0;
                     }
+                    if cfg.fold {
+                        let n = sccp::sccp_func(f);
+                        stats.folded += n;
+                        changed |= n > 0;
+                    }
                     if cfg.simplify {
                         let n = simplify::simplify_func(f, &fx) + strings::fold_strings(strings, f, &fx);
                         stats.simplified += n;
                         changed |= n > 0;
                     }
                     if cfg.dce {
+                        let n = stores::dead_stores(f, &fx);
+                        stats.removed_insts += n;
+                        changed |= n > 0;
                         let (insts, blocks) = dce::dce_func(f, &fx);
                         stats.removed_insts += insts;
                         stats.removed_blocks += blocks;
@@ -139,6 +165,13 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
             if n == 0 {
                 break;
             }
+            simplify(prog, &mut stats);
+        }
+    }
+    if cfg.unroll && cfg.fold {
+        let n: usize = prog.funcs.iter_mut().map(unroll::unroll_func).sum();
+        stats.unrolled += n;
+        if n > 0 {
             simplify(prog, &mut stats);
         }
     }

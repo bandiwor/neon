@@ -46,7 +46,7 @@ pub fn licm_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
 }
 
 /// Blocks in reverse post-order from the entry (unreachable blocks are absent).
-fn reverse_post_order(f: &IrFunc) -> Vec<usize> {
+pub(super) fn reverse_post_order(f: &IrFunc) -> Vec<usize> {
     let n = f.blocks.len();
     let mut seen = vec![false; n];
     let mut order = Vec::with_capacity(n);
@@ -70,7 +70,7 @@ fn reverse_post_order(f: &IrFunc) -> Vec<usize> {
 }
 
 /// Immediate dominators (Cooper, Harvey, Kennedy); `usize::MAX` for unreachable blocks.
-fn dominators(f: &IrFunc, rpo: &[usize], preds: &[Vec<usize>]) -> Vec<usize> {
+pub(super) fn dominators(f: &IrFunc, rpo: &[usize], preds: &[Vec<usize>]) -> Vec<usize> {
     let n = f.blocks.len();
     let mut order = vec![usize::MAX; n];
     for (i, &b) in rpo.iter().enumerate() {
@@ -123,12 +123,12 @@ fn dominates(idom: &[usize], a: usize, mut b: usize) -> bool {
     }
 }
 
-struct Loop {
-    header: usize,
-    body: HashSet<usize>,
+pub(super) struct Loop {
+    pub header: usize,
+    pub body: HashSet<usize>,
 }
 
-fn find_loops(f: &IrFunc, idom: &[usize], preds: &[Vec<usize>]) -> Vec<Loop> {
+pub(super) fn find_loops(f: &IrFunc, idom: &[usize], preds: &[Vec<usize>]) -> Vec<Loop> {
     let mut loops: Vec<Loop> = Vec::new();
     for (l, b) in f.blocks.iter().enumerate() {
         if idom[l] == usize::MAX {

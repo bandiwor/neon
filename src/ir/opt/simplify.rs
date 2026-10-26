@@ -132,7 +132,7 @@ impl Key {
     }
 }
 
-#[derive(Clone)]
+#[derive(Clone, PartialEq)]
 enum Agg {
     Struct(Vec<VReg>),
     Enum {
@@ -164,6 +164,14 @@ impl Avail {
         self.exprs.retain(|k, v| *v != r && !k.operands().contains(&r));
         self.aggs.retain(|a, g| *a != r && !g.fields().contains(&r));
         self.copies.retain(|d, c| *d != r && *c != r);
+    }
+
+    /// What holds on every path into a join: the facts both sides agree on.
+    fn meet(mut self, other: &Avail) -> Avail {
+        self.exprs.retain(|k, v| other.exprs.get(k) == Some(v));
+        self.aggs.retain(|r, g| other.aggs.get(r) == Some(g));
+        self.copies.retain(|d, c| other.copies.get(d) == Some(c));
+        self
     }
 
     fn kill_memory(&mut self) {
@@ -344,8 +352,16 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let mut ends: Vec<Option<Avail>> = vec![None; n];
     let mut changes = 0;
     for &b in &order {
-        let mut avail = match preds[b].as_slice() {
-            [p] if *p != b => ends[*p].clone().unwrap_or_default(),
+        // what is known at the start of the block: the agreement of all predecessors, provided every
+        // one of them has been processed (a back edge has not, so loop headers start empty)
+        let incoming: Vec<usize> = preds[b].iter().copied().filter(|&p| seen[p]).collect();
+        let mut avail = match incoming.split_first() {
+            Some((&first, rest)) if first != b && ends[first].is_some() => rest
+                .iter()
+                .try_fold(ends[first].clone().unwrap_or_default(), |acc, &p| {
+                    ends[p].as_ref().filter(|_| p != b).map(|e| acc.meet(e))
+                })
+                .unwrap_or_default(),
             _ => Avail::default(),
         };
         let mut insts = std::mem::take(&mut f.blocks[b].insts);

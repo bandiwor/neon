@@ -240,7 +240,7 @@ fn disasm_annotate_adds_pseudo_code_to_each_instruction() {
     std::fs::create_dir_all(&dir).unwrap();
     let file = dir.join("m.neon");
     let path = file.to_str().unwrap();
-    std::fs::write(&file, "fn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { s += i; i += 4; } s }\nprintln(f(10));\nprintln(\"done\");").unwrap();
+    std::fs::write(&file, "fn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { s += i; i += 4; } s }\nprintln(f(1000));\nprintln(\"done\");").unwrap();
     let plain = run_with(&["disasm", path], "");
     assert_eq!(plain.code, 0, "{}", plain.err);
     assert!(!plain.out.contains("  # "), "{}", plain.out);

@@ -132,10 +132,12 @@ impl Builtin {
         const T: Effects = Effects::TRAPS;
         const A: Effects = Effects::ALLOCS;
         match self {
-            Print | Println => Effects::IO,
+            // formatting reads whatever object it is given
+            Print | Println => Effects::IO.union(R),
             Input | ReadLine => Effects::IO.union(T).union(A),
             Panic | Assert => T,
-            ToString | StrConcat | StrChars | StrToUpper | StrToLower | StrTrim | StrSplit => A,
+            ToString => R.union(A),
+            StrConcat | StrChars | StrToUpper | StrToLower | StrTrim | StrSplit => A,
             StrLen | StrIsEmpty | StrContains | StrStartsWith | StrEndsWith | StrFind => Effects::NONE,
             StrSubstring => A.union(T),
             StrCharAt | StrParseI64 | StrParseF64 => T,
@@ -299,6 +301,9 @@ mod tests {
         assert_eq!(Builtin::Println.purity(), Purity::Impure);
         assert_eq!(Builtin::ArrPush.purity(), Purity::Impure);
         assert_eq!(Builtin::ArrLen.purity(), Purity::Pure);
+        // printing and to_string look inside the objects they format
+        assert!(Builtin::Println.effects().reads() && Builtin::Print.effects().reads());
+        assert!(Builtin::ToString.effects().reads() && Builtin::ToString.effects().allocates());
         assert_eq!(Builtin::StrLen.purity(), Purity::Const);
         assert_eq!(Builtin::StrConcat.purity(), Purity::Const);
         assert!(Builtin::StrConcat.effects().allocates() && !Builtin::StrConcat.effects().traps());
