@@ -547,6 +547,15 @@ impl Interp<'_> {
                 let s = self.format(desc.expect("to_string has a descriptor"), a[0]);
                 self.alloc_str(s)
             }
+            Format => {
+                let d = desc.expect("format has a descriptor");
+                let kind = crate::runtime::fmtspec::kind_of(self.prog.desc(d))
+                    .ok_or_else(|| Trap::Panic("this type cannot take a format specifier".into()))?;
+                let text = (kind == crate::runtime::fmtspec::Kind::Str).then(|| self.str_of(a[0]).to_string());
+                let s = crate::runtime::fmtspec::format_with(kind, a[0], text.as_deref(), self.str_of(a[1]))
+                    .map_err(|e| Trap::Panic(format!("invalid format specifier: {e}")))?;
+                self.alloc_str(s)
+            }
 
             StrConcat => {
                 let s = format!("{}{}", self.str_of(a[0]), self.str_of(a[1]));
@@ -614,6 +623,7 @@ impl Interp<'_> {
                 }
             }
             StrParseI64 => mathfn::parse_i64(self.str_of(a[0]))?,
+            StrParseU64 => mathfn::parse_u64(self.str_of(a[0]))?,
             StrParseF64 => mathfn::parse_f64(self.str_of(a[0]))?,
 
             ArrLen => self.array_of(a[0]).len() as u64,
@@ -726,11 +736,11 @@ impl Interp<'_> {
                 fresh as u64
             }
 
-            StrTryParseI64 | StrTryParseF64 => {
-                let parsed = if b == StrTryParseI64 {
-                    mathfn::parse_i64(self.str_of(a[0]))
-                } else {
-                    mathfn::parse_f64(self.str_of(a[0]))
+            StrTryParseI64 | StrTryParseU64 | StrTryParseF64 => {
+                let parsed = match b {
+                    StrTryParseI64 => mathfn::parse_i64(self.str_of(a[0])),
+                    StrTryParseU64 => mathfn::parse_u64(self.str_of(a[0])),
+                    _ => mathfn::parse_f64(self.str_of(a[0])),
                 };
                 match parsed {
                     Ok(v) => self.ok(v),

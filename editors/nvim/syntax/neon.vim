@@ -43,6 +43,10 @@ syn match  neonEscape      contained "\\x\x\{2}"
 syn match  neonEscape      contained "\\u{\x\{1,6}}"
 syn match  neonEscapeError contained "\\[^nrt0\\'"xu]"
 syn region neonString      start=+"+ skip=+\\\\\|\\"+ end=+"+ contains=neonEscape,neonEscapeError,@Spell
+" format strings: f"text {expr:spec}" ({{ and }} are literal braces)
+syn region neonFString     matchgroup=neonFStringQuote start=+\<f"+ skip=+\\\\\|\\"+ end=+"+ contains=neonEscape,neonEscapeError,neonFStrLitBrace,neonFStrField,@Spell
+syn region neonFStrField   contained matchgroup=neonFStrBrace start=+{+ end=+}+ contains=TOP
+syn match  neonFStrLitBrace contained "{{\|}}"
 syn match  neonCharacter   "'\%([^'\\]\|\\[nrt0\\'"]\|\\x\x\{2}\|\\u{\x\{1,6}}\)'" contains=neonEscape
 
 " ---- names --------------------------------------------------------------------------------
@@ -83,6 +87,10 @@ hi def link neonFloat         Float
 hi def link neonEscape        SpecialChar
 hi def link neonEscapeError   Error
 hi def link neonString        String
+hi def link neonFString       String
+hi def link neonFStringQuote  String
+hi def link neonFStrBrace     Special
+hi def link neonFStrLitBrace  SpecialChar
 hi def link neonCharacter     Character
 hi def link neonFunction      Function
 hi def link neonFnName        Function

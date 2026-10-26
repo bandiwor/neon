@@ -70,7 +70,7 @@ done
 # running at every safe-point (this exercises stack maps, upvalues and the
 # heap under Valgrind's memory checking).
 cargo build --quiet --bin neon
-CLI="$PWD/target/debug/neon"
+CLI="${CARGO_TARGET_DIR:-$PWD/target}/debug/neon"
 OUT="$(mktemp)"
 trap 'rm -f "$LOG" "$OUT"' EXIT
 programs=0

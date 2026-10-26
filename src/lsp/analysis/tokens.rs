@@ -78,7 +78,12 @@ impl Analysis {
                     pieces.push(Piece { lo, hi, ty, modifiers });
                 }
                 TokenKind::Int(_) | TokenKind::Float(_) => pieces.push(Piece { lo, hi, ty: T_NUMBER, modifiers: 0 }),
-                TokenKind::Str(_) | TokenKind::Char(_) => pieces.push(Piece { lo, hi, ty: T_STRING, modifiers: 0 }),
+                TokenKind::Str(_)
+                | TokenKind::Char(_)
+                | TokenKind::FStrBegin
+                | TokenKind::FStrLit(_)
+                | TokenKind::FStrSpec(_)
+                | TokenKind::FStrEnd => pieces.push(Piece { lo, hi, ty: T_STRING, modifiers: 0 }),
                 TokenKind::Ident(_) => {
                     if let Some((ty, modifiers)) = self.classify_identifier(lo as u32) {
                         pieces.push(Piece { lo, hi, ty, modifiers });

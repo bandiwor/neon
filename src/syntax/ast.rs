@@ -253,6 +253,16 @@ pub enum NodeKind {
     IntLit(IntId),
     FloatLit(FloatId),
     StrLit(StrId),
+    /// `f"text {expr:spec}"`: the parts are `StrLit` text pieces and `FStrArg`s.
+    FString {
+        parts: NodeList,
+    },
+    /// One `{expr}` or `{expr:spec}` of a format string.
+    FStrArg {
+        expr: NodeId,
+        /// The format specifier: `StrLit` text and `FStrArg`s (without a specifier of their own); empty when absent.
+        spec: NodeList,
+    },
     CharLit(char),
     BoolLit(bool),
     UnitLit,

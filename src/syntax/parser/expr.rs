@@ -62,6 +62,7 @@ impl Parser<'_> {
             | TokenKind::Int(_)
             | TokenKind::Float(_)
             | TokenKind::Str(_)
+            | TokenKind::FStrBegin
             | TokenKind::Char(_)
             | TokenKind::LParen
             | TokenKind::LBracket
@@ -241,6 +242,87 @@ impl Parser<'_> {
         Ok(self.list(&items))
     }
 
+    /// `f"text {expr} text {expr:spec}"`, as lexed into `FStr*` tokens.
+    fn parse_fstring(&mut self) -> PResult<NodeId> {
+        let lo = self.cur_lo();
+        self.bump();
+        let mut parts = Vec::new();
+        loop {
+            let part_lo = self.cur_lo();
+            match self.peek() {
+                TokenKind::FStrLit(id) => {
+                    self.bump();
+                    parts.push(self.lit_str(id, part_lo));
+                }
+                TokenKind::FStrOpen => {
+                    self.bump();
+                    let saved = std::mem::replace(&mut self.no_struct, false);
+                    let expr = self.parse_expr_free();
+                    self.no_struct = saved;
+                    let expr = expr?;
+                    let mut spec_parts = Vec::new();
+                    loop {
+                        let spec_lo = self.cur_lo();
+                        match self.peek() {
+                            TokenKind::FStrSpec(id) => {
+                                self.bump();
+                                spec_parts.push(self.lit_str(id, spec_lo));
+                            }
+                            TokenKind::FStrOpen => {
+                                self.bump();
+                                let inner = self.with_no_struct(false, |p| p.parse_expr_free())?;
+                                if !self.at(TokenKind::FStrClose) {
+                                    let found = self.describe_found();
+                                    let span = self.tok().span;
+                                    self.error_at(
+                                        span,
+                                        "E0100",
+                                        format!("unexpected {found} in a format string field"),
+                                        "expected `}`".into(),
+                                    );
+                                    while !matches!(
+                                        self.peek(),
+                                        TokenKind::FStrClose | TokenKind::FStrEnd | TokenKind::Eof
+                                    ) {
+                                        self.bump();
+                                    }
+                                }
+                                self.eat(TokenKind::FStrClose);
+                                let empty = self.list(&[]);
+                                spec_parts.push(self.node(NodeKind::FStrArg { expr: inner, spec: empty }, spec_lo));
+                            }
+                            _ => break,
+                        }
+                    }
+                    let spec = self.list(&spec_parts);
+                    if !self.at(TokenKind::FStrClose) {
+                        // leftovers inside the braces: report and skip to the end of the field
+                        let found = self.describe_found();
+                        let span = self.tok().span;
+                        self.error_at(
+                            span,
+                            "E0100",
+                            format!("unexpected {found} in a format string field"),
+                            "expected `}`".into(),
+                        );
+                        while !matches!(self.peek(), TokenKind::FStrClose | TokenKind::FStrEnd | TokenKind::Eof) {
+                            self.bump();
+                        }
+                    }
+                    self.eat(TokenKind::FStrClose);
+                    parts.push(self.node(NodeKind::FStrArg { expr, spec }, part_lo));
+                }
+                TokenKind::FStrEnd => {
+                    self.bump();
+                    break;
+                }
+                _ => break,
+            }
+        }
+        let parts = self.list(&parts);
+        Ok(self.node(NodeKind::FString { parts }, lo))
+    }
+
     fn lit_str(&mut self, id: StrId, lo: u32) -> NodeId {
         self.node(NodeKind::StrLit(id), lo)
     }
@@ -260,6 +342,7 @@ impl Parser<'_> {
                 self.bump();
                 Ok(self.lit_str(id, lo))
             }
+            TokenKind::FStrBegin => self.parse_fstring(),
             TokenKind::Char(c) => {
                 self.bump();
                 Ok(self.node(NodeKind::CharLit(c), lo))

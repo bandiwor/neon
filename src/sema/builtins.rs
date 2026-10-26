@@ -79,9 +79,15 @@ pub fn builtin_method(prog: &mut Program, recv: Ty, name: &str) -> Option<Builti
                 "char_at" => sig(Builtin::StrCharAt, vec![i64t], chart),
                 "find" => sig(Builtin::StrFind, vec![strt], i64t),
                 "parse_i64" => sig(Builtin::StrParseI64, vec![], i64t),
+                "parse_u64" => sig(Builtin::StrParseU64, vec![], t.prim(Prim::U64)),
                 "parse_f64" => sig(Builtin::StrParseF64, vec![], t.prim(Prim::F64)),
                 "to_string" => sig(Builtin::ToString, vec![], strt),
+                "format" => sig(Builtin::Format, vec![strt], strt),
                 "try_parse_i64" => sig(Builtin::StrTryParseI64, vec![], result_of(t, la, i64t, strt)?),
+                "try_parse_u64" => {
+                    let u64t = t.prim(Prim::U64);
+                    sig(Builtin::StrTryParseU64, vec![], result_of(t, la, u64t, strt)?)
+                }
                 "try_parse_f64" => {
                     let f64t = t.prim(Prim::F64);
                     sig(Builtin::StrTryParseF64, vec![], result_of(t, la, f64t, strt)?)
@@ -154,6 +160,9 @@ pub fn builtin_method(prog: &mut Program, recv: Ty, name: &str) -> Option<Builti
         TyKind::Prim(p) => {
             if name == "to_string" {
                 return sig(Builtin::ToString, vec![], strt);
+            }
+            if name == "format" {
+                return sig(Builtin::Format, vec![strt], strt);
             }
             if p == Prim::Char {
                 return match name {

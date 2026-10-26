@@ -22,6 +22,8 @@ pub struct Lexer<'a> {
     diags: &'a mut DiagBag,
     scratch: String,
     finished: bool,
+    /// Tokens of a format string already scanned, handed out before lexing continues.
+    pending: std::collections::VecDeque<Token>,
 }
 
 impl std::fmt::Debug for Lexer<'_> {
@@ -66,7 +68,17 @@ impl<'a> Lexer<'a> {
         if src[pos..].starts_with("#!") {
             pos += src[pos..].find('\n').unwrap_or(src.len() - pos);
         }
-        Lexer { file, src, pos, interner, pool, diags, scratch: String::new(), finished: false }
+        Lexer {
+            file,
+            src,
+            pos,
+            interner,
+            pool,
+            diags,
+            scratch: String::new(),
+            finished: false,
+            pending: Default::default(),
+        }
     }
 
     fn peek(&self) -> Option<char> {
@@ -103,11 +115,18 @@ impl<'a> Lexer<'a> {
 
     /// Returns the next token; yields `Eof` forever once the input is exhausted.
     pub fn next_token(&mut self) -> Token {
+        if let Some(t) = self.pending.pop_front() {
+            return t;
+        }
         self.skip_trivia();
         let lo = self.pos;
         let Some(c) = self.bump() else {
             return Token { kind: TokenKind::Eof, span: self.span(lo) };
         };
+        if c == 'f' && self.peek() == Some('"') {
+            self.bump();
+            return self.fstring(lo);
+        }
         use TokenKind::*;
         let kind = match c {
             '(' => LParen,
@@ -500,6 +519,226 @@ impl<'a> Lexer<'a> {
         TokenKind::Str(id)
     }
 
+    fn push(&mut self, kind: TokenKind, lo: usize, hi: usize) {
+        self.pending.push_back(Token { kind, span: Span::new(self.file, lo as u32, hi as u32) });
+    }
+
+    /// Where the replacement field that starts at `start` (just after its `{`) ends its expression:
+    /// at the closing `}`, or at the `:` that begins a format specifier (then the second value is the
+    /// position after the `:`). Brackets and string or character literals inside the expression are
+    /// skipped over; a `:` separates the specifier only outside of brackets.
+    fn scan_field(&self, start: usize) -> Option<(usize, Option<usize>)> {
+        let text = &self.src[start..];
+        let mut depth = 0usize;
+        let mut chars = text.char_indices().peekable();
+        let mut prev = ' ';
+        while let Some((i, c)) = chars.next() {
+            match c {
+                '(' | '[' | '{' => depth += 1,
+                ')' | ']' => depth = depth.saturating_sub(1),
+                '}' => {
+                    if depth == 0 {
+                        return Some((start + i, None));
+                    }
+                    depth -= 1;
+                }
+                '"' | '\'' => {
+                    let quote = c;
+                    loop {
+                        match chars.next()? {
+                            (_, '\\') => {
+                                chars.next();
+                            }
+                            (_, q) if q == quote => break,
+                            _ => {}
+                        }
+                    }
+                }
+                ':' if depth == 0 => {
+                    if chars.peek().map(|&(_, n)| n) == Some(':') {
+                        chars.next();
+                    } else if prev != ':' {
+                        return Some((start + i, Some(start + i + 1)));
+                    }
+                }
+                _ => {}
+            }
+            prev = c;
+        }
+        None
+    }
+
+    /// The tokens of the text between `lo` and `hi`, lexed in place so the spans stay right.
+    fn sub_tokens(&mut self, lo: usize, hi: usize) -> Vec<Token> {
+        let src: &'a str = self.src;
+        let mut sub = Lexer {
+            file: self.file,
+            src: &src[..hi],
+            pos: lo,
+            interner: &mut *self.interner,
+            pool: &mut *self.pool,
+            diags: &mut *self.diags,
+            scratch: String::new(),
+            finished: false,
+            pending: Default::default(),
+        };
+        let mut out = Vec::new();
+        loop {
+            let t = sub.next_token();
+            if t.kind == TokenKind::Eof {
+                break;
+            }
+            out.push(t);
+        }
+        out
+    }
+
+    /// A format string `f"text {expr} text {expr:spec}"`; `{{` and `}}` are literal braces. The
+    /// opening `f"` is consumed; returns the first token and queues the others.
+    fn fstring(&mut self, lo: usize) -> Token {
+        let begin = Token { kind: TokenKind::FStrBegin, span: self.span(lo) };
+        let mut buf = String::new();
+        let mut buf_lo = self.pos;
+        loop {
+            let at = self.pos;
+            match self.bump() {
+                None => {
+                    self.error(lo, "E0002", "unterminated string literal", "string starts here");
+                    self.flush_fstr_text(&mut buf, buf_lo, at);
+                    self.push(TokenKind::FStrEnd, at, at);
+                    break;
+                }
+                Some('"') => {
+                    self.flush_fstr_text(&mut buf, buf_lo, at);
+                    self.push(TokenKind::FStrEnd, at, self.pos);
+                    break;
+                }
+                Some('\\') => match self.peek() {
+                    Some('\n' | '\r') => {
+                        while matches!(self.peek(), Some(c) if c.is_whitespace()) {
+                            self.bump();
+                        }
+                    }
+                    _ => {
+                        if let Some(c) = self.escape(at) {
+                            buf.push(c);
+                        }
+                    }
+                },
+                Some('{') if self.peek() == Some('{') => {
+                    self.bump();
+                    buf.push('{');
+                }
+                Some('}') if self.peek() == Some('}') => {
+                    self.bump();
+                    buf.push('}');
+                }
+                Some('}') => {
+                    self.error(at, "E0007", "single `}` in a format string", "use `}}` for a literal brace");
+                    buf.push('}');
+                }
+                Some('{') => {
+                    self.flush_fstr_text(&mut buf, buf_lo, at);
+                    self.fstring_field(at, lo);
+                    buf_lo = self.pos;
+                    continue;
+                }
+                Some(c) => buf.push(c),
+            }
+        }
+        begin
+    }
+
+    /// One `{expr}` / `{expr:spec}` field whose `{` is at `at` (already consumed); `string_lo` is where
+    /// the whole string started. The specifier may itself contain `{expr}` fields: `{x:{width}.2f}`.
+    /// Leaves `self.pos` after the closing `}`.
+    fn fstring_field(&mut self, at: usize, string_lo: usize) {
+        let open = self.pos;
+        self.push(TokenKind::FStrOpen, at, open);
+        let Some((end, spec)) = self.scan_field(open) else {
+            self.error(at, "E0007", "unterminated `{` in a format string", "this `{` is never closed");
+            // the rest of the string is lost: take everything up to the next quote as the field
+            let rest = self.src[open..].find('"').map_or(self.src.len(), |n| open + n);
+            let toks = self.sub_tokens(open, rest);
+            self.pending.extend(toks);
+            self.push(TokenKind::FStrClose, rest, rest);
+            self.push(TokenKind::FStrEnd, rest, rest);
+            self.pos = rest + 1;
+            let _ = string_lo;
+            return;
+        };
+        if self.src[open..end].trim().is_empty() {
+            self.error(at, "E0007", "empty expression in a format string", "put an expression inside `{}`");
+        }
+        let toks = self.sub_tokens(open, end);
+        self.pending.extend(toks);
+        let Some(spec_lo) = spec else {
+            self.push(TokenKind::FStrClose, end, end + 1);
+            self.pos = end + 1;
+            return;
+        };
+        // the specifier: text and nested fields up to the closing `}`
+        self.pos = spec_lo;
+        let mut text = String::new();
+        let mut text_lo = spec_lo;
+        loop {
+            let here = self.pos;
+            match self.bump() {
+                None | Some('"') => {
+                    self.error(at, "E0007", "unterminated `{` in a format string", "this `{` is never closed");
+                    self.pos = here;
+                    break;
+                }
+                Some('}') => {
+                    self.flush_spec_text(&mut text, text_lo, here);
+                    self.push(TokenKind::FStrClose, here, here + 1);
+                    return;
+                }
+                Some('{') => {
+                    self.flush_spec_text(&mut text, text_lo, here);
+                    self.fstring_nested(here);
+                    text_lo = self.pos;
+                }
+                Some(c) => text.push(c),
+            }
+        }
+        self.push(TokenKind::FStrClose, self.pos, self.pos);
+    }
+
+    /// A `{expr}` inside a format specifier (no specifier of its own).
+    fn fstring_nested(&mut self, at: usize) {
+        let open = self.pos;
+        self.push(TokenKind::FStrOpen, at, open);
+        let Some((end, None)) = self.scan_field(open) else {
+            self.error(at, "E0007", "a field inside a format specifier is just `{expr}`", "no nested specifier here");
+            self.push(TokenKind::FStrClose, open, open);
+            return;
+        };
+        if self.src[open..end].trim().is_empty() {
+            self.error(at, "E0007", "empty expression in a format string", "put an expression inside `{}`");
+        }
+        let toks = self.sub_tokens(open, end);
+        self.pending.extend(toks);
+        self.push(TokenKind::FStrClose, end, end + 1);
+        self.pos = end + 1;
+    }
+
+    fn flush_spec_text(&mut self, text: &mut String, lo: usize, hi: usize) {
+        if !text.is_empty() {
+            let id = self.pool.add_str(text);
+            self.push(TokenKind::FStrSpec(id), lo, hi);
+            text.clear();
+        }
+    }
+
+    fn flush_fstr_text(&mut self, buf: &mut String, lo: usize, hi: usize) {
+        if !buf.is_empty() {
+            let id = self.pool.add_str(buf);
+            self.push(TokenKind::FStrLit(id), lo, hi);
+            buf.clear();
+        }
+    }
+
     fn char_literal(&mut self, lo: usize) -> TokenKind {
         let value = match self.peek() {
             None | Some('\n') => {
@@ -845,6 +1084,48 @@ mod tests {
         let out = lex(r#""a\nb\tc\r\0\\\"\'\x41\u{48}\u{1F600}""#);
         assert_eq!(out.strs(), vec!["a\nb\tc\r\0\\\"'AH😀"]);
         assert!(out.diags.is_empty());
+    }
+
+    #[test]
+    fn format_strings_are_split_into_text_and_fields() {
+        let out = lex(r#"f"a{b}c{{d}} {x:>4} {y:{w}.2f}""#);
+        let kinds: Vec<&str> = out.tokens.iter().map(|t| t.kind.describe()).collect();
+        assert_eq!(
+            kinds,
+            [
+                "format string",
+                "format string text",
+                "`{` in a format string",
+                "identifier",
+                "`}` in a format string",
+                "format string text",
+                "`{` in a format string",
+                "identifier",
+                "format specifier",
+                "`}` in a format string",
+                "format string text",
+                "`{` in a format string",
+                "identifier",
+                "`{` in a format string",
+                "identifier",
+                "`}` in a format string",
+                "format specifier",
+                "`}` in a format string",
+                "end of format string",
+                "end of file",
+            ]
+        );
+        assert!(out.diags.is_empty());
+    }
+
+    #[test]
+    fn format_string_errors() {
+        assert_eq!(lex(r#"f"{""#).error_codes(), ["E0007", "E0002"]);
+        assert_eq!(lex(r#"f"a}""#).error_codes(), ["E0007"]);
+        assert_eq!(lex(r#"f"{}""#).error_codes(), ["E0007"]);
+        // `f` on its own, or before something else, is an identifier
+        let out = lex(r#"f "x" f(1)"#);
+        assert_eq!(out.kinds().len(), 6);
     }
 
     #[test]

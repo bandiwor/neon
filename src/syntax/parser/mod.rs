@@ -156,7 +156,12 @@ impl<'a> Parser<'a> {
     fn describe_found(&self) -> String {
         let t = self.tok();
         match t.kind {
-            TokenKind::Ident(_) | TokenKind::Int(_) | TokenKind::Float(_) | TokenKind::Str(_) | TokenKind::Char(_) => {
+            TokenKind::Ident(_)
+            | TokenKind::Int(_)
+            | TokenKind::Float(_)
+            | TokenKind::Str(_)
+            | TokenKind::Char(_)
+            | TokenKind::FStrBegin => {
                 let text = &self.src[t.span.range()];
                 let shown: String = text.chars().take(24).collect();
                 let dots = if shown.len() < text.len() { "..." } else { "" };

@@ -1,0 +1,33 @@
+// Python-style format strings
+struct Point { x: i64, y: i64 }
+
+impl Display for Point {
+    fn to_string(self) -> string {
+        f"({self.x}, {self.y})"
+    }
+}
+
+fn main() {
+    let name = "world";
+    let n = 42;
+    let pi = 3.14159;
+    println(f"hello {name}! n={n} pi={pi:.2f}");
+    println(f"[{n:>6}] [{n:<6}] [{n:^6}] [{n:06}] [{n:x}] [{n:X}] [{n:#b}] [{n:#o}]");
+    println(f"{pi:10.3f}|{pi:e}|{pi:g}|{1234567:,}|{0.25:.1%}|{-n:+}|{n:+}");
+    println(f"{{literal}} {1 + 2} {name.len()} {"nested"} {f"inner {n}"}");
+    println(f"{[1, 2, 3]} {Option::Some(5)} {Point { x: 1, y: -2 }}");
+    println(f"{true:>6}|{'x':^5}|{name:*^11}|{name:.3}|{name:>8}");
+    let w = 8;
+    let p = 3;
+    println(f"[{n:{w}}] [{pi:{w}.{p}f}] [{n:0{w}}] [{name:>{w}}]");
+    var total = 0;
+    for i in 1..=3 {
+        total += i;
+        println(f"{i}: running total {total:>3}");
+    }
+    println(f"");
+    println(f"{n}");
+    println(5.format("04") + "|" + "ab".format(">4") + "|" + 255.format("#x"));
+    let big: u64 = 18446744073709551615;
+    println(f"{big} {big:x} {-128i8:b}");
+}

@@ -84,6 +84,14 @@ pub enum TokenKind {
     Float(FloatId),
     Str(StrId),
     Char(char),
+    /// `f"` — the start of a format string. The pieces follow as `FStrLit` (text), `FStrOpen`,
+    /// the tokens of the expression, an optional `FStrSpec` and `FStrClose`, up to `FStrEnd`.
+    FStrBegin,
+    FStrLit(StrId),
+    FStrOpen,
+    FStrSpec(StrId),
+    FStrClose,
+    FStrEnd,
     /// A lone `_` (wildcard pattern); `_x` is an ordinary identifier.
     Underscore,
 
@@ -151,6 +159,12 @@ impl TokenKind {
             Int(_) => "integer literal",
             Float(_) => "float literal",
             Str(_) => "string literal",
+            FStrBegin => "format string",
+            FStrLit(_) => "format string text",
+            FStrOpen => "`{` in a format string",
+            FStrSpec(_) => "format specifier",
+            FStrClose => "`}` in a format string",
+            FStrEnd => "end of format string",
             Char(_) => "character literal",
             Underscore => "`_`",
             LParen => "`(`",

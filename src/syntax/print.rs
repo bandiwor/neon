@@ -246,6 +246,20 @@ impl Printer<'_> {
             StrLit(s) => {
                 let _ = write!(self.out, "{:?}", self.ast.lits.str(s));
             }
+            FString { parts } => {
+                self.open("fstring ");
+                self.comma_list(parts, " ");
+                self.close();
+            }
+            FStrArg { expr, spec } => {
+                self.open("arg ");
+                self.node(expr);
+                if !spec.is_empty() {
+                    self.text(" : ");
+                    self.comma_list(spec, " ");
+                }
+                self.close();
+            }
             CharLit(c) => {
                 let _ = write!(self.out, "{c:?}");
             }

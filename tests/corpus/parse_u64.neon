@@ -1,0 +1,10 @@
+println("18446744073709551615".parse_u64());
+println(" 42 ".parse_u64() + 1);
+println("-1".try_parse_u64());
+println("18446744073709551616".try_parse_u64());
+println("abc".try_parse_u64());
+println("0".try_parse_u64());
+match "7".try_parse_u64() {
+    Result::Ok(v) => println(f"ok {v:03}"),
+    Result::Err(e) => println(f"err {e}"),
+}

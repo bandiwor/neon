@@ -107,6 +107,7 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         // shrink the real effects, so the summaries stay sound while they run
         let fx = crate::ir::effects::analyze(prog);
         let strings = &mut prog.strings;
+        let descs = &prog.descs;
         for f in &mut prog.funcs {
             // loop-invariant motion comes last: it moves work out of the places the other passes
             // pattern-match on (a hoisted `len` hides the loop condition), then a cleanup round follows
@@ -124,7 +125,7 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
                         changed |= n > 0;
                     }
                     if cfg.simplify {
-                        let n = simplify::simplify_func(f, &fx) + strings::fold_strings(strings, f, &fx);
+                        let n = simplify::simplify_func(f, &fx) + strings::fold_strings(strings, descs, f, &fx);
                         stats.simplified += n;
                         changed |= n > 0;
                     }

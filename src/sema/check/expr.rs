@@ -69,6 +69,22 @@ impl Checker<'_> {
                 ty
             }
             NodeKind::StrLit(_) => self.prim(Prim::Str),
+            NodeKind::FString { parts } => {
+                for &p in ast.list(parts) {
+                    if let NodeKind::FStrArg { expr, spec } = *ast.kind(p) {
+                        let t = self.expr(expr, None);
+                        for &q in ast.list(spec) {
+                            if let NodeKind::FStrArg { expr: inner, .. } = *ast.kind(q) {
+                                self.expr(inner, None);
+                            }
+                        }
+                        if !spec.is_empty() {
+                            self.fstr_args.push((p, t));
+                        }
+                    }
+                }
+                self.prim(Prim::Str)
+            }
             NodeKind::CharLit(_) => self.prim(Prim::Char),
             NodeKind::BoolLit(_) => self.prim(Prim::Bool),
             NodeKind::UnitLit => self.unit(),

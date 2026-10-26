@@ -1,0 +1,14 @@
+hello world! n=42 pi=3.14
+[    42] [42    ] [  42  ] [000042] [2a] [2A] [0b101010] [0o52]
+     3.142|3.141590e+00|3.14159|1,234,567|25.0%|-42|+42
+{literal} 3 5 nested inner 42
+[1, 2, 3] Option::Some(5) (1, -2)
+  true|  x  |***world***|wor|   world
+[      42] [   3.142] [00000042] [   world]
+1: running total   1
+2: running total   3
+3: running total   6
+
+42
+0005|  ab|0xff
+18446744073709551615 ffffffffffffffff -10000000

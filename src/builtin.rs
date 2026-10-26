@@ -30,6 +30,8 @@ builtins! {
     Assert = "assert",
     // conversions (receiver is any primitive)
     ToString = "to_string",
+    // `x.format(spec)` and the fields of format strings: Python-style format specifications
+    Format = "format",
     // strings
     StrConcat = "concat",
     StrLen = "len",
@@ -46,6 +48,7 @@ builtins! {
     StrCharAt = "char_at",
     StrFind = "find",
     StrParseI64 = "parse_i64",
+    StrParseU64 = "parse_u64",
     StrParseF64 = "parse_f64",
     // arrays
     ArrLen = "len",
@@ -102,6 +105,7 @@ builtins! {
     // fallible variants: they return `Option` / `Result` instead of trapping
     // (always appended, the position in `ALL` is part of the bytecode format)
     StrTryParseI64 = "try_parse_i64",
+    StrTryParseU64 = "try_parse_u64",
     StrTryParseF64 = "try_parse_f64",
     StrGetChar = "get_char",
     StrTrySubstring = "try_substring",
@@ -137,10 +141,11 @@ impl Builtin {
             Input | ReadLine => Effects::IO.union(T).union(A),
             Panic | Assert => T,
             ToString => R.union(A),
+            Format => R.union(A).union(T),
             StrConcat | StrChars | StrToUpper | StrToLower | StrTrim | StrSplit => A,
             StrLen | StrIsEmpty | StrContains | StrStartsWith | StrEndsWith | StrFind => Effects::NONE,
             StrSubstring => A.union(T),
-            StrCharAt | StrParseI64 | StrParseF64 => T,
+            StrCharAt | StrParseI64 | StrParseU64 | StrParseF64 => T,
             ArrLen | ArrIsEmpty | ArrContains | MapLen | MapIsEmpty | MapGetOr | MapContainsKey | SetLen
             | SetIsEmpty | SetContains => R,
             ArrClone | ArrJoin | MapKeys | MapValues | SetToArray => R.union(A),
@@ -150,7 +155,7 @@ impl Builtin {
             Abs | Pow => T,
             Min | Max | Sqrt | Sin | Cos | Tan | Floor | Ceil | Round | Ln | Exp | IsNan => Effects::NONE,
             CharIsDigit | CharIsAlphabetic | CharIsWhitespace | CharToUpper | CharToLower => Effects::NONE,
-            StrTryParseI64 | StrTryParseF64 | StrGetChar | StrTrySubstring | StrIndexOf => A,
+            StrTryParseI64 | StrTryParseU64 | StrTryParseF64 | StrGetChar | StrTrySubstring | StrIndexOf => A,
             ArrGet | MapGet => R.union(A),
             ArrTryPop | ArrTryRemove => W.union(A),
             CheckedAdd | CheckedSub | CheckedMul | CheckedDiv | CheckedRem | CheckedPow | CheckedNeg | CheckedShl
@@ -169,16 +174,17 @@ impl Builtin {
             MapInsert => i >= 1,
             // the default may be the result
             MapGetOr => i == 2,
-            Print | Println | Input | Panic | Assert | ToString | StrConcat | StrLen | StrIsEmpty | StrChars
-            | StrSubstring | StrContains | StrStartsWith | StrEndsWith | StrToUpper | StrToLower | StrTrim
-            | StrSplit | StrCharAt | StrFind | StrParseI64 | StrParseF64 | ArrLen | ArrIsEmpty | ArrPop | ArrClear
-            | ArrContains | ArrRemove | ArrReverse | ArrClone | ArrJoin | ArrSort | MapLen | MapIsEmpty
-            | MapContainsKey | MapRemove | MapKeys | MapValues | MapClear | SetLen | SetIsEmpty | SetContains
-            | SetRemove | SetToArray | SetClear | Abs | Pow | Min | Max | Sqrt | Sin | Cos | Tan | Floor | Ceil
-            | Round | Ln | Exp | IsNan | CharIsDigit | CharIsAlphabetic | CharIsWhitespace | CharToUpper
-            | CharToLower | StrTryParseI64 | StrTryParseF64 | StrGetChar | StrTrySubstring | StrIndexOf | ArrGet
-            | ArrTryPop | ArrTryRemove | MapGet | CheckedAdd | CheckedSub | CheckedMul | CheckedDiv | CheckedRem
-            | CheckedPow | CheckedNeg | CheckedShl | CheckedShr | ReadLine => false,
+            Print | Println | Input | Panic | Assert | ToString | Format | StrConcat | StrLen | StrIsEmpty
+            | StrChars | StrSubstring | StrContains | StrStartsWith | StrEndsWith | StrToUpper | StrToLower
+            | StrTrim | StrSplit | StrCharAt | StrFind | StrParseI64 | StrParseU64 | StrParseF64 | ArrLen
+            | ArrIsEmpty | ArrPop | ArrClear | ArrContains | ArrRemove | ArrReverse | ArrClone | ArrJoin | ArrSort
+            | MapLen | MapIsEmpty | MapContainsKey | MapRemove | MapKeys | MapValues | MapClear | SetLen
+            | SetIsEmpty | SetContains | SetRemove | SetToArray | SetClear | Abs | Pow | Min | Max | Sqrt | Sin
+            | Cos | Tan | Floor | Ceil | Round | Ln | Exp | IsNan | CharIsDigit | CharIsAlphabetic
+            | CharIsWhitespace | CharToUpper | CharToLower | StrTryParseI64 | StrTryParseU64 | StrTryParseF64
+            | StrGetChar | StrTrySubstring | StrIndexOf | ArrGet | ArrTryPop | ArrTryRemove | MapGet | CheckedAdd
+            | CheckedSub | CheckedMul | CheckedDiv | CheckedRem | CheckedPow | CheckedNeg | CheckedShl | CheckedShr
+            | ReadLine => false,
         }
     }
 
@@ -251,6 +257,7 @@ impl Builtin {
         matches!(
             self,
             StrTryParseI64
+                | StrTryParseU64
                 | StrTryParseF64
                 | StrGetChar
                 | StrTrySubstring

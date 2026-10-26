@@ -1486,3 +1486,37 @@ fn print_followed_by_println_is_one_call() {
     let src = "fn g() { print(\"g\"); }\nfn f(x: i64) { print(x); g(); println(); }\nf(7);";
     assert_eq!(run(src), "7g\n");
 }
+
+#[test]
+fn conversions_of_constants_fold_and_printing_skips_the_string() {
+    use crate::builtin::Builtin;
+    let convs = |ir: &IrProgram, name: &str| {
+        count_in(ir, name, |i| is_intrinsic(i, Builtin::ToString) || is_intrinsic(i, Builtin::Format))
+    };
+    // everything is constant: one string, one print
+    let src = "fn f() { println(f\"{1 + 2}:{\"x\":>3}:{2.5:.2f}:{true}:{'c'}:{255:#x}\"); }\nf();";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(convs(&ir, "f"), 0, "{ir}");
+    assert_eq!(count_in(&ir, "f", |i| is_intrinsic(i, Builtin::Println)), 1, "{ir}");
+    assert_eq!(count_in(&ir, "f", |i| is_intrinsic(i, Builtin::Print)), 0, "{ir}");
+    assert_eq!(run(src), "3:  x:2.50:true:c:0xff\n");
+    // a number printed on its own is not turned into a string first
+    let src = "fn f(n: i64, x: f64, b: bool) { println(f\"{n} {x} {b}\"); }\nf(7, 1.5, true);";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count_in(&ir, "f", |i| is_intrinsic(i, Builtin::ToString)), 0, "{ir}");
+    assert_eq!(run(src), "7 1.5 true\n");
+    // a specifier needs the conversion, but a bad run-time one is not folded away
+    let src = "fn f(n: i64) { println(f\"{n:>4}\"); }\nf(7);";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count_in(&ir, "f", |i| is_intrinsic(i, Builtin::Format)), 1, "{ir}");
+    let src = "fn f() { let spec = \"s\"; println(f\"{1:{spec}}\"); }\nf();";
+    assert_eq!(trap_of(src), Trap::Panic("invalid format specifier: unknown format code `s` for an integer".into()));
+    // lists and other heap values are converted where they are: they may change before the print
+    let src = "fn f(var a: [i64]) { let s = f\"{a}\"; a.push(9); println(s); }\nf([1]);";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count_in(&ir, "f", |i| is_intrinsic(i, Builtin::ToString)), 1, "{ir}");
+    assert_eq!(run(src), "[1]\n");
+    // the number changes between the conversion and the print
+    let src = "fn f(var n: i64) { let s = n.to_string(); n += 1; println(s); println(n); }\nf(1);";
+    assert_eq!(run(src), "1\n2\n");
+}

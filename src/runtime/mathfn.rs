@@ -104,6 +104,11 @@ pub fn parse_i64(s: &str) -> Result<u64, Trap> {
     s.trim().parse::<i64>().map(|v| v as u64).map_err(|_| Trap::ParseError(s.to_string()))
 }
 
+/// Parses a decimal `u64`, as `parse_u64` does (a leading `+` is accepted, a sign `-` is not).
+pub fn parse_u64(s: &str) -> Result<u64, Trap> {
+    s.trim().parse::<u64>().map_err(|_| Trap::ParseError(s.to_string()))
+}
+
 pub fn parse_f64(s: &str) -> Result<u64, Trap> {
     s.trim().parse::<f64>().map(f64::to_bits).map_err(|_| Trap::ParseError(s.to_string()))
 }
@@ -198,6 +203,9 @@ mod tests {
     fn parsing_and_indexing() {
         assert_eq!(parse_i64(" -42 "), Ok((-42i64) as u64));
         assert!(matches!(parse_i64("4x"), Err(Trap::ParseError(_))));
+        assert_eq!(parse_u64(" 18446744073709551615 "), Ok(u64::MAX));
+        assert!(matches!(parse_u64("-1"), Err(Trap::ParseError(_))));
+        assert!(matches!(parse_u64("18446744073709551616"), Err(Trap::ParseError(_))));
         assert_eq!(parse_f64("2.5"), Ok(2.5f64.to_bits()));
         assert_eq!(checked_index(NumTy::I32, i(NumTy::I32, 2), 3), Ok(2));
         assert_eq!(checked_index(NumTy::I32, i(NumTy::I32, 3), 3), Err(Trap::IndexOutOfBounds { index: 3, len: 3 }));

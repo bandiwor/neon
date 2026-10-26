@@ -104,7 +104,7 @@ built-in one.
 | `xs[i]` | `xs.get(i)` → `Option<T>` |
 | `xs.pop()`, `xs.remove(i)` | `xs.try_pop()`, `xs.try_remove(i)` → `Option<T>` |
 | `m[k]` | `m.get(k)` → `Option<V>` |
-| `s.parse_i64()`, `s.parse_f64()` | `s.try_parse_i64()`, `s.try_parse_f64()` → `Result<_, string>` |
+| `s.parse_i64()`, `s.parse_u64()`, `s.parse_f64()` | `s.try_parse_i64()`, `s.try_parse_u64()`, `s.try_parse_f64()` → `Result<_, string>` |
 | `s.char_at(i)`, `s.substring(a, b)` | `s.get_char(i)` → `Option<char>`, `s.try_substring(a, b)` → `Result<string, string>` |
 | `s.find(sub)` (−1 if absent) | `s.index_of(sub)` → `Option<i64>` |
 | `input()` (empty string at EOF) | `read_line()` → `Option<string>` (`None` at EOF) |
@@ -116,6 +116,33 @@ match "12x".try_parse_i64() {
 }
 let safe = 250u8.checked_add(10u8).unwrap_or(255u8);  // 255
 ```
+
+### Format strings
+
+`f"..."` strings embed expressions in `{}` with Python's format mini-language
+(`{expr:spec}`):
+
+```neon
+let name = "world"; let n = 42; let pi = 3.14159;
+println(f"hello {name}! n={n} pi={pi:.2f}");        // hello world! n=42 pi=3.14
+println(f"[{n:>6}] [{n:<6}] [{n:^6}] [{n:06}]");    // [    42] [42    ] [  42  ] [000042]
+println(f"{n:x} {n:#b} {1234567:,} {0.25:.1%}");    // 2a 0b101010 1,234,567 25.0%
+println(f"{name:*^11}|{name:.3}|{{braces}}");       // ***world***|wor|{braces}
+let w = 8;
+println(f"[{pi:{w}.3f}]");                           // [   3.142]  (a specifier may hold fields)
+println(5.format("04"));                             // 0005  (the same, as a method)
+```
+
+A specifier is `[[fill]align][sign][#][0][width][,|_][.precision][type]` with
+align `< > ^ =`, sign `+ - space`, and type `d b o x X c` for integers,
+`e E f F g G %` for floats, `s` for strings (booleans and characters print as
+strings, or as numbers with `d b o x X`). Without a type a float prints like
+`println` does. Fields hold any expression; a `:` inside brackets belongs to the
+expression, and a closure's `|x: i32|` needs parentheses. A specifier written out
+in the source is checked by the compiler (`E0263`/`E0264`); one built from fields
+is checked when the code runs. `neon fmt` leaves format strings as they are.
+Constant fields fold at compile time (`println(f"{1 + 2}:{"x":>3}")` is one
+string), and `print(f"{n}")` prints the number without building a string.
 
 ### The `?` operator
 

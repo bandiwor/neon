@@ -83,6 +83,7 @@ impl FnLower<'_, '_> {
                 self.emit(Inst::Const { dst, val: Const::Str(idx) });
                 dst
             }
+            NodeKind::FString { parts } => self.fstring(parts),
             NodeKind::CharLit(c) => self.const_bits(IrTy::Char, c as u64),
             NodeKind::BoolLit(b) => self.const_bool(b),
             NodeKind::UnitLit => self.unit(),
@@ -400,6 +401,71 @@ impl FnLower<'_, '_> {
         };
         let dst = self.new_reg(IrTy::Bool);
         self.emit(Inst::Cmp { dst, op, ty: cty, lhs: l, rhs: r });
+        dst
+    }
+
+    /// `f"text {x} {y:>5.2f}"`: the pieces as strings, joined from the left.
+    fn fstring(&mut self, parts: crate::syntax::NodeList) -> VReg {
+        let ast = self.ast.clone();
+        self.join_parts(&ast, parts)
+    }
+
+    fn join_parts(&mut self, ast: &std::sync::Arc<crate::syntax::Ast>, parts: crate::syntax::NodeList) -> VReg {
+        let mut acc: Option<VReg> = None;
+        for &p in ast.list(parts) {
+            let piece = match *ast.kind(p) {
+                NodeKind::StrLit(s) => {
+                    let idx = self.cx.string(ast.lits.str(s));
+                    let dst = self.new_reg(IrTy::Ref);
+                    self.emit(Inst::Const { dst, val: Const::Str(idx) });
+                    dst
+                }
+                NodeKind::FStrArg { expr, spec } => {
+                    let ty = self.node_ty(expr);
+                    let value = self.expr(expr);
+                    let spec = (!spec.is_empty()).then(|| self.join_parts(ast, spec));
+                    self.text_of(ty, value, spec)
+                }
+                _ => continue,
+            };
+            acc = Some(match acc {
+                None => piece,
+                Some(a) => {
+                    let dst = self.new_reg(IrTy::Ref);
+                    self.emit(Inst::Intrinsic { dst, b: Builtin::StrConcat, desc: None, args: vec![a, piece] });
+                    dst
+                }
+            });
+        }
+        acc.unwrap_or_else(|| {
+            let idx = self.cx.string("");
+            let dst = self.new_reg(IrTy::Ref);
+            self.emit(Inst::Const { dst, val: Const::Str(idx) });
+            dst
+        })
+    }
+
+    /// The text of `value` (of type `ty`) in a format string field.
+    fn text_of(&mut self, ty: crate::sema::Ty, value: VReg, spec: Option<VReg>) -> VReg {
+        let desc = self.cx.desc(ty);
+        if let Some(spec_reg) = spec {
+            let dst = self.new_reg(IrTy::Ref);
+            self.emit(Inst::Intrinsic { dst, b: Builtin::Format, desc: Some(desc), args: vec![value, spec_reg] });
+            return dst;
+        }
+        match self.cx.prog.types.kind(ty) {
+            TyKind::Prim(Prim::Str) => value,
+            TyKind::Adt(..) => match self.display_string(ty, value) {
+                Some(s) => s,
+                None => self.string_of(desc, value),
+            },
+            _ => self.string_of(desc, value),
+        }
+    }
+
+    fn string_of(&mut self, desc: DescId, value: VReg) -> VReg {
+        let dst = self.new_reg(IrTy::Ref);
+        self.emit(Inst::Intrinsic { dst, b: Builtin::ToString, desc: Some(desc), args: vec![value] });
         dst
     }
 

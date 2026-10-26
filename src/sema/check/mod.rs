@@ -78,6 +78,8 @@ pub(super) struct Checker<'a> {
     pub obligations: Vec<Obligation>,
     pub int_lits: Vec<(NodeId, Ty)>,
     pub float_lits: Vec<(NodeId, Ty)>,
+    /// `{expr:spec}` fields of format strings, checked once the types are known.
+    pub fstr_args: Vec<(NodeId, Ty)>,
     pub negated: HashSet<NodeId>,
     pub casts: Vec<(NodeId, Ty, Ty)>,
     pub arith: Vec<(NodeId, BinOp, Ty)>,
@@ -118,6 +120,7 @@ impl<'a> Checker<'a> {
             obligations: Vec::new(),
             int_lits: Vec::new(),
             float_lits: Vec::new(),
+            fstr_args: Vec::new(),
             negated: HashSet::default(),
             casts: Vec::new(),
             arith: Vec::new(),
@@ -514,6 +517,58 @@ impl<'a> Checker<'a> {
             if self.prog.types.as_prim(zt) == Some(Prim::F32) && !(v as f32).is_finite() {
                 let span = self.span(node);
                 self.err(span, "E0235", "literal is out of range for `f32`", "out of range");
+            }
+        }
+        for (node, ty) in std::mem::take(&mut self.fstr_args) {
+            let NodeKind::FStrArg { spec, .. } = *self.ast.kind(node) else { continue };
+            // a specifier with fields inside is only known at run time
+            let ast = self.ast.clone();
+            let mut text = String::new();
+            let mut is_static = true;
+            for &q in ast.list(spec) {
+                match *ast.kind(q) {
+                    NodeKind::StrLit(s) => text.push_str(ast.lits.str(s)),
+                    _ => is_static = false,
+                }
+            }
+            let spec = text;
+            let zt = self.zonk(ty);
+            let span = self.span(node);
+            let kind = match self.prog.types.kind(zt) {
+                TyKind::Error => continue,
+                TyKind::Prim(p) => {
+                    use crate::runtime::fmtspec::Kind;
+                    match *p {
+                        Prim::Str => Some(Kind::Str),
+                        Prim::Bool => Some(Kind::Bool),
+                        Prim::Char => Some(Kind::Char),
+                        p => crate::runtime::NumTy::from_prim(p).map(|n| {
+                            if n.is_float() {
+                                Kind::Float(n)
+                            } else {
+                                Kind::Int(n)
+                            }
+                        }),
+                    }
+                }
+                _ => None,
+            };
+            match kind {
+                None => {
+                    let shown = self.show(zt);
+                    self.err(
+                        span,
+                        "E0263",
+                        format!("`{shown}` cannot take a format specifier"),
+                        "format specifiers apply to numbers, strings, booleans and characters",
+                    );
+                }
+                Some(kind) if is_static => {
+                    if let Err(message) = crate::runtime::fmtspec::validate(kind, &spec) {
+                        self.err(span, "E0264", format!("invalid format specifier: {message}"), "in this field");
+                    }
+                }
+                Some(_) => {}
             }
         }
         for (node, from, to) in std::mem::take(&mut self.casts) {

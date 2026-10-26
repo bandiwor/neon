@@ -297,6 +297,7 @@ fn is_expression(kind: &NodeKind) -> bool {
         IntLit(_)
             | FloatLit(_)
             | StrLit(_)
+            | FString { .. }
             | CharLit(_)
             | BoolLit(_)
             | Ident(_)

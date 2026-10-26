@@ -45,7 +45,36 @@ fn lex(src: &str) -> Result<Vec<Token>, FormatError> {
         return Err(FormatError(format!("cannot format: {}", d.message)));
     }
     tokens.pop(); // Eof
-    Ok(tokens)
+    Ok(collapse_format_strings(tokens))
+}
+
+/// A format string is lexed into many tokens (text, fields, the expressions inside); the formatter
+/// keeps it verbatim, so it sees one token spanning the whole string.
+fn collapse_format_strings(tokens: Vec<Token>) -> Vec<Token> {
+    let mut out = Vec::with_capacity(tokens.len());
+    let mut depth = 0usize;
+    let mut start = None;
+    for t in tokens {
+        match t.kind {
+            TokenKind::FStrBegin => {
+                if depth == 0 {
+                    start = Some(t);
+                }
+                depth += 1;
+            }
+            TokenKind::FStrEnd => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    if let Some(first) = start.take() {
+                        out.push(Token { kind: TokenKind::FStrBegin, span: first.span.to(t.span) });
+                    }
+                }
+            }
+            _ if depth > 0 => {}
+            _ => out.push(t),
+        }
+    }
+    out
 }
 
 fn text<'a>(src: &'a str, t: &Token) -> &'a str {
@@ -188,7 +217,10 @@ fn is_spaced_kind(k: TokenKind) -> bool {
 
 fn is_word(k: TokenKind) -> bool {
     use TokenKind as T;
-    matches!(k, T::Ident(_) | T::Kw(_) | T::Int(_) | T::Float(_) | T::Str(_) | T::Char(_) | T::Underscore)
+    matches!(
+        k,
+        T::Ident(_) | T::Kw(_) | T::Int(_) | T::Float(_) | T::Str(_) | T::FStrBegin | T::Char(_) | T::Underscore
+    )
 }
 
 /// Keywords that behave like values (`self`, `true`, `i32`), unlike `if`, `return` or `as`.

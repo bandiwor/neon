@@ -1,0 +1,7 @@
+18446744073709551615
+43
+Result::Err("cannot parse `-1`")
+Result::Err("cannot parse `18446744073709551616`")
+Result::Err("cannot parse `abc`")
+Result::Ok(0)
+ok 007

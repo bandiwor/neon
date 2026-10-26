@@ -215,7 +215,7 @@ impl FnLower<'_, '_> {
     }
 
     /// `to_string()` through a user `Display` impl, if the type has one.
-    fn display_string(&mut self, ty: Ty, value: VReg) -> Option<VReg> {
+    pub(super) fn display_string(&mut self, ty: Ty, value: VReg) -> Option<VReg> {
         let trait_id = self.cx.prog.lang.get(LangTrait::Display)?;
         let method = *self.cx.prog.traits[trait_id.index()].methods.first()?;
         match resolve_trait_method(self.cx.prog, method, &[ty])? {
