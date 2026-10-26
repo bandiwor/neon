@@ -373,18 +373,19 @@ instructions executed per second.
 Sample run (release build, one shared cloud core — your numbers will differ,
 compare the *ratios*):
 
-| workload | vm | vm-noopt | ir-interp | VM speed |
-|---|---|---|---|---|
-| `fib(25)` recursion | 11.8 ms | 14.5 ms | 23.7 ms | 155 M insn/s |
-| tight loop, 1M iterations (`%`, `+`) | 30.3 ms | 55.2 ms | 51.4 ms | 132 M insn/s |
-| sieve, 100k | 12.2 ms | 19.2 ms | 17.9 ms | 139 M insn/s |
-| float loop, 500k | 30.5 ms | 40.5 ms | 38.5 ms | 98 M insn/s |
-| closure calls, 500k | 31.6 ms | 38.9 ms | 61.9 ms | 158 M insn/s |
-| structs + enums, 250k | 31.8 ms | 54.5 ms | 106.0 ms | 147 M insn/s |
-| map insert + lookup, 100k | 11.6 ms | 14.4 ms | – | 86 M insn/s |
-| string concat + split, 50k | 25.7 ms | 31.7 ms | – | 29 M insn/s |
-| garbage-heavy, 150k iterations | 43.9 ms (37 GCs) | 58.6 ms | – | 51 M insn/s |
-| same, 64 KiB heap limit | 40.1 ms (1210 GCs) | 50.6 ms | – | 56 M insn/s |
+| workload | vm | vm-noopt | VM speed |
+|---|---|---|---|
+| `fib(25)` recursion | 10.5 ms | 15.3 ms | 127 M insn/s |
+| tight loop, 1M iterations (`%`, `+`) | 35.8 ms | 54.4 ms | 112 M insn/s |
+| sieve, 100k | 15.2 ms | 26.5 ms | 98 M insn/s |
+| float loop, 500k | 25.3 ms | 44.8 ms | 119 M insn/s |
+| closure calls, 500k | 42.8 ms | 45.8 ms | 117 M insn/s |
+| structs + enums, 250k | 33.3 ms | 78.6 ms | 120 M insn/s |
+| map insert + lookup, 100k | 9.8 ms | 14.4 ms | 81 M insn/s |
+| string concat + split, 50k | 38.7 ms | 26.9 ms | 18 M insn/s |
+
+(The machine was busier than for the earlier tables, so read the `vm` / `vm-noopt` ratio, not the
+absolute times: fib 1.5x, loop 1.5x, sieve 1.7x, float loop 1.8x, structs + enums 2.4x.)
 
 Before the optimizer passes, the loop-invariant motion, the loop rotation, the
 open-addressing map table and the inline struct fields, the same machine gave
@@ -396,7 +397,7 @@ their words inside the object slot instead of a separate allocation (which also
 halves the number of collections).
 
 `compile/*` measures source → bytecode, including the prelude: about
-1.3 MiB/s of source on this machine (400 generated functions in ~89 ms;
+1.3 MiB/s of source on this machine (400 generated functions in ~150 ms;
 roughly 2 ms of fixed prelude cost for a tiny program). Parsing is ~3% of
 the total; the optimizer passes roughly triple compile time (12 ms without them, 42 ms with
 them on the 200-function benchmark) in exchange for the 20–45% instruction-count
