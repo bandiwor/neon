@@ -23,7 +23,7 @@ use crate::fx::{FxHashMap as HashMap, FxHashSet as HashSet};
 
 use super::analysis::liveness;
 use super::insn::*;
-use super::opcode::CmpKind;
+use super::opcode::{CmpKind, FusedKind};
 use crate::gc::BitSet;
 use crate::runtime::numeric::{decode_int, ArithOp, NumTy};
 
@@ -511,6 +511,21 @@ fn jump_to_return(items: &mut Vec<Item>, stats: &mut PeepholeStats) {
     }
 }
 
+/// Whether the integer comparison `kind` holds for the loaded immediates (`None` for floats).
+fn fused_holds(kind: FusedKind, x: i16, y: i16) -> Option<bool> {
+    let (sx, sy) = (x as i64, y as i64);
+    let (ux, uy) = (sx as u64, sy as u64);
+    Some(match kind {
+        FusedKind::Eq => sx == sy,
+        FusedKind::Ne => sx != sy,
+        FusedKind::LtS => sx < sy,
+        FusedKind::LeS => sx <= sy,
+        FusedKind::LtU => ux < uy,
+        FusedKind::LeU => ux <= uy,
+        _ => return None,
+    })
+}
+
 /// Drops a constant load into a register that is known to hold that very constant (within a
 /// straight-line stretch: labels and calls forget everything they might change).
 fn redundant_loads(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats) {
@@ -533,6 +548,23 @@ fn redundant_loads(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeS
             known.insert(dst, insn);
             i += 1;
             continue;
+        }
+        // a comparison of two registers that hold known small integers decides the branch
+        if let Insn::CmpJmp { kind, a, b, to } = &insn {
+            if let (Some(&Insn::LoadI { imm: x, .. }), Some(&Insn::LoadI { imm: y, .. })) = (known.get(a), known.get(b))
+            {
+                if let Some(holds) = fused_holds(*kind, x, y) {
+                    stats.branches += 1;
+                    if holds {
+                        // never jumps (it jumps when the comparison is false)
+                        items.remove(i);
+                    } else {
+                        items[i].insn = Insn::Jmp { to: *to };
+                        i += 1;
+                    }
+                    continue;
+                }
+            }
         }
         if let Some(from) = insn.clobbers_from() {
             // the callee may also change registers captured by closures
@@ -609,5 +641,42 @@ mod tests {
             &[1],
         );
         assert_eq!((out.len(), n), (3, 0), "{out:?}");
+    }
+
+    fn branch(v: Vec<Insn>) -> Vec<Insn> {
+        let mut it = items(v);
+        let mut stats = PeepholeStats::default();
+        redundant_loads(&mut it, &BitSet::new(), &mut stats);
+        it.into_iter().map(|i| i.insn).collect()
+    }
+
+    #[test]
+    fn branches_on_known_integers_are_decided() {
+        let exit = Label(0);
+        let loads = |x: i16, y: i16| vec![Insn::LoadI { dst: 1, imm: x }, Insn::LoadI { dst: 2, imm: y }];
+        let with = |x, y, kind| {
+            let mut v = loads(x, y);
+            v.push(Insn::CmpJmp { kind, a: 1, b: 2, to: exit });
+            branch(v)
+        };
+        // `0 < 2` holds, so the jump taken when it is false never happens
+        assert_eq!(with(0, 2, FusedKind::LtS).len(), 2);
+        // `3 < 2` is false: always jumps
+        assert_eq!(with(3, 2, FusedKind::LtS).last(), Some(&Insn::Jmp { to: exit }));
+        // signed and unsigned differ for negative values
+        assert_eq!(with(-1, 2, FusedKind::LtS).len(), 2);
+        assert_eq!(with(-1, 2, FusedKind::LtU).last(), Some(&Insn::Jmp { to: exit }));
+        assert_eq!(with(5, 5, FusedKind::Eq).len(), 2);
+        assert_eq!(with(5, 6, FusedKind::Eq).last(), Some(&Insn::Jmp { to: exit }));
+        // floats and unknown registers are left alone
+        assert!(matches!(with(1, 2, FusedKind::LtF64).last(), Some(Insn::CmpJmp { .. })));
+        let unknown =
+            branch(vec![Insn::LoadI { dst: 1, imm: 1 }, Insn::CmpJmp { kind: FusedKind::LtS, a: 1, b: 2, to: exit }]);
+        assert!(matches!(unknown.last(), Some(Insn::CmpJmp { .. })));
+        // a label in between forgets the constants
+        let mut v = loads(0, 2);
+        v.push(Insn::Label(Label(1)));
+        v.push(Insn::CmpJmp { kind: FusedKind::LtS, a: 1, b: 2, to: exit });
+        assert!(matches!(branch(v).last(), Some(Insn::CmpJmp { .. })));
     }
 }

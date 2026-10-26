@@ -762,3 +762,39 @@ fn constant_strings_are_joined_at_compile_time() {
     assert_eq!(run(src), "a5bc\n");
     assert_eq!(run("print(\"\"); println(\"\"); print(\"\");"), "\n");
 }
+
+#[test]
+fn length_and_elements_of_a_fresh_array_are_known() {
+    use crate::builtin::Builtin;
+    let src = "fn f() -> i64 { let a = [10, 20, 30]; a.len() * 100 + a[1] }\nprintln(f());";
+    let (ir, _) = optimized(src, OptConfig::default());
+    assert_eq!(count(&ir, |i| is_intrinsic(i, Builtin::ArrLen)), 0, "{ir}");
+    assert_eq!(count(&ir, |i| matches!(i, Inst::ArrayGet { .. })), 0, "{ir}");
+    assert_eq!(run(src), "320\n");
+    // a write, a push or a call may change them
+    assert_eq!(run("fn f() -> i64 { var a = [1, 2]; a.push(3); a.len() }\nprintln(f());"), "3\n");
+    assert_eq!(run("fn f() -> i64 { var a = [1, 2]; a[1] = 9; a[1] }\nprintln(f());"), "9\n");
+    assert_eq!(
+        run("fn grow(var a: [i64]) { a.push(0); }\nfn f() -> i64 { var a = [1]; grow(a); a.len() }\nprintln(f());"),
+        "2\n"
+    );
+    // an index past the end still traps
+    assert_eq!(
+        trap_of("fn f() -> i64 { let a = [1, 2]; a[2] }\nprintln(f());"),
+        Trap::IndexOutOfBounds { index: 2, len: 2 }
+    );
+    assert_eq!(run("fn f() -> bool { let a: [i64] = []; a.is_empty() }\nprintln(f());"), "true\n");
+}
+
+#[test]
+fn loop_counters_stay_immediates() {
+    // `i += 1` is an `addi` in the bytecode: its constant must not be hoisted into a register
+    let src = "fn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { s += i * 3; i += 1; } s }\nprintln(f(5));";
+    let (ir, stats) = optimized(src, OptConfig { licm: true, ..only_simplify() });
+    let f = fn_named(&ir, "f");
+    let entry_consts_one =
+        f.blocks[0].insts.iter().filter(|i| matches!(i, Inst::Const { val: crate::ir::Const::Bits(1), .. })).count();
+    assert_eq!(entry_consts_one, 0, "{ir}");
+    let _ = stats;
+    assert_eq!(run(src), "30\n");
+}

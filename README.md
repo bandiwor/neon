@@ -33,7 +33,7 @@ target/release/neon repl
 ```
 neon run <file>       compile and run (also: neon <file>)
 neon check <file>     report errors without running
-neon disasm <file>    print the bytecode
+neon disasm <file>    print the bytecode (-a / --annotate: a `# r1 = r1 + 4` note on every line)
 neon ir <file>        print the optimized intermediate representation
 neon repl             interactive session
 neon fmt <file>...    formatter (-w rewrites files, --check verifies, no file = stdin)

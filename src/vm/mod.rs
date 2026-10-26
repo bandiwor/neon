@@ -138,6 +138,9 @@ pub struct Vm<'p, 'io> {
     globals: Vec<u64>,
     /// Open upvalue cells, ascending by the stack slot they point at.
     open: Vec<(usize, CellId)>,
+    /// The heap string of each string-pool entry, created the first time it is loaded (strings are
+    /// immutable, so every `loadstr` of an entry may share one object). Always collector roots.
+    str_cache: Vec<u64>,
     io: &'io mut dyn VmIo,
     cfg: VmConfig,
     steps: u64,
@@ -163,6 +166,7 @@ impl<'p, 'io> Vm<'p, 'io> {
             frames: Vec::new(),
             globals: vec![0; prog.globals.len()],
             open: Vec::new(),
+            str_cache: vec![0; prog.strings.len()],
             io,
             cfg: *cfg,
             steps: 0,
@@ -220,6 +224,9 @@ impl<'p, 'io> Vm<'p, 'io> {
             }
         }
         scan_globals(self.prog, &self.globals, &mut roots);
+        for &h in &self.str_cache {
+            roots.handle(h);
+        }
         for &(_, c) in &self.open {
             roots.cell(c);
         }
@@ -438,10 +445,17 @@ impl<'p, 'io> Vm<'p, 'io> {
                         pc += 2;
                     }
                     Opcode::LoadStr | Opcode::LoadStrW => {
-                        self.safepoint(pc);
                         let (idx, len) =
                             if op == Opcode::LoadStr { ((w & 0xFFFF) as usize, 1) } else { (code[pc + 1] as usize, 2) };
-                        reg!(a) = self.heap.alloc_str(prog.strings[idx].clone())?;
+                        let cached = self.str_cache[idx];
+                        reg!(a) = if cached != 0 {
+                            cached
+                        } else {
+                            self.safepoint(pc);
+                            let h = self.heap.alloc_str(prog.strings[idx].clone())?;
+                            self.str_cache[idx] = h;
+                            h
+                        };
                         pc += len;
                     }
                     Opcode::And => {

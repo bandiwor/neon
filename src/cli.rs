@@ -18,7 +18,7 @@ Usage: neon <command> [options] [file]
 Commands:
   run <file>      compile and run a program (the default for `neon <file>`)
   check <file>    report errors without running
-  disasm <file>   print the compiled bytecode
+  disasm <file>   print the compiled bytecode (--annotate adds pseudo-code to every line)
   ir <file>       print the (optimized) intermediate representation
   repl            start an interactive session
   fmt <file>...   format source files (prints; -w rewrites, --check verifies)
@@ -32,6 +32,7 @@ Options:
   --max-steps <n>     stop with a panic after n instructions
   --max-frames <n>    maximum call depth
   --stats             print collector statistics to stderr after the run
+  -a, --annotate      (disasm) explain every instruction as `# r1 = r1 + 4`
   -w, --write         (fmt) rewrite the files in place
   --check             (fmt) exit with status 1 if a file is not formatted
   -h, --help          show this help
@@ -64,6 +65,7 @@ struct Args {
     files: Vec<String>,
     write: bool,
     check: bool,
+    annotate: bool,
     opts: Options,
     vm: VmConfig,
     stats: bool,
@@ -93,6 +95,7 @@ fn parse_args(args: &[String]) -> Parsed {
     let mut files: Vec<String> = Vec::new();
     let mut write = false;
     let mut check = false;
+    let mut annotate = false;
     let mut opts = Options { opt: OptConfig::default(), compile: CompileOptions { peephole: true } };
     let mut vmcfg = VmConfig::default();
     let mut gc = GcConfig::default();
@@ -114,6 +117,7 @@ fn parse_args(args: &[String]) -> Parsed {
             "--stats" => stats = true,
             "-w" | "--write" => write = true,
             "--check" => check = true,
+            "-a" | "--annotate" => annotate = true,
             // editors launch `neon lsp --stdio`; stdio is the only transport
             "--stdio" => {}
             "--gc-limit" => match value("--gc-limit").and_then(|v| parse_size(&v).ok_or(format!("bad size `{v}`"))) {
@@ -157,7 +161,7 @@ fn parse_args(args: &[String]) -> Parsed {
     if !matches!(command, Command::Repl | Command::Lsp | Command::Fmt) && file.is_none() {
         return usage("this command needs a file".to_string());
     }
-    Parsed::Go(Args { command, file, files, write, check, opts, vm: vmcfg, stats })
+    Parsed::Go(Args { command, file, files, write, check, annotate, opts, vm: vmcfg, stats })
 }
 
 /// Reads the compiler's verdict: prints diagnostics and returns `None` on errors.
@@ -279,7 +283,7 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
         }
         Command::Disasm => {
             let mut text = String::new();
-            match crate::bytecode::disassemble(compiled.bytecode.as_ref().expect("bytecode")) {
+            match crate::bytecode::disassemble_with(compiled.bytecode.as_ref().expect("bytecode"), args.annotate) {
                 Ok(t) => text.push_str(&t),
                 Err(e) => {
                     let _ = write!(text, "<disassembly failed: {e}>");

@@ -233,3 +233,48 @@ fn fmt_rewrites_files_in_place_and_every_corpus_program_is_already_formatted() {
         }
     }
 }
+
+#[test]
+fn disasm_annotate_adds_pseudo_code_to_each_instruction() {
+    let dir = std::env::temp_dir().join(format!("neon-annotate-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("m.neon");
+    let path = file.to_str().unwrap();
+    std::fs::write(&file, "fn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { s += i; i += 4; } s }\nprintln(f(10));\nprintln(\"done\");").unwrap();
+    let plain = run_with(&["disasm", path], "");
+    assert_eq!(plain.code, 0, "{}", plain.err);
+    assert!(!plain.out.contains("  # "), "{}", plain.out);
+    let notes = run_with(&["disasm", "--annotate", path], "");
+    assert_eq!(notes.code, 0, "{}", notes.err);
+    assert!(
+        notes.out.contains("# r1 = r1 + 4") || notes.out.contains("= r") && notes.out.contains(" + 4"),
+        "{}",
+        notes.out
+    );
+    assert!(notes.out.contains("# return r"), "{}", notes.out);
+    assert!(notes.out.contains("println("), "{}", notes.out);
+    // the plain listing is the annotated one without the notes
+    let strip =
+        |s: &str| s.lines().map(|l| l.split("   # ").next().unwrap().trim_end().to_string()).collect::<Vec<_>>();
+    assert_eq!(strip(&plain.out), strip(&notes.out));
+    assert_eq!(run_with(&["disasm", "-a", path], "").out, notes.out);
+}
+
+#[test]
+fn string_literals_are_allocated_once() {
+    let dir = std::env::temp_dir().join(format!("neon-strcache-{}", std::process::id()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let file = dir.join("m.neon");
+    let path = file.to_str().unwrap();
+    // unoptimized, the literal is loaded on every iteration
+    std::fs::write(
+        &file,
+        "var i = 0; var n = 0; while i < 5000 { let s = \"literal\"; n += s.len(); i += 1; } println(n);",
+    )
+    .unwrap();
+    let r = run_with(&["run", "--no-opt", "--stats", path], "");
+    assert_eq!((r.code, r.out.as_str()), (0, "35000\n"), "{}", r.err);
+    let allocations: u64 =
+        r.err.split("collections, ").nth(1).and_then(|t| t.split_whitespace().next()).unwrap().parse().unwrap();
+    assert!(allocations < 50, "{}", r.err);
+}

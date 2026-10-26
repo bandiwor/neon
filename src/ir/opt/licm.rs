@@ -170,7 +170,30 @@ fn movable_kind(i: &Inst, loop_writes_heap: bool) -> bool {
     }
 }
 
+/// Registers that are only ever an operand of an integer `+` or `-`: when they hold a small
+/// constant the bytecode folds them into an immediate (`addi`), so moving them out of a loop would
+/// only cost a register.
+fn immediate_operands(f: &IrFunc) -> Vec<bool> {
+    use crate::runtime::numeric::ArithOp;
+    let mut only = vec![true; f.regs.len()];
+    for b in &f.blocks {
+        for i in &b.insts {
+            match i {
+                Inst::Arith { op: ArithOp::Add | ArithOp::Sub, ty, .. } if ty.is_int() => {}
+                _ => i.for_each_use(|r| only[r.index()] = false),
+            }
+        }
+        b.term.for_each_use(|r| only[r.index()] = false);
+    }
+    only
+}
+
+fn small_constant(i: &Inst) -> bool {
+    matches!(i, Inst::Const { val: Const::Bits(v), .. } if (-128..=127).contains(&(*v as i64)))
+}
+
 fn hoist_one_loop(f: &mut IrFunc) -> usize {
+    let immediates = immediate_operands(f);
     let preds = predecessors(f);
     let rpo = reverse_post_order(f);
     let idom = dominators(f, &rpo, &preds);
@@ -213,6 +236,7 @@ fn hoist_one_loop(f: &mut IrFunc) -> usize {
                         || defs[d.index()] != 1
                         || f.pinned[d.index()]
                         || !movable_kind(i, loop_writes_heap)
+                        || (small_constant(i) && immediates[d.index()])
                     {
                         continue;
                     }

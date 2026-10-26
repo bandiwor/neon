@@ -12,6 +12,7 @@ pub mod analysis;
 pub mod asm;
 pub mod chunk;
 pub mod disasm;
+pub mod explain;
 pub mod insn;
 pub mod opcode;
 pub mod peephole;
@@ -19,7 +20,8 @@ pub mod verify;
 
 pub use asm::{assemble, decode, decode_one, AsmError, Assembled, DecodeError, NO_DESC};
 pub use chunk::{BytecodeProgram, Chunk};
-pub use disasm::{disassemble, disassemble_chunk, format_insn};
+pub use disasm::{disassemble, disassemble_chunk, disassemble_chunk_with, disassemble_with, format_insn};
+pub use explain::{explain_insn, Explain};
 pub use insn::{Capture, Insn, Item, Label, Reg};
 pub use opcode::{CmpKind, FusedKind, Opcode};
 pub use verify::{verify_chunk, verify_program};

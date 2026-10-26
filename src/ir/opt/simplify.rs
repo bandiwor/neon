@@ -123,13 +123,18 @@ impl Key {
 #[derive(Clone)]
 enum Agg {
     Struct(Vec<VReg>),
-    Enum { tag: u32, fields: Vec<VReg> },
+    Enum {
+        tag: u32,
+        fields: Vec<VReg>,
+    },
+    /// An array literal that nothing has written to since.
+    Array(Vec<VReg>),
 }
 
 impl Agg {
     fn fields(&self) -> &[VReg] {
         match self {
-            Agg::Struct(f) | Agg::Enum { fields: f, .. } => f,
+            Agg::Struct(f) | Agg::Array(f) | Agg::Enum { fields: f, .. } => f,
         }
     }
 }
@@ -181,7 +186,13 @@ fn key_of(f: &IrFunc, inst: &Inst, canon: &HashMap<VReg, VReg>) -> Option<Key> {
 }
 
 /// Rewrites `inst` using what is known; returns `true` when it changed.
-fn rewrite(f: &IrFunc, inst: &mut Inst, avail: &Avail, canon: &HashMap<VReg, VReg>) -> bool {
+fn rewrite(
+    f: &IrFunc,
+    inst: &mut Inst,
+    avail: &Avail,
+    canon: &HashMap<VReg, VReg>,
+    consts: &HashMap<VReg, u64>,
+) -> bool {
     let same_ty = |a: VReg, b: VReg| f.reg_ty(a) == f.reg_ty(b);
     let forwarded = match inst {
         Inst::GetField { dst, obj, idx } => match avail.aggs.get(obj) {
@@ -196,12 +207,30 @@ fn rewrite(f: &IrFunc, inst: &mut Inst, avail: &Avail, canon: &HashMap<VReg, VRe
             Some(Agg::Enum { fields, .. }) => fields.get(*idx as usize).map(|&s| Inst::Move { dst: *dst, src: s }),
             _ => None,
         },
+        // an array literal that nothing wrote to: its length and elements are known
+        Inst::Intrinsic { dst, b: b @ (Builtin::ArrLen | Builtin::ArrIsEmpty), args, .. } => match args.as_slice() {
+            [arr] => match avail.aggs.get(arr) {
+                Some(Agg::Array(elems)) => {
+                    let n = if *b == Builtin::ArrLen { elems.len() } else { elems.is_empty() as usize };
+                    Some(Inst::Const { dst: *dst, val: Const::Bits(n as u64) })
+                }
+                _ => None,
+            },
+            _ => None,
+        },
+        Inst::ArrayGet { dst, arr, idx, idx_ty } => match (avail.aggs.get(arr), consts.get(idx)) {
+            (Some(Agg::Array(elems)), Some(&bits)) => {
+                let i = decode_int(*idx_ty, bits);
+                (i >= 0 && (i as usize) < elems.len()).then(|| Inst::Move { dst: *dst, src: elems[i as usize] })
+            }
+            _ => None,
+        },
         _ => None,
     };
     if let Some(new) = forwarded {
         let ok = match &new {
             Inst::Move { dst, src } => same_ty(*dst, *src) && !f.pinned[src.index()] && !f.pinned[dst.index()],
-            Inst::Const { dst, .. } => matches!(f.reg_ty(*dst), IrTy::Num(_)) && !f.pinned[dst.index()],
+            Inst::Const { dst, .. } => matches!(f.reg_ty(*dst), IrTy::Num(_) | IrTy::Bool) && !f.pinned[dst.index()],
             _ => false,
         };
         if ok {
@@ -226,6 +255,9 @@ fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &HashMap<VReg, VReg
     match inst {
         Inst::NewStruct { fields, .. } if stable(fields) && !fields.contains(&dst) => {
             avail.aggs.insert(dst, Agg::Struct(fields.clone()));
+        }
+        Inst::NewArray { elems, .. } if stable(elems) && !elems.contains(&dst) => {
+            avail.aggs.insert(dst, Agg::Array(elems.clone()));
         }
         Inst::NewEnum { tag, fields, .. } if stable(fields) && !fields.contains(&dst) => {
             avail.aggs.insert(dst, Agg::Enum { tag: *tag, fields: fields.clone() });
@@ -276,11 +308,13 @@ fn forward_values(f: &mut IrFunc) -> usize {
     // registers that hold the same constant all over the function count as one when comparing keys
     let defs = def_counts(f);
     let mut canon: HashMap<VReg, VReg> = HashMap::default();
+    let mut const_vals: HashMap<VReg, u64> = HashMap::default();
     let mut first_const: HashMap<(IrTy, u64), VReg> = HashMap::default();
     for b in &f.blocks {
         for i in &b.insts {
             if let Inst::Const { dst, val: Const::Bits(v) } = i {
                 if defs[dst.index()] == 1 && !f.pinned[dst.index()] {
+                    const_vals.insert(*dst, *v);
                     let rep = *first_const.entry((f.reg_ty(*dst), *v)).or_insert(*dst);
                     if rep != *dst {
                         canon.insert(*dst, rep);
@@ -308,7 +342,7 @@ fn forward_values(f: &mut IrFunc) -> usize {
                     }
                 });
             }
-            if rewrite(f, inst, &avail, &canon) {
+            if rewrite(f, inst, &avail, &canon, &const_vals) {
                 changes += 1;
             }
             // a store makes the stored value the known content of the location; other stores
@@ -324,6 +358,7 @@ fn forward_values(f: &mut IrFunc) -> usize {
                 }
                 Inst::ArraySet { arr, idx, idx_ty, src } => {
                     avail.exprs.retain(|k, _| !matches!(k, Key::ArrayGet(..)));
+                    avail.aggs.retain(|_, g| !matches!(g, Agg::Array(_)));
                     if !f.pinned[arr.index()] && !f.pinned[idx.index()] && !f.pinned[src.index()] {
                         stored = Some((
                             Key::ArrayGet(

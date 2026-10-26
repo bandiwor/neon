@@ -5,6 +5,7 @@ use std::fmt::Write;
 
 use super::asm::{decode_one, DecodeError};
 use super::chunk::{BytecodeProgram, Chunk};
+use super::explain::{explain_insn, Explain};
 use super::insn::*;
 use super::opcode::Opcode;
 use crate::ir::TypeDesc;
@@ -104,6 +105,12 @@ pub fn format_insn(insn: &Insn) -> String {
 
 /// Lists one function: word offsets, instructions, jump-target labels and stack maps.
 pub fn disassemble_chunk(chunk: &Chunk) -> Result<String, DecodeError> {
+    disassemble_chunk_with(chunk, None)
+}
+
+/// Like [`disassemble_chunk`]; with a context every instruction also gets a `# pseudo-code` note
+/// at the end of its line (aligned within the function).
+pub fn disassemble_chunk_with(chunk: &Chunk, explain: Option<&Explain<'_>>) -> Result<String, DecodeError> {
     let mut decoded = Vec::new();
     let mut pc = 0u32;
     while (pc as usize) < chunk.code.len() {
@@ -121,16 +128,36 @@ pub fn disassemble_chunk(chunk: &Chunk) -> Result<String, DecodeError> {
         chunk.frame_size,
         chunk.code.len()
     );
+    // (labels, instruction text, note) per instruction; notes are aligned afterwards
+    let mut lines: Vec<(bool, String, Option<String>)> = Vec::new();
     for d in &decoded {
         if targets.contains(&d.pc) {
-            let _ = writeln!(out, "      L{}:", d.pc);
+            lines.push((true, format!("      L{}:", d.pc), None));
         }
-        let _ = write!(out, "{:>5}  {}", d.pc, format_insn(&d.insn));
+        let mut left = format!("{:>5}  {}", d.pc, format_insn(&d.insn));
         if let Some(m) = chunk.stack_map_at(d.pc) {
             let roots: Vec<String> = m.live_roots.iter().map(|r| format!("r{r}")).collect();
-            let _ = write!(out, "    ; roots {{{}}}", roots.join(", "));
+            left.push_str(&format!("    ; roots {{{}}}", roots.join(", ")));
         }
-        out.push('\n');
+        let note = explain.and_then(|cx| explain_insn(&d.insn, cx));
+        lines.push((false, left, note));
+    }
+    let width = lines
+        .iter()
+        .filter(|(label, _, note)| !label && note.is_some())
+        .map(|(_, l, _)| l.chars().count())
+        .max()
+        .unwrap_or(0);
+    for (_, left, note) in &lines {
+        match note {
+            Some(note) => {
+                let pad = width.saturating_sub(left.chars().count());
+                let _ = writeln!(out, "{left}{}   # {note}", " ".repeat(pad));
+            }
+            None => {
+                let _ = writeln!(out, "{left}");
+            }
+        }
     }
     if targets.contains(&(chunk.code.len() as u32)) {
         let _ = writeln!(out, "      L{}:", chunk.code.len());
@@ -140,6 +167,12 @@ pub fn disassemble_chunk(chunk: &Chunk) -> Result<String, DecodeError> {
 
 /// Lists a whole program: pools, descriptors and every function.
 pub fn disassemble(p: &BytecodeProgram) -> Result<String, DecodeError> {
+    disassemble_with(p, false)
+}
+
+/// Like [`disassemble`]; `annotate` adds a pseudo-code comment to every instruction.
+pub fn disassemble_with(p: &BytecodeProgram, annotate: bool) -> Result<String, DecodeError> {
+    let explain = annotate.then(|| Explain::new(p));
     let mut out = String::new();
     if !p.constants.is_empty() {
         let ks: Vec<String> = p.constants.iter().enumerate().map(|(i, k)| format!("k{i}={k:#x}")).collect();
@@ -157,7 +190,7 @@ pub fn disassemble(p: &BytecodeProgram) -> Result<String, DecodeError> {
     for (i, c) in p.chunks.iter().enumerate() {
         let entry = if i as u32 == p.entry { " (entry)" } else { "" };
         let _ = write!(out, "f{i}{entry}: ");
-        out.push_str(&disassemble_chunk(c)?);
+        out.push_str(&disassemble_chunk_with(c, explain.as_ref())?);
     }
     Ok(out)
 }
