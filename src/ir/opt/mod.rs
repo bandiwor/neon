@@ -13,6 +13,7 @@
 //! * [`sccp`]: constant propagation over the whole CFG, ignoring branches that are never taken
 //! * [`stores`]: stores overwritten before anything can read them
 //! * [`unroll`]: small loops with a constant trip count become straight-line code
+//! * [`devirt`]: calls of closures whose code is known become direct calls (curried closures too)
 //! * [`licm`]: loop-invariant code motion
 //! * [`dce`]: unreachable-block removal, CFG simplification and dead code
 //!   elimination
@@ -24,6 +25,7 @@
 
 pub mod copies;
 pub mod dce;
+pub mod devirt;
 pub mod fold;
 pub mod globals;
 pub mod inline;
@@ -90,6 +92,7 @@ pub struct OptStats {
     pub simplified: usize,
     pub hoisted: usize,
     pub unrolled: usize,
+    pub devirtualized: usize,
     pub inlined_calls: usize,
     pub removed_insts: usize,
     pub removed_blocks: usize,
@@ -159,10 +162,12 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         }
     }
     if cfg.inline {
-        for _ in 0..3 {
+        for _ in 0..4 {
+            let d = devirt::devirtualize(prog);
+            stats.devirtualized += d;
             let n = inline::inline_round(prog, cfg);
             stats.inlined_calls += n;
-            if n == 0 {
+            if n + d == 0 {
                 break;
             }
             simplify(prog, &mut stats);

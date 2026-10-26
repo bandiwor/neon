@@ -1407,3 +1407,46 @@ fn values_are_shared_across_joins_when_every_path_agrees() {
     let src = "fn f(n: i64, b: i64) -> i64 { var p = 1; var s = 0; var i = 0; let x = p * b; while i < n { p = p + 1; s += p * b; i += 1; } s + x + p * b }\nprintln(f(3, 2));";
     assert_eq!(run(src), "28\n");
 }
+
+#[test]
+fn known_closures_are_called_directly_and_curried_ones_fold_away() {
+    let calls = |ir: &IrProgram| count(ir, |i| matches!(i, Inst::CallClosure { .. } | Inst::MakeClosure { .. }));
+    // closures in globals, curried: everything is known at compile time
+    let src = "let add = |x: f64| => |y: f64| => x + y;\nlet mul = |x: f64| => |y: f64| => x * y;\nlet neg = |x: f64| => -x;\nlet res = mul(5)(add(10)(neg(1)));\nprint(res)";
+    let (ir, stats) = optimized(src, OptConfig::default());
+    assert!(stats.devirtualized >= 3, "{stats:?}\n{ir}");
+    assert_eq!(calls(&ir), 0, "{ir}");
+    assert_eq!(count(&ir, |i| matches!(i, Inst::Arith { .. })), 0, "{ir}");
+    assert_eq!(run(src), "45.0");
+    // inside a function, with a closure that captures a parameter
+    let src = "fn f(n: i64) -> i64 { let k = |x: i64| => x + n; k(1) + k(2) }\nprintln(f(10));";
+    let (ir, _) = optimized(src, OptConfig::default());
+    assert_eq!(count(&ir, |i| matches!(i, Inst::CallClosure { .. })), 0, "{ir}");
+    assert_eq!(run(src), "23\n");
+    // the order of captured values and arguments matters
+    let src = "fn f(n: i64, m: i64) -> i64 { let k = |x: i64, y: i64| => n * 100 + m * 10 + x - y; k(7, 2) }\nprintln(f(1, 2));";
+    let (ir, _) = optimized(src, OptConfig::default());
+    assert_eq!(count(&ir, |i| matches!(i, Inst::CallClosure { .. })), 0, "{ir}");
+    assert_eq!(run(src), "125\n");
+    // a variable the closure assigns: shared state must stay shared
+    let src =
+        "fn counter() -> i64 { var n = 0; let inc = || => { n += 1; n }; inc(); inc(); inc() }\nprintln(counter());";
+    let (ir, _) = optimized(src, OptConfig::default());
+    assert!(count(&ir, |i| matches!(i, Inst::CallClosure { .. })) >= 3, "{ir}");
+    assert_eq!(run(src), "3\n");
+    // a variable the owner assigns after creating the closure
+    let src = "fn f() -> i64 { var x = 1; let g = || => x; x = 5; g() }\nprintln(f());";
+    assert_eq!(run(src), "5\n");
+    // another closure assigns the captured variable between creation and call
+    let src = "fn f() -> i64 { var x = 1; let g = || => x; let s = || => { x = 7; }; s(); g() }\nprintln(f());";
+    assert_eq!(run(src), "7\n");
+    // global reassigned later: not a known closure
+    let src = "var h = |x: i64| => x + 1;\nfn call(v: i64) -> i64 { h(v) }\nprintln(call(1));\nh = |x: i64| => x * 10;\nprintln(call(2));";
+    assert_eq!(run(src), "2\n20\n");
+    // two different closures returned: not summarized
+    let src = "fn pick(c: bool, k: i64) -> fn(i64) -> i64 { if c { |x: i64| => x + k } else { |x: i64| => x * k } }\nprintln(pick(true, 3)(4)); println(pick(false, 3)(4));";
+    assert_eq!(run(src), "7\n12\n");
+    // closures passed around still work
+    let src = "fn apply(f: fn(i64) -> i64, v: i64) -> i64 { f(v) }\nfn main() { let a = 5; println(apply(|x: i64| => x * a, 3)); }";
+    assert_eq!(run(src), "15\n");
+}

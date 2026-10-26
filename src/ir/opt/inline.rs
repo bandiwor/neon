@@ -11,7 +11,7 @@ use crate::ir::types::*;
 /// Whether `callee` may be copied into other functions.
 fn inlinable(prog: &IrProgram, id: FuncId, cfg: &OptConfig) -> bool {
     let f = &prog.funcs[id.index()];
-    if id == prog.entry || f.is_closure || !f.upvals.is_empty() || f.pinned.iter().any(|&p| p) {
+    if id == prog.entry || !f.upvals.is_empty() || f.pinned.iter().any(|&p| p) {
         return false;
     }
     if f.size() > cfg.inline_threshold {

@@ -260,6 +260,7 @@ non-escaping class is *private*: nothing outside the function can tell what happ
 | `unroll` | loops of a few instructions that run at most 8 times become straight-line code: the loop is copied, `sccp` decides the exit tests, and the copy is kept only if the original loop becomes unreachable |
 | `tail` | self tail calls become loops (after the first round) |
 | `globals` | stores to globals nobody reads, unused global slots |
+| `devirt` | calls of closures whose code is known become direct calls: a closure built just before the call, a global assigned once from a capture-less closure, the result of a function that always returns `closure f [its parameters]` (curried `\|x\| => \|y\| => ...`). Closures with captures are called through a lifted copy that takes the captured values as extra parameters; this is skipped when anything assigns the captured variables |
 | `inline`, `prune` | inlining of small functions, removal of unreachable functions |
 
 ### Execution model
