@@ -19,7 +19,8 @@ Commands:
   run <file>      compile and run a program (the default for `neon <file>`)
   check <file>    report errors without running
   disasm <file>   print the compiled bytecode (--annotate adds pseudo-code to every line)
-  ir <file>       print the (optimized) intermediate representation
+  ir <file>       print the (optimized) intermediate representation (--effects: and what each
+                  function can do: const / pure / impure, traps, allocates, ...)
   repl            start an interactive session
   fmt <file>...   format source files (prints; -w rewrites, --check verifies)
   lsp             run the language server on stdin/stdout
@@ -66,6 +67,7 @@ struct Args {
     write: bool,
     check: bool,
     annotate: bool,
+    effects: bool,
     opts: Options,
     vm: VmConfig,
     stats: bool,
@@ -96,6 +98,7 @@ fn parse_args(args: &[String]) -> Parsed {
     let mut write = false;
     let mut check = false;
     let mut annotate = false;
+    let mut effects = false;
     let mut opts = Options { opt: OptConfig::default(), compile: CompileOptions { peephole: true } };
     let mut vmcfg = VmConfig::default();
     let mut gc = GcConfig::default();
@@ -118,6 +121,7 @@ fn parse_args(args: &[String]) -> Parsed {
             "-w" | "--write" => write = true,
             "--check" => check = true,
             "-a" | "--annotate" => annotate = true,
+            "--effects" => effects = true,
             // editors launch `neon lsp --stdio`; stdio is the only transport
             "--stdio" => {}
             "--gc-limit" => match value("--gc-limit").and_then(|v| parse_size(&v).ok_or(format!("bad size `{v}`"))) {
@@ -161,7 +165,7 @@ fn parse_args(args: &[String]) -> Parsed {
     if !matches!(command, Command::Repl | Command::Lsp | Command::Fmt) && file.is_none() {
         return usage("this command needs a file".to_string());
     }
-    Parsed::Go(Args { command, file, files, write, check, annotate, opts, vm: vmcfg, stats })
+    Parsed::Go(Args { command, file, files, write, check, annotate, effects, opts, vm: vmcfg, stats })
 }
 
 /// Reads the compiler's verdict: prints diagnostics and returns `None` on errors.
@@ -278,7 +282,17 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
     match args.command {
         Command::Check => EXIT_OK,
         Command::Ir => {
-            let _ = write!(stdout, "{}", compiled.ir.as_ref().expect("ir"));
+            let ir = compiled.ir.as_ref().expect("ir");
+            if args.effects {
+                let fx = crate::ir::effects::analyze(ir);
+                let _ =
+                    writeln!(stdout, "// effects: const (only the arguments matter), pure (also reads memory), impure");
+                for line in crate::ir::effects::report(ir, &fx).lines() {
+                    let _ = writeln!(stdout, "// {line}");
+                }
+                let _ = writeln!(stdout);
+            }
+            let _ = write!(stdout, "{ir}");
             EXIT_OK
         }
         Command::Disasm => {
@@ -333,6 +347,26 @@ mod tests {
         let mut err = Vec::new();
         let code = main_with(&args, &vfs, std::io::Cursor::new(input.as_bytes().to_vec()), &mut out, &mut err, false);
         (code, String::from_utf8(out).unwrap(), String::from_utf8(err).unwrap())
+    }
+
+    #[test]
+    fn ir_effects_lists_what_each_function_can_do() {
+        let files = [(
+            "e.neon",
+            "fn sq(x: f64) -> f64 { x * x }\nfn show(x: f64) { println(x); }\nfn main() { show(sq(2.0)); }",
+        )];
+        let (code, out, err) = go(&["ir", "--effects", "--no-opt", "e.neon"], &files, "");
+        assert_eq!((code, err.as_str()), (EXIT_OK, ""));
+        assert!(out.contains("// f") && out.contains("sq"), "{out}");
+        assert!(out.lines().any(|l| l.starts_with("//") && l.contains(" sq") && l.contains("const")), "{out}");
+        assert!(
+            out.lines().any(|l| l.starts_with("//") && l.contains(" show") && l.contains("impure") && l.contains("io")),
+            "{out}"
+        );
+        // without the flag the IR is printed alone
+        let (_, plain, _) = go(&["ir", "--no-opt", "e.neon"], &files, "");
+        assert!(!plain.contains("// effects"), "{plain}");
+        assert!(out.ends_with(&plain), "the IR follows the table unchanged");
     }
 
     #[test]

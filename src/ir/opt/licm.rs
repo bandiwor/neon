@@ -19,20 +19,21 @@
 use crate::fx::FxHashSet as HashSet;
 
 use super::simplify::{clobbers_memory, def_counts, predecessors};
+use crate::ir::effects::FuncEffects;
 use crate::ir::types::*;
 
 const MAX_PER_LOOP: usize = 12;
 /// Functions with more registers than this are left alone.
 const MAX_REGS: usize = 180;
 
-pub fn licm_func(f: &mut IrFunc) -> usize {
+pub fn licm_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     if f.regs.len() > MAX_REGS {
         return 0;
     }
     let mut moved = 0;
     // each transformation may add a block, so analyses are recomputed
     for _ in 0..16 {
-        let n = hoist_one_loop(f);
+        let n = hoist_one_loop(f, fx);
         if n == 0 {
             break;
         }
@@ -158,16 +159,16 @@ fn find_loops(f: &IrFunc, idom: &[usize], preds: &[Vec<usize>]) -> Vec<Loop> {
     loops
 }
 
-/// Whether the instruction can move out of a loop (given its operands are invariant).
-fn movable_kind(i: &Inst, loop_writes_heap: bool) -> bool {
-    use Inst::*;
-    match i {
-        Const { .. } | Move { .. } | Cmp { .. } | BoolNot { .. } | BitNot { .. } | Cast { .. } | EnumTag { .. } => true,
-        Arith { .. } | Neg { .. } => !i.has_side_effects(),
-        GetField { .. } => !loop_writes_heap,
-        Intrinsic { b, .. } => b.is_pure() || (b.reads_memory_only() && !loop_writes_heap),
-        _ => false,
+/// Whether the instruction can move out of a loop (given its operands are invariant): by its
+/// effects it must be hoistable (no writes, I/O, traps, endless loops, hidden preconditions and no
+/// fresh object per execution), and if it reads memory, nothing in the loop may write any.
+fn movable_kind(i: &Inst, loop_writes_heap: bool, fx: &FuncEffects) -> bool {
+    let e = i.effects(fx);
+    if !e.hoistable() || (e.reads() && loop_writes_heap) {
+        return false;
     }
+    // variables captured by closures change behind the back of the loop; global reads stay put too
+    !matches!(i, Inst::GetUpval { .. } | Inst::GetGlobal { .. })
 }
 
 /// Registers that are only ever an operand of an integer `+` or `-`: when they hold a small
@@ -192,7 +193,7 @@ fn small_constant(i: &Inst) -> bool {
     matches!(i, Inst::Const { val: Const::Bits(v), .. } if (-128..=127).contains(&(*v as i64)))
 }
 
-fn hoist_one_loop(f: &mut IrFunc) -> usize {
+fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let immediates = immediate_operands(f);
     let preds = predecessors(f);
     let rpo = reverse_post_order(f);
@@ -211,7 +212,7 @@ fn hoist_one_loop(f: &mut IrFunc) -> usize {
         let mut body: Vec<usize> = lp.body.iter().copied().collect();
         body.sort_unstable();
 
-        let loop_writes_heap = body.iter().any(|&b| f.blocks[b].insts.iter().any(clobbers_memory));
+        let loop_writes_heap = body.iter().any(|&b| f.blocks[b].insts.iter().any(|i| clobbers_memory(i, fx)));
         // registers defined in the loop
         let mut defined_in_loop = vec![false; f.regs.len()];
         for &b in &body {
@@ -235,7 +236,7 @@ fn hoist_one_loop(f: &mut IrFunc) -> usize {
                     if hoisted.contains(&(b, ii))
                         || defs[d.index()] != 1
                         || f.pinned[d.index()]
-                        || !movable_kind(i, loop_writes_heap)
+                        || !movable_kind(i, loop_writes_heap, fx)
                         || (small_constant(i) && immediates[d.index()])
                     {
                         continue;

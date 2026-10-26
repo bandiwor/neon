@@ -73,6 +73,9 @@ pub struct OptStats {
 pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
     let mut stats = OptStats::default();
     let simplify = |prog: &mut IrProgram, stats: &mut OptStats| {
+        // what each function can do; the passes below only remove or move code, which can only
+        // shrink the real effects, so the summaries stay sound while they run
+        let fx = crate::ir::effects::analyze(prog);
         let strings = &mut prog.strings;
         for f in &mut prog.funcs {
             // loop-invariant motion comes last: it moves work out of the places the other passes
@@ -86,12 +89,12 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
                         changed |= n > 0;
                     }
                     if cfg.simplify {
-                        let n = simplify::simplify_func(f) + strings::fold_strings(strings, f);
+                        let n = simplify::simplify_func(f, &fx) + strings::fold_strings(strings, f, &fx);
                         stats.simplified += n;
                         changed |= n > 0;
                     }
                     if cfg.dce {
-                        let (insts, blocks) = dce::dce_func(f);
+                        let (insts, blocks) = dce::dce_func(f, &fx);
                         stats.removed_insts += insts;
                         stats.removed_blocks += blocks;
                         changed |= insts + blocks > 0;
@@ -100,7 +103,7 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
                         break;
                     }
                 }
-                let n = if cfg.licm { licm::licm_func(f) } else { 0 };
+                let n = if cfg.licm { licm::licm_func(f, &fx) } else { 0 };
                 stats.hoisted += n;
                 if n == 0 {
                     break;

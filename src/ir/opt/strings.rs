@@ -8,6 +8,7 @@
 
 use crate::builtin::Builtin;
 use crate::fx::FxHashMap as HashMap;
+use crate::ir::effects::FuncEffects;
 use crate::ir::types::*;
 
 use super::simplify::def_counts;
@@ -51,7 +52,7 @@ fn const_print(inst: &Inst, consts: &HashMap<VReg, u32>, strings: &[String]) -> 
     }
 }
 
-pub fn fold_strings(strings: &mut Vec<String>, f: &mut IrFunc) -> usize {
+pub fn fold_strings(strings: &mut Vec<String>, f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let defs = def_counts(f);
     let mut uses = use_counts(f);
     let mut consts: HashMap<VReg, u32> = HashMap::default();
@@ -86,7 +87,7 @@ pub fn fold_strings(strings: &mut Vec<String>, f: &mut IrFunc) -> usize {
                     // the next printing call, with only side-effect-free instructions in between
                     let insts = &f.blocks[bi].insts;
                     let mut j = ii + 1;
-                    while j < insts.len() && !insts[j].has_side_effects() {
+                    while j < insts.len() && insts[j].removable(fx) {
                         j += 1;
                     }
                     let (Some((_, one)), Some(next), true) =

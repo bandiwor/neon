@@ -564,29 +564,7 @@ impl Inst {
     /// change behavior: it writes memory, calls out, allocates observably or
     /// may trap.
     pub fn has_side_effects(&self) -> bool {
-        use Inst::*;
-        match self {
-            Const { .. }
-            | Move { .. }
-            | Cmp { .. }
-            | BoolNot { .. }
-            | BitNot { .. }
-            | Cast { .. }
-            | GetUpval { .. }
-            | GetGlobal { .. } => false,
-            Arith { op, ty, .. } => ty.is_int() && !matches!(op, ArithOp::And | ArithOp::Or | ArithOp::Xor),
-            Neg { ty, .. } => ty.is_int(),
-            // allocation is unobservable once its result is unused
-            NewStruct { .. }
-            | NewEnum { .. }
-            | NewArray { .. }
-            | NewMap { .. }
-            | NewSet { .. }
-            | MakeClosure { .. } => false,
-            GetField { .. } | EnumTag { .. } | EnumField { .. } => false,
-            Intrinsic { b, .. } => !(b.is_pure() || b.reads_memory_only() || b.only_allocates()),
-            _ => true,
-        }
+        !self.removable(&super::effects::FuncEffects::unknown())
     }
 }
 

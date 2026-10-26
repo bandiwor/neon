@@ -34,7 +34,8 @@ target/release/neon repl
 neon run <file>       compile and run (also: neon <file>)
 neon check <file>     report errors without running
 neon disasm <file>    print the bytecode (-a / --annotate: a `# r1 = r1 + 4` note on every line)
-neon ir <file>        print the optimized intermediate representation
+neon ir <file>        print the optimized intermediate representation (--effects: and the
+                      const / pure / impure verdict for every function)
 neon repl             interactive session
 neon fmt <file>...    formatter (-w rewrites files, --check verifies, no file = stdin)
 neon lsp              language server on stdin/stdout (see "Editor support")
@@ -184,7 +185,7 @@ source ─▶ lexer ─▶ parser ─▶ sema ─▶ IR ─▶ IR optimizer ─�
 | `diag/` | `FileId`/`Span`, one central `SourceMap`, `Diagnostic`s and an ASCII renderer. Positions are stable, which is what an LSP needs. |
 | `syntax/` | Interner, token stream, a flat-arena AST and an error-resilient parser: panic-mode recovery leaves `Error` nodes so later items are still analyzed. |
 | `sema/` | Module loading, name resolution (def-use table), Hindley–Milner-style local inference, trait solving, exhaustiveness checking. |
-| `ir/` | Three-address code in basic blocks over virtual registers; generics are monomorphized during lowering. Folding, copy propagation, DCE and inlining. A reference interpreter acts as the test oracle. |
+| `ir/` | Three-address code in basic blocks over virtual registers; generics are monomorphized during lowering. Passes: folding, value forwarding / CSE, loop-invariant motion, DCE and inlining, driven by an effect analysis (below). A reference interpreter acts as the test oracle. |
 | `compiler/` | Block layout, linear-scan frame-slot allocation (≤ 256 slots) with a Lua-style sliding call window, stack maps. |
 | `bytecode/` | Opcode table, 32-bit words with a 64-bit wide form, relaxing assembler, disassembler, liveness, peephole optimizer, verifier. |
 | `gc/` | Handle-based object heap, upvalue cells, exact mark-and-sweep, root scanning from stack maps. |
@@ -193,6 +194,36 @@ source ─▶ lexer ─▶ parser ─▶ sema ─▶ IR ─▶ IR optimizer ─�
 | `fmt/` | The formatter (`neon fmt`, LSP formatting): re-indents by brackets, normalizes spacing (operators are classified with the parser's tree) and blank lines, keeps the author's line breaks and every comment, and verifies that the token stream is unchanged. |
 | `lsp/` | Language server (`neon lsp`): JSON-RPC over stdio, a std-only JSON codec, an overlay VFS for unsaved buffers, and features built on the same analysis the compiler uses. |
 | `cli.rs`, `repl.rs` | The command line and the replay-based REPL, written against traits. |
+
+### Effect analysis
+
+The optimizer asks one question of every piece of code: *what can it do?* The answer is a set
+of effects (`src/effects.rs`): `reads` memory, `writes` memory, `io`, `traps`, `allocates`,
+`may-diverge` (a loop or recursion) and `fragile` (valid only under a condition checked
+elsewhere, like reading the payload of a variant). From it follows the usual verdict:
+
+* **const**: depends only on the arguments;
+* **pure**: may also read memory, but writes nothing and does no I/O;
+* **impure**: writes or does I/O.
+
+Every builtin has a fixed entry in an exhaustive table (`Builtin::effects`: `len` reads, `push`
+writes, `println` is I/O, `Abs` may trap, `to_upper` allocates, ...). For user functions
+`ir::effects::analyze` computes the least fixed point of
+`effects(f) = local(f) ∪ ⋃ effects(callee)` over the call graph: strongly connected components
+are solved callee-first, and any cycle or loop adds `may-diverge`. A call through a closure has
+every effect. `neon ir --effects` prints the result for each function.
+
+What the optimizer does with it:
+
+| transformation | needs |
+|---|---|
+| drop an unused call or instruction (DCE) | no writes, I/O, traps or divergence (allocation does not count) |
+| reuse the result of an identical earlier call (CSE) | no writes, I/O or allocation; if it reads, no write in between |
+| move work out of a loop (LICM) | the above plus no allocation and no hidden precondition; if it reads, nothing in the loop writes |
+| keep known field and element values across a call | the callee does not write |
+
+A repeated call that traps is still reusable (the first execution already trapped), but an
+unused one that traps is not removable.
 
 ### Execution model
 

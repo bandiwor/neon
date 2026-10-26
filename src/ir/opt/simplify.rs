@@ -17,13 +17,14 @@
 use crate::fx::FxHashMap as HashMap;
 
 use crate::builtin::Builtin;
+use crate::ir::effects::FuncEffects;
 use crate::ir::types::*;
 use crate::runtime::numeric::{decode_int, ArithOp, CmpOp};
 use crate::runtime::NumTy;
 
 /// Runs all simplifications on `f`; returns how many rewrites happened.
-pub fn simplify_func(f: &mut IrFunc) -> usize {
-    forward_values(f) + algebra(f) + branch_on_negation(f) + split_print_concat(f) + drop_inrange_loads(f)
+pub fn simplify_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
+    forward_values(f, fx) + algebra(f) + branch_on_negation(f) + split_print_concat(f) + drop_inrange_loads(f, fx)
 }
 
 // ---- helpers ------------------------------------------------------------------------------------
@@ -65,17 +66,15 @@ pub(super) fn predecessors(f: &IrFunc) -> Vec<Vec<usize>> {
     preds
 }
 
-/// Whether executing `i` may write heap memory (or run arbitrary code that does).
-pub(super) fn clobbers_memory(i: &Inst) -> bool {
-    match i {
-        Inst::SetField { .. }
-        | Inst::ArraySet { .. }
-        | Inst::MapSet { .. }
-        | Inst::Call { .. }
-        | Inst::CallClosure { .. } => true,
-        Inst::Intrinsic { b, .. } => b.mutates_heap(),
-        _ => false,
-    }
+/// Whether executing `i` may write memory other code can read (calls count as what their callee does).
+pub(super) fn clobbers_memory(i: &Inst, fx: &FuncEffects) -> bool {
+    i.writes_memory(fx)
+}
+
+/// `len`-like builtins: a store to a field or an element cannot change what they return.
+fn length_only(b: Builtin) -> bool {
+    use Builtin::*;
+    matches!(b, ArrLen | ArrIsEmpty | MapLen | MapIsEmpty | SetLen | SetIsEmpty)
 }
 
 // ---- value forwarding and CSE ---------------------------------------------------------------------
@@ -93,6 +92,8 @@ enum Key {
     EnumField(VReg, u32),
     ArrayGet(VReg, VReg, NumTy),
     Intrinsic(Builtin, Option<DescId>, Vec<VReg>),
+    /// A call to a function without writes, I/O or allocation; the flag: it reads memory.
+    Call(FuncId, Vec<VReg>, bool),
 }
 
 impl Key {
@@ -106,7 +107,7 @@ impl Key {
             | Key::GetField(a, _)
             | Key::EnumTag(a)
             | Key::EnumField(a, _) => vec![*a],
-            Key::Intrinsic(_, _, args) => args.clone(),
+            Key::Intrinsic(_, _, args) | Key::Call(_, args, _) => args.clone(),
         }
     }
 
@@ -114,7 +115,8 @@ impl Key {
     fn reads_mutable_memory(&self) -> bool {
         match self {
             Key::GetField(..) | Key::ArrayGet(..) => true,
-            Key::Intrinsic(b, ..) => b.reads_memory_only(),
+            Key::Intrinsic(b, ..) => b.effects().reads(),
+            Key::Call(_, _, reads) => *reads,
             _ => false,
         }
     }
@@ -162,7 +164,7 @@ impl Avail {
 }
 
 /// The expression key of a pure instruction, when every register involved is stable.
-fn key_of(f: &IrFunc, inst: &Inst, canon: &HashMap<VReg, VReg>) -> Option<Key> {
+fn key_of(f: &IrFunc, inst: &Inst, canon: &HashMap<VReg, VReg>, fx: &FuncEffects) -> Option<Key> {
     let ok = |rs: &[VReg]| rs.iter().all(|r| !f.pinned[r.index()]);
     let c = |r: &VReg| canon.get(r).copied().unwrap_or(*r);
     let key = match inst {
@@ -176,8 +178,11 @@ fn key_of(f: &IrFunc, inst: &Inst, canon: &HashMap<VReg, VReg>) -> Option<Key> {
         Inst::EnumTag { obj, .. } => Key::EnumTag(c(obj)),
         Inst::EnumField { obj, idx, .. } => Key::EnumField(c(obj), *idx),
         Inst::ArrayGet { arr, idx, idx_ty, .. } => Key::ArrayGet(c(arr), c(idx), *idx_ty),
-        Inst::Intrinsic { b, desc, args, .. } if b.is_pure() || b.reads_memory_only() => {
+        Inst::Intrinsic { b, desc, args, .. } if b.effects().reusable() => {
             Key::Intrinsic(*b, *desc, args.iter().map(c).collect())
+        }
+        Inst::Call { func, args, .. } if fx.of(*func).reusable() => {
+            Key::Call(*func, args.iter().map(c).collect(), fx.of(*func).reads())
         }
         _ => return None,
     };
@@ -192,6 +197,7 @@ fn rewrite(
     avail: &Avail,
     canon: &HashMap<VReg, VReg>,
     consts: &HashMap<VReg, u64>,
+    fx: &FuncEffects,
 ) -> bool {
     let same_ty = |a: VReg, b: VReg| f.reg_ty(a) == f.reg_ty(b);
     let forwarded = match inst {
@@ -238,7 +244,7 @@ fn rewrite(
             return true;
         }
     }
-    if let (Some(key), Some(dst)) = (key_of(f, inst, canon), inst.def()) {
+    if let (Some(key), Some(dst)) = (key_of(f, inst, canon, fx), inst.def()) {
         if let Some(&have) = avail.exprs.get(&key) {
             if have != dst && same_ty(have, dst) {
                 *inst = Inst::Move { dst, src: have };
@@ -249,7 +255,7 @@ fn rewrite(
     false
 }
 
-fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &HashMap<VReg, VReg>) {
+fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &HashMap<VReg, VReg>, fx: &FuncEffects) {
     let Some(dst) = inst.def() else { return };
     let stable = |rs: &[VReg]| rs.iter().all(|r| !f.pinned[r.index()]) && !f.pinned[dst.index()];
     match inst {
@@ -270,7 +276,7 @@ fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &HashMap<VReg, VReg
             }
         }
         _ => {
-            if let Some(key) = key_of(f, inst, canon) {
+            if let Some(key) = key_of(f, inst, canon, fx) {
                 if !key.operands().contains(&dst) {
                     avail.exprs.insert(key, dst);
                 }
@@ -282,7 +288,7 @@ fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &HashMap<VReg, VReg
 /// Table size beyond which the knowledge is dropped (keeps the pass linear in practice).
 const MAX_FACTS: usize = 160;
 
-fn forward_values(f: &mut IrFunc) -> usize {
+fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let n = f.blocks.len();
     let preds = predecessors(f);
     // reverse post-order, so a unique predecessor is processed first
@@ -342,7 +348,7 @@ fn forward_values(f: &mut IrFunc) -> usize {
                     }
                 });
             }
-            if rewrite(f, inst, &avail, &canon, &const_vals) {
+            if rewrite(f, inst, &avail, &canon, &const_vals, fx) {
                 changes += 1;
             }
             // a store makes the stored value the known content of the location; other stores
@@ -350,14 +356,24 @@ fn forward_values(f: &mut IrFunc) -> usize {
             let mut stored: Option<(Key, VReg)> = None;
             match &*inst {
                 Inst::SetField { obj, idx, src } => {
-                    avail.exprs.retain(|k, _| !matches!(k, Key::GetField(_, i) if i == idx));
+                    avail.exprs.retain(|k, _| match k {
+                        Key::GetField(_, i) => i != idx,
+                        Key::Call(_, _, reads) => !reads,
+                        Key::Intrinsic(b, ..) => length_only(*b) || !b.effects().reads(),
+                        _ => true,
+                    });
                     avail.aggs.retain(|_, g| matches!(g, Agg::Enum { .. }));
                     if !f.pinned[obj.index()] && !f.pinned[src.index()] {
                         stored = Some((Key::GetField(canon.get(obj).copied().unwrap_or(*obj), *idx), *src));
                     }
                 }
                 Inst::ArraySet { arr, idx, idx_ty, src } => {
-                    avail.exprs.retain(|k, _| !matches!(k, Key::ArrayGet(..)));
+                    avail.exprs.retain(|k, _| match k {
+                        Key::ArrayGet(..) => false,
+                        Key::Call(_, _, reads) => !reads,
+                        Key::Intrinsic(b, ..) => length_only(*b) || !b.effects().reads(),
+                        _ => true,
+                    });
                     avail.aggs.retain(|_, g| !matches!(g, Agg::Array(_)));
                     if !f.pinned[arr.index()] && !f.pinned[idx.index()] && !f.pinned[src.index()] {
                         stored = Some((
@@ -370,12 +386,12 @@ fn forward_values(f: &mut IrFunc) -> usize {
                         ));
                     }
                 }
-                i if clobbers_memory(i) => avail.kill_memory(),
+                i if clobbers_memory(i, fx) => avail.kill_memory(),
                 _ => {}
             }
             // facts are computed from the operands before the definition invalidates anything
             let mut next = Avail::default();
-            record(f, inst, &mut next, &canon);
+            record(f, inst, &mut next, &canon, fx);
             if let Some(d) = inst.def() {
                 avail.kill_reg(d);
             }
@@ -623,7 +639,7 @@ fn never_negative(f: &IrFunc, defs: &[u32], idx: VReg, ty: NumTy) -> bool {
     any
 }
 
-fn drop_inrange_loads(f: &mut IrFunc) -> usize {
+fn drop_inrange_loads(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let preds = predecessors(f);
     let uses = use_counts(f);
     let defs = def_counts(f);
@@ -643,7 +659,7 @@ fn drop_inrange_loads(f: &mut IrFunc) -> usize {
         let Inst::Intrinsic { b: Builtin::ArrLen, args: ref largs, .. } = pb[li] else { continue };
         let &[arr] = largs.as_slice() else { continue };
         let disturbed = |insts: &[Inst], watched: &[VReg]| {
-            insts.iter().any(|i| clobbers_memory(i) || i.def().is_some_and(|d| watched.contains(&d)))
+            insts.iter().any(|i| clobbers_memory(i, fx) || i.def().is_some_and(|d| watched.contains(&d)))
         };
         if disturbed(&pb[li + 1..ci], &[arr, idx, len]) || disturbed(&pb[ci + 1..], &[arr, idx, len, cond]) {
             continue;
@@ -662,7 +678,7 @@ fn drop_inrange_loads(f: &mut IrFunc) -> usize {
                     continue;
                 }
             }
-            if clobbers_memory(i) || i.def().is_some_and(|d| d == arr || d == idx) {
+            if clobbers_memory(i, fx) || i.def().is_some_and(|d| d == arr || d == idx) {
                 break;
             }
             j += 1;

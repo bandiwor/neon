@@ -13,6 +13,7 @@ pub mod cli;
 pub mod compiler;
 pub mod diag;
 pub mod driver;
+pub mod effects;
 pub mod fmt;
 pub mod fx;
 pub mod gc;

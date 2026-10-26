@@ -798,3 +798,209 @@ fn loop_counters_stay_immediates() {
     let _ = stats;
     assert_eq!(run(src), "30\n");
 }
+
+// ---- effect analysis -------------------------------------------------------------------------------
+
+use crate::effects::{Effects, Purity};
+
+fn effects_of(ir: &IrProgram, fx: &super::FuncEffects, name: &str) -> Effects {
+    let i = ir.funcs.iter().position(|f| f.name == name).unwrap_or_else(|| panic!("no function {name}"));
+    fx.of(super::FuncId(i as u32))
+}
+
+#[test]
+fn function_effects_are_computed_from_the_call_graph() {
+    let src = "struct P { x: i64 }\n\
+        fn sq(x: f64) -> f64 { x * x }\n\
+        fn add(a: i64, b: i64) -> i64 { a + b }\n\
+        fn len_of(a: [i64]) -> i64 { a.len() }\n\
+        fn show(x: i64) { println(x); }\n\
+        fn push(var a: [i64]) { a.push(1); }\n\
+        fn mk() -> [i64] { [1, 2] }\n\
+        fn field(p: P) -> i64 { p.x }\n\
+        fn indirect() -> f64 { sq(2.0) }\n\
+        fn noisy() { show(1); }\n\
+        fn fact(n: i64) -> i64 { if n < 2 { 1 } else { n * fact(n - 1) } }\n\
+        fn even(n: i64) -> bool { if n == 0 { true } else { odd(n - 1) } }\n\
+        fn odd(n: i64) -> bool { if n == 0 { false } else { even(n - 1) } }\n\
+        fn spin(n: i64) -> i64 { var i = 0; while i < n { i += 1; } i }\n\
+        fn via(f: fn(i64) -> i64) -> i64 { f(1) }\n\
+        fn main() {\n\
+            sq(1.0); add(1, 2); len_of([1]); show(1); var a = [1]; push(a); mk(); field(P { x: 1 });\n\
+            indirect(); noisy(); fact(3); even(2); odd(2); spin(2); via(|x| => x);\n\
+        }";
+    let ir = compile(src);
+    let fx = super::analyze_effects(&ir);
+    let e = |name| effects_of(&ir, &fx, name);
+
+    assert_eq!(e("sq"), Effects::NONE);
+    assert_eq!(e("sq").purity(), Purity::Const);
+    assert_eq!(e("add"), Effects::TRAPS, "integer addition may overflow");
+    assert_eq!(e("add").purity(), Purity::Const);
+    assert_eq!(e("len_of"), Effects::READS);
+    assert_eq!(e("len_of").purity(), Purity::Pure);
+    assert_eq!(e("field"), Effects::READS);
+    assert_eq!(e("show"), Effects::IO);
+    assert_eq!(e("show").purity(), Purity::Impure);
+    assert_eq!(e("push"), Effects::WRITES);
+    assert_eq!(e("mk"), Effects::ALLOCS);
+    assert_eq!(e("mk").purity(), Purity::Const);
+    // calls take on what the callee does
+    assert_eq!(e("indirect"), Effects::NONE);
+    assert_eq!(e("noisy"), Effects::IO);
+    // recursion and loops may not terminate
+    for name in ["fact", "even", "odd", "spin"] {
+        assert!(e(name).diverges(), "{name}: {}", e(name));
+    }
+    assert!(e("fact").traps() && !e("fact").writes());
+    assert_eq!(e("even"), e("odd"), "members of a cycle share their effects");
+    assert!(!e("add").diverges() && !e("sq").diverges());
+    // an unknown callee can do anything
+    assert_eq!(e("via"), Effects::ALL);
+    assert_eq!(e("via").purity(), Purity::Impure);
+}
+
+fn only_dce() -> OptConfig {
+    OptConfig { dce: true, ..OptConfig::none() }
+}
+
+fn calls_in(ir: &IrProgram, name: &str) -> usize {
+    fn_named(ir, name).blocks.iter().flat_map(|b| &b.insts).filter(|i| matches!(i, Inst::Call { .. })).count()
+}
+
+#[test]
+fn unused_calls_to_harmless_functions_are_removed() {
+    let prelude = "fn sq(x: f64) -> f64 { x * x }\n\
+        fn mk() -> [i64] { [1, 2] }\n\
+        fn add(a: i64, b: i64) -> i64 { a + b }\n\
+        fn show(x: i64) { println(x); }\n\
+        fn spin(n: i64) -> i64 { var i = 0; while i < n { i += 1; } i }\n\
+        fn fact(n: i64) -> i64 { if n < 2 { 1 } else { n * fact(n - 1) } }\n";
+    let src = format!(
+        "{prelude}fn f(a: f64) -> f64 {{ sq(a); mk(); a }}\nfn g(a: i64) -> i64 {{ add(a, 1); show(a); spin(a); fact(a); a }}\nfn main() {{ println(f(1.0)); println(g(3)); }}"
+    );
+    let (ir, _) = optimized(&src, only_dce());
+    // const functions that cannot trap or loop and merely allocate: the calls vanish
+    assert_eq!(calls_in(&ir, "f"), 0, "{ir}");
+    // may trap, print, loop forever or recurse: they stay
+    assert_eq!(calls_in(&ir, "g"), 4, "{ir}");
+    assert_eq!(run(&src), "1.0\n3\n3\n");
+}
+
+#[test]
+fn removing_a_call_never_hides_a_trap_or_output() {
+    assert_eq!(
+        trap_of("fn add(a: i64, b: i64) -> i64 { a + b }\nfn main() { add(9223372036854775807, 1); }"),
+        Trap::Overflow
+    );
+    assert_eq!(run("fn show(x: i64) { println(x); }\nfn main() { show(7); show(8); }"), "7\n8\n");
+}
+
+#[test]
+fn identical_calls_to_const_and_pure_functions_are_computed_once() {
+    let src = "fn sq(x: f64) -> f64 { x * x }\nfn f(a: f64) -> f64 { sq(a) + sq(a) }\nprintln(f(3.0));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(calls_in(&ir, "f"), 1, "{ir}");
+    assert_eq!(run(src), "18.0\n");
+    // a pure reader, until something writes
+    let src = "fn len_of(a: [i64]) -> i64 { a.len() }\n\
+        fn f(var a: [i64]) -> i64 { let x = len_of(a); let y = len_of(a); a.push(1); let z = len_of(a); x * 100 + y * 10 + z }\n\
+        println(f([5]));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(calls_in(&ir, "f"), 2, "{ir}");
+    assert_eq!(run(src), "112\n");
+    // a call that writes (through a helper) forgets what was read before it
+    let src = "fn len_of(a: [i64]) -> i64 { a.len() }\nfn grow(var a: [i64]) { a.push(0); }\n\
+        fn f(var a: [i64]) -> i64 { let x = len_of(a); grow(a); let y = len_of(a); x * 10 + y }\n\
+        println(f([5]));";
+    assert_eq!(run(src), "12\n");
+}
+
+#[test]
+fn calls_that_allocate_or_print_are_never_merged() {
+    // two calls, two different arrays
+    let src = "fn mk() -> [i64] { [1] }\nfn f() -> i64 { var a = mk(); var b = mk(); a.push(2); b.len() * 10 + a.len() }\nprintln(f());";
+    assert_eq!(run(src), "12\n");
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(calls_in(&ir, "f"), 2, "{ir}");
+    // printing twice prints twice
+    assert_eq!(run("fn show(x: i64) { println(x); }\nfn f() { show(1); show(1); }\nf();"), "1\n1\n");
+    // a repeated trapping call still traps
+    assert_eq!(
+        trap_of("fn d(a: i64, b: i64) -> i64 { a / b }\nfn f(z: i64) -> i64 { d(1, z) + d(1, z) }\nprintln(f(0));"),
+        Trap::DivideByZero
+    );
+}
+
+#[test]
+fn calls_that_do_not_write_keep_what_was_known_about_memory() {
+    let src = "struct P { x: i64 }\nfn read(p: P) -> i64 { p.x }\n\
+        fn f(p: P) -> i64 { let a = p.x; let r = read(p); let b = p.x; a + r + b }\nprintln(f(P { x: 2 }));";
+    let (ir, _) = optimized(src, only_simplify());
+    let loads =
+        fn_named(&ir, "f").blocks.iter().flat_map(|b| &b.insts).filter(|i| matches!(i, Inst::GetField { .. })).count();
+    assert_eq!(loads, 1, "{ir}");
+    assert_eq!(run(src), "6\n");
+    // ... but a callee that writes the field is seen
+    let src = "struct P { x: i64 }\nfn bump(var p: P) { p.x += 1; }\n\
+        fn f(var p: P) -> i64 { let a = p.x; bump(p); let b = p.x; a * 10 + b }\nprintln(f(P { x: 2 }));";
+    assert_eq!(run(src), "23\n");
+}
+
+/// Whether block `b` can reach itself.
+fn in_cycle(f: &super::IrFunc, b: usize) -> bool {
+    let mut seen = vec![false; f.blocks.len()];
+    let mut stack: Vec<usize> = f.blocks[b].term.successors().iter().map(|s| s.index()).collect();
+    while let Some(x) = stack.pop() {
+        if x == b {
+            return true;
+        }
+        if !std::mem::replace(&mut seen[x], true) {
+            stack.extend(f.blocks[x].term.successors().iter().map(|s| s.index()));
+        }
+    }
+    false
+}
+
+fn loop_calls(ir: &IrProgram, name: &str) -> usize {
+    let f = fn_named(ir, name);
+    (0..f.blocks.len())
+        .filter(|&b| in_cycle(f, b))
+        .map(|b| f.blocks[b].insts.iter().filter(|i| matches!(i, Inst::Call { .. })).count())
+        .sum()
+}
+
+#[test]
+fn calls_to_pure_functions_leave_loops() {
+    let src = "fn sq(x: f64) -> f64 { x * x }\n\
+        fn f(n: i64, k: f64) -> f64 { var s = 0.0; var i = 0; while i < n { s += sq(k); i += 1; } s }\nprintln(f(3, 2.0)); println(f(0, 2.0));";
+    let (ir, stats) = optimized(src, OptConfig { licm: true, ..only_simplify() });
+    assert!(stats.hoisted > 0, "{ir}");
+    assert_eq!(loop_calls(&ir, "f"), 0, "{ir}");
+    assert_eq!(run(src), "12.0\n0.0\n");
+    // a reader moves out only if the loop writes nothing
+    let src = "fn len_of(a: [i64]) -> i64 { a.len() }\n\
+        fn f(a: [i64], n: i64) -> i64 { var s = 0; var i = 0; while i < n { s += len_of(a); i += 1; } s }\nprintln(f([1, 2], 3));";
+    let (ir, _) = optimized(src, OptConfig { licm: true, ..only_simplify() });
+    assert_eq!(loop_calls(&ir, "f"), 0, "{ir}");
+    assert_eq!(run(src), "6\n");
+    let src = "fn len_of(a: [i64]) -> i64 { a.len() }\n\
+        fn f(var a: [i64]) -> i64 { var s = 0; var i = 0; while i < 3 { s += len_of(a); a.push(i); i += 1; } s }\nprintln(f([1]));";
+    let (ir, _) = optimized(src, OptConfig { licm: true, ..only_simplify() });
+    assert_eq!(loop_calls(&ir, "f"), 1, "{ir}");
+    assert_eq!(run(src), "6\n");
+}
+
+#[test]
+fn calls_that_could_trap_print_or_allocate_stay_in_loops() {
+    for (name, src, out) in [
+        ("trap", "fn d(a: i64, b: i64) -> i64 { a / b }\nfn f(n: i64, z: i64) -> i64 { var s = 0; var i = 0; while i < n { s += d(1, z); i += 1; } s }\nprintln(f(0, 0));", "0\n"),
+        ("print", "fn show(x: i64) { println(x); }\nfn f(n: i64) { var i = 0; while i < n { show(7); i += 1; } }\nf(2);", "7\n7\n"),
+        ("alloc", "fn mk() -> [i64] { [1] }\nfn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { var a = mk(); a.push(2); s += a.len(); i += 1; } s }\nprintln(f(3));", "6\n"),
+        ("loop", "fn spin(n: i64) -> i64 { var i = 0; while i < n { i += 1; } i }\nfn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { s += spin(0); i += 1; } s }\nprintln(f(2));", "0\n"),
+    ] {
+        let (ir, _) = optimized(src, OptConfig { licm: true, ..only_simplify() });
+        assert!(loop_calls(&ir, "f") >= 1, "{name}: {ir}");
+        assert_eq!(run(src), out, "{name}");
+    }
+}

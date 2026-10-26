@@ -2,11 +2,12 @@
 
 use crate::fx::FxHashSet as HashSet;
 
+use crate::ir::effects::FuncEffects;
 use crate::ir::types::*;
 
 /// Simplifies one function's CFG and removes dead instructions.
 /// Returns `(instructions removed, blocks removed)`.
-pub fn dce_func(f: &mut IrFunc) -> (usize, usize) {
+pub fn dce_func(f: &mut IrFunc, fx: &FuncEffects) -> (usize, usize) {
     let mut insts_removed = 0;
     let mut blocks_removed = 0;
     loop {
@@ -16,7 +17,7 @@ pub fn dce_func(f: &mut IrFunc) -> (usize, usize) {
         blocks_removed += remove_unreachable(f);
         blocks_removed += merge_blocks(f);
         insts_removed += coalesce_moves(f);
-        insts_removed += remove_dead_insts(f);
+        insts_removed += remove_dead_insts(f, fx);
         if (insts_removed, blocks_removed) == before {
             return (insts_removed, blocks_removed);
         }
@@ -198,7 +199,7 @@ fn coalesce_moves(f: &mut IrFunc) -> usize {
 }
 
 /// Removes side-effect-free instructions whose result is never read.
-fn remove_dead_insts(f: &mut IrFunc) -> usize {
+fn remove_dead_insts(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let mut removed = 0;
     loop {
         let uses = use_counts(f);
@@ -206,7 +207,7 @@ fn remove_dead_insts(f: &mut IrFunc) -> usize {
         for b in &mut f.blocks {
             let before = b.insts.len();
             b.insts.retain(|i| match i.def() {
-                Some(d) => uses[d.index()] > 0 || f.pinned[d.index()] || i.has_side_effects(),
+                Some(d) => uses[d.index()] > 0 || f.pinned[d.index()] || !i.removable(fx),
                 None => true,
             });
             // empty `CloseUpvals` are noise
