@@ -24,15 +24,33 @@ use crate::runtime::NumTy;
 
 /// Runs all simplifications on `f`; returns how many rewrites happened.
 pub fn simplify_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
-    super::copies::copy_propagate(f)
-        + super::sroa::sroa_func(f, fx)
-        + super::sroa::sroa_classes(f, fx)
-        + super::sroa::dead_objects(f, fx)
-        + forward_values(f, fx)
-        + algebra(f)
-        + branch_on_negation(f)
-        + split_print_concat(f)
-        + drop_inrange_loads(f, fx)
+    let mut n = super::copies::copy_propagate(f);
+    // the escape analysis is only needed where something is allocated, and only again after a
+    // pass has changed the function
+    if f.blocks.iter().flat_map(|b| &b.insts).any(|i| {
+        matches!(
+            i,
+            Inst::NewStruct { .. }
+                | Inst::NewEnum { .. }
+                | Inst::NewArray { .. }
+                | Inst::NewMap { .. }
+                | Inst::NewSet { .. }
+        )
+    }) {
+        let mut classes = crate::ir::escape::classify(f, fx.escapes());
+        for step in 0..3 {
+            let done = match step {
+                0 => super::sroa::sroa_func(f, &classes),
+                1 => super::sroa::sroa_classes(f, &classes),
+                _ => super::sroa::dead_objects(f, &classes),
+            };
+            n += done;
+            if done > 0 && step < 2 {
+                classes = crate::ir::escape::classify(f, fx.escapes());
+            }
+        }
+    }
+    n + forward_values(f, fx) + algebra(f) + branch_on_negation(f) + split_print_concat(f) + drop_inrange_loads(f, fx)
 }
 
 // ---- helpers ------------------------------------------------------------------------------------
@@ -118,7 +136,8 @@ fn use_counts(f: &IrFunc) -> Vec<u32> {
 pub(super) fn predecessors(f: &IrFunc) -> Vec<Vec<usize>> {
     let mut preds = vec![Vec::new(); f.blocks.len()];
     for (i, b) in f.blocks.iter().enumerate() {
-        for s in b.term.successors() {
+        let (slots, n) = b.term.successor_slots();
+        for s in &slots[..n] {
             preds[s.index()].push(i);
         }
     }
@@ -176,6 +195,24 @@ impl Key {
         }
     }
 
+    /// Whether `r` is one of the operands (without building the list).
+    fn mentions(&self, r: VReg) -> bool {
+        match self {
+            Key::Arith(_, _, a, b) | Key::Cmp(_, _, a, b) | Key::ArrayGet(a, b, _) | Key::MapGet(a, b) => {
+                *a == r || *b == r
+            }
+            Key::Neg(_, a)
+            | Key::BitNot(_, a)
+            | Key::BoolNot(a)
+            | Key::Cast(_, _, a)
+            | Key::GetField(a, _)
+            | Key::EnumTag(a)
+            | Key::EnumField(a, _) => *a == r,
+            Key::Intrinsic(_, _, args) | Key::Call(_, args, _) => args.contains(&r),
+            Key::Global(_) => false,
+        }
+    }
+
     /// Whether the value can change when memory is written.
     fn reads_mutable_memory(&self) -> bool {
         match self {
@@ -216,7 +253,7 @@ struct Avail {
 
 impl Avail {
     fn kill_reg(&mut self, r: VReg) {
-        self.exprs.retain(|k, v| *v != r && !k.operands().contains(&r));
+        self.exprs.retain(|k, v| *v != r && !k.mentions(r));
         self.aggs.retain(|a, g| *a != r && !g.fields().contains(&r));
         self.copies.retain(|d, c| *d != r && *c != r);
     }
@@ -412,7 +449,13 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
         // what is known at the start of the block: the agreement of all predecessors, provided every
         // one of them has been processed (a back edge has not, so loop headers start empty)
         let incoming: Vec<usize> = preds[b].iter().copied().filter(|&p| seen[p]).collect();
+        // a predecessor that only leads here hands its state over instead of copying it
+        let sole = match incoming.as_slice() {
+            [p] if *p != b && f.blocks[*p].term.successors().len() == 1 => ends[*p].take(),
+            _ => None,
+        };
         let mut avail = match incoming.split_first() {
+            _ if sole.is_some() => sole.unwrap_or_default(),
             Some((&first, rest)) if first != b && ends[first].is_some() => rest
                 .iter()
                 .try_fold(ends[first].clone().unwrap_or_default(), |acc, &p| {

@@ -120,6 +120,9 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         for f in &mut prog.funcs {
             // loop-invariant motion comes last: it moves work out of the places the other passes
             // pattern-match on (a hoisted `len` hides the loop condition), then a cleanup round follows
+            // constant propagation is the costly pass and reaches its own fixed point: it runs on
+            // entry and after the passes that reshape loops, not after every small rewrite
+            let mut sccp_stale = true;
             for _round in 0..3 {
                 for _ in 0..8 {
                     let mut changed = false;
@@ -128,10 +131,11 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
                         stats.folded += n;
                         changed |= n > 0;
                     }
-                    if cfg.fold {
+                    if cfg.fold && sccp_stale {
                         let n = sccp::sccp_func(f);
                         stats.folded += n;
                         changed |= n > 0;
+                        sccp_stale = false;
                     }
                     if cfg.simplify {
                         let n = simplify::simplify_func(f, &fx) + strings::fold_strings(strings, descs, f, &fx);
@@ -157,6 +161,7 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
                 stats.hoisted += n;
                 let merged = if cfg.fold { consts::dedupe_consts(f) } else { 0 };
                 stats.folded += merged;
+                sccp_stale |= n + merged > 0;
                 if n + merged == 0 {
                     break;
                 }

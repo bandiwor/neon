@@ -35,7 +35,8 @@ fn reachable(f: &IrFunc) -> Vec<bool> {
             continue;
         }
         seen[b] = true;
-        for s in f.blocks[b].term.successors() {
+        let (slots, n) = f.blocks[b].term.successor_slots();
+        for s in &slots[..n] {
             stack.push(s.index());
         }
     }

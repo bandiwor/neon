@@ -53,8 +53,8 @@ pub(super) fn reverse_post_order(f: &IrFunc) -> Vec<usize> {
     let mut stack = vec![(0usize, 0usize)];
     seen[0] = true;
     while let Some((b, i)) = stack.pop() {
-        let succ = f.blocks[b].term.successors();
-        if i < succ.len() {
+        let (succ, count) = f.blocks[b].term.successor_slots();
+        if i < count {
             stack.push((b, i + 1));
             let s = succ[i].index();
             if !seen[s] {

@@ -91,15 +91,18 @@ fn transfer(pinned: &[bool], inst: &Inst, st: &mut [Lat]) {
     }
 }
 
-/// The successors a terminator can take given the state at its end.
-fn live_edges(term: &Term, st: &[Lat]) -> Vec<BlockId> {
+/// The successors a terminator can take given the state at its end (at most two).
+fn live_edges(term: &Term, st: &[Lat]) -> ([BlockId; 2], usize) {
+    let none = BlockId(0);
     match term {
         Term::Branch { cond, then, els } => match st[cond.index()] {
-            Lat::Const(c) => vec![if c != 0 { *then } else { *els }],
-            Lat::Top => vec![],
-            Lat::Bottom => vec![*then, *els],
+            Lat::Const(c) => ([if c != 0 { *then } else { *els }, none], 1),
+            Lat::Top => ([none, none], 0),
+            Lat::Bottom => ([*then, *els], 2),
         },
-        other => other.successors(),
+        Term::Jump(b) => ([*b, none], 1),
+        Term::BranchTag { then, els, .. } => ([*then, *els], 2),
+        Term::Return(_) | Term::Unreachable => ([none, none], 0),
     }
 }
 
@@ -110,40 +113,59 @@ pub fn sccp_func(f: &mut IrFunc) -> usize {
         return 0;
     }
     let mut input: Vec<Option<Vec<Lat>>> = vec![None; n];
-    let mut entry = vec![Lat::Top; regs];
-    for (r, slot) in entry.iter_mut().enumerate() {
-        if r < f.params as usize || f.pinned[r] {
-            *slot = Lat::Bottom;
+    // references and unit never hold a number: they stay `Bottom` and are not part of any merge
+    let tracked: Vec<usize> = (0..regs).filter(|&r| !matches!(f.regs[r], IrTy::Ref | IrTy::Unit)).collect();
+    let mut entry = vec![Lat::Bottom; regs];
+    for &r in &tracked {
+        if !(r < f.params as usize || f.pinned[r]) {
+            entry[r] = Lat::Top;
         }
     }
     input[0] = Some(entry);
     let mut work = vec![0usize];
+    let mut st: Vec<Lat> = Vec::with_capacity(regs);
     let mut rounds = 0usize;
     while let Some(b) = work.pop() {
         rounds += 1;
         if rounds > n * 8 + 64 {
             return 0; // not settling: leave the function alone
         }
-        let Some(mut st) = input[b].clone() else { continue };
+        let Some(start) = &input[b] else { continue };
+        st.clear();
+        st.extend_from_slice(start);
         for i in &f.blocks[b].insts {
             transfer(&f.pinned, i, &mut st);
         }
-        for s in live_edges(&f.blocks[b].term, &st) {
+        let (edges, count) = live_edges(&f.blocks[b].term, &st);
+        for s in &edges[..count] {
             let s = s.index();
-            let merged = match &input[s] {
-                None => st.clone(),
-                Some(old) => old.iter().zip(&st).map(|(a, b)| meet(*a, *b)).collect(),
-            };
-            if input[s].as_ref() != Some(&merged) {
-                input[s] = Some(merged);
-                work.push(s);
+            match &mut input[s] {
+                slot @ None => {
+                    *slot = Some(st.clone());
+                    work.push(s);
+                }
+                Some(old) => {
+                    let mut changed = false;
+                    for &r in &tracked {
+                        let m = meet(old[r], st[r]);
+                        if m != old[r] {
+                            old[r] = m;
+                            changed = true;
+                        }
+                    }
+                    if changed {
+                        work.push(s);
+                    }
+                }
             }
         }
     }
 
     let mut changes = 0;
     for (b, entry) in input.iter().enumerate() {
-        let Some(mut st) = entry.clone() else { continue };
+        let Some(entry) = entry else { continue };
+        st.clear();
+        st.extend_from_slice(entry);
         for inst in f.blocks[b].insts.iter_mut() {
             let was_const = matches!(inst, Inst::Const { .. });
             transfer(&f.pinned, inst, &mut st);

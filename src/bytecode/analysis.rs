@@ -8,8 +8,24 @@ use crate::gc::BitSet;
 /// Successor lists of a straight-line instruction list with labels.
 #[derive(Debug)]
 pub struct Cfg {
-    pub succ: Vec<Vec<usize>>,
+    pub succ: Vec<Succ>,
     pub label_index: HashMap<Label, usize>,
+}
+
+/// At most two successors (fall-through and jump target), stored inline.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct Succ {
+    idx: [usize; 2],
+    n: u8,
+}
+
+impl<'a> IntoIterator for &'a Succ {
+    type Item = &'a usize;
+    type IntoIter = std::slice::Iter<'a, usize>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.idx[..self.n as usize].iter()
+    }
 }
 
 pub fn build_cfg(items: &[Item]) -> Cfg {
@@ -23,13 +39,15 @@ pub fn build_cfg(items: &[Item]) -> Cfg {
         .iter()
         .enumerate()
         .map(|(i, it)| {
-            let mut s = Vec::new();
+            let mut s = Succ::default();
             if it.insn.falls_through() && i + 1 < items.len() {
-                s.push(i + 1);
+                s.idx[s.n as usize] = i + 1;
+                s.n += 1;
             }
             if let Some(t) = it.insn.target() {
                 if let Some(&ti) = label_index.get(&t) {
-                    s.push(ti);
+                    s.idx[s.n as usize] = ti;
+                    s.n += 1;
                 }
             }
             s

@@ -586,6 +586,15 @@ impl Term {
         }
     }
 
+    /// The successors without allocating: up to two blocks and how many are valid.
+    pub fn successor_slots(&self) -> ([BlockId; 2], usize) {
+        match self {
+            Term::Jump(b) => ([*b, *b], 1),
+            Term::Branch { then, els, .. } | Term::BranchTag { then, els, .. } => ([*then, *els], 2),
+            Term::Return(_) | Term::Unreachable => ([BlockId(0), BlockId(0)], 0),
+        }
+    }
+
     pub fn successors_mut(&mut self) -> Vec<&mut BlockId> {
         match self {
             Term::Jump(b) => vec![b],

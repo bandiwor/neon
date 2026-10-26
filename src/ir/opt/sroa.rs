@@ -15,8 +15,7 @@ use std::collections::HashMap as StdMap;
 
 use crate::builtin::Builtin;
 use crate::fx::FxHashMap as HashMap;
-use crate::ir::effects::FuncEffects;
-use crate::ir::escape::classify;
+use crate::ir::escape::Classes;
 use crate::ir::types::*;
 
 use super::simplify::def_counts;
@@ -37,8 +36,7 @@ fn occurrences(inst: &Inst, r: VReg) -> usize {
 }
 
 /// Replaces private structs and enums by their fields. Returns the number of objects removed.
-pub fn sroa_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
-    let classes = classify(f, fx.escapes());
+pub fn sroa_func(f: &mut IrFunc, classes: &Classes) -> usize {
     let defs = def_counts(f);
     let mut cands: HashMap<VReg, Candidate> = HashMap::default();
     for b in &f.blocks {
@@ -153,9 +151,8 @@ pub fn sroa_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
 /// when every register that may hold the object is only ever assigned a new struct of one shape or a
 /// copy of another such register, and the struct is only *read* (no field is ever assigned, so a
 /// copy is as good as a shared reference), each register gets one register per field.
-pub fn sroa_classes(f: &mut IrFunc, fx: &FuncEffects) -> usize {
+pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
     use std::collections::BTreeMap;
-    let classes = classify(f, fx.escapes());
     // members of each class that has a struct allocation
     let mut members: BTreeMap<usize, Vec<VReg>> = BTreeMap::new();
     for r in 0..f.regs.len() {
@@ -291,8 +288,7 @@ fn write_only(b: Builtin) -> bool {
 }
 
 /// Removes private objects that are only written to, together with the writes.
-pub fn dead_objects(f: &mut IrFunc, fx: &FuncEffects) -> usize {
-    let classes = classify(f, fx.escapes());
+pub fn dead_objects(f: &mut IrFunc, classes: &Classes) -> usize {
     let defs = def_counts(f);
     let mut uses = vec![0u32; f.regs.len()];
     for b in &f.blocks {
