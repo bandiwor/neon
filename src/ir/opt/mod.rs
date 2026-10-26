@@ -14,6 +14,8 @@
 //! * [`stores`]: stores overwritten before anything can read them
 //! * [`unroll`]: small loops with a constant trip count become straight-line code
 //! * [`devirt`]: calls of closures whose code is known become direct calls (curried closures too)
+//! * [`rotate`]: `while` loops test at the bottom; the invariant part of the test runs once
+//! * [`consts`]: registers holding the same constant are merged
 //! * [`licm`]: loop-invariant code motion
 //! * [`dce`]: unreachable-block removal, CFG simplification and dead code
 //!   elimination
@@ -23,6 +25,7 @@
 //! including run-time traps: an operation that would overflow is never folded
 //! away.
 
+pub mod consts;
 pub mod copies;
 pub mod dce;
 pub mod devirt;
@@ -30,6 +33,7 @@ pub mod fold;
 pub mod globals;
 pub mod inline;
 pub mod licm;
+pub mod rotate;
 pub mod sccp;
 pub mod simplify;
 pub mod sroa;
@@ -46,6 +50,8 @@ pub struct OptConfig {
     pub dce: bool,
     pub simplify: bool,
     pub licm: bool,
+    /// Test `while` loops at the bottom.
+    pub rotate: bool,
     /// Fully unroll small loops whose trip count is known.
     pub unroll: bool,
     pub inline: bool,
@@ -62,6 +68,7 @@ impl Default for OptConfig {
             dce: true,
             simplify: true,
             licm: true,
+            rotate: true,
             unroll: true,
             inline: true,
             inline_threshold: 30,
@@ -78,6 +85,7 @@ impl OptConfig {
             dce: false,
             simplify: false,
             licm: false,
+            rotate: false,
             unroll: false,
             inline: false,
             ..OptConfig::default()
@@ -92,6 +100,7 @@ pub struct OptStats {
     pub simplified: usize,
     pub hoisted: usize,
     pub unrolled: usize,
+    pub rotated: usize,
     pub devirtualized: usize,
     pub inlined_calls: usize,
     pub removed_insts: usize,
@@ -111,7 +120,7 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         for f in &mut prog.funcs {
             // loop-invariant motion comes last: it moves work out of the places the other passes
             // pattern-match on (a hoisted `len` hides the loop condition), then a cleanup round follows
-            for _round in 0..2 {
+            for _round in 0..3 {
                 for _ in 0..8 {
                     let mut changed = false;
                     if cfg.fold {
@@ -142,11 +151,20 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
                         break;
                     }
                 }
-                let n = if cfg.licm { licm::licm_func(f, &fx) } else { 0 };
+                let r = if cfg.rotate { rotate::rotate_loops(f, &fx) } else { 0 };
+                stats.rotated += r;
+                let n = if cfg.licm { licm::licm_func(f, &fx) } else { 0 } + r;
                 stats.hoisted += n;
-                if n == 0 {
+                let merged = if cfg.fold { consts::dedupe_consts(f) } else { 0 };
+                stats.folded += merged;
+                if n + merged == 0 {
                     break;
                 }
+            }
+            if cfg.dce {
+                let (insts, blocks) = dce::dce_func(f, &fx);
+                stats.removed_insts += insts;
+                stats.removed_blocks += blocks;
             }
         }
     };

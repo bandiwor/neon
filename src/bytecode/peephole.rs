@@ -174,7 +174,9 @@ fn local_rules(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats
                 }
                 // 6. immediates
                 (Insn::LoadI { dst: t, imm }, Insn::Arith { op, ty, dst, a, b })
-                    if ty.is_int() && matches!(op, ArithOp::Add | ArithOp::Sub) && !live[i + 1].contains(*t) =>
+                    if ty.is_int()
+                        && matches!(op, ArithOp::Add | ArithOp::Sub)
+                        && (!live[i + 1].contains(*t) || dst == t) =>
                 {
                     let v = decode_int(*ty, *imm as i64 as u64);
                     let operand = if b == t && a != t {
@@ -260,7 +262,7 @@ fn replace_use(insn: &mut Insn, from: Reg, to: Reg) -> bool {
 }
 
 /// `src + v` as an immediate instruction, if `v` fits.
-fn add_imm(ty: NumTy, dst: Reg, src: Reg, v: i128) -> Option<Insn> {
+pub(crate) fn add_imm(ty: NumTy, dst: Reg, src: Reg, v: i128) -> Option<Insn> {
     if (-128..=127).contains(&v) {
         Some(Insn::AddImm { ty, dst, src, imm: v as i8 })
     } else if (-255..0).contains(&v) {

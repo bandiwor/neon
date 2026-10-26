@@ -215,3 +215,20 @@ fn long_literals_keep_their_meaning_in_the_ir() {
     assert!(r.trap.is_none(), "{:?}", r.trap);
     assert_eq!(r.output, "200\n294\n200\ntrue\n120\n238\n");
 }
+
+#[test]
+fn constant_operands_of_additions_become_immediates_wherever_the_constant_was_computed() {
+    // the constants are loaded far from their additions (hoisted, shared, or defined by a guard)
+    let src = "fn f(n: i64) -> i64 { var i = 0; var j = 1; while i < n { i += 3; j = j - 7 + i; } i + j + 100 }\nprintln(f(input().parse_i64()));";
+    for (cfg, opts) in configs() {
+        let bc = bytecode(src, opts_ref(&opts));
+        let text = disassemble(&bc).unwrap();
+        if cfg.starts_with("O1") {
+            assert!(text.matches("addi").count() >= 3, "[{cfg}]\n{text}");
+        }
+        let mut io = neon::vm::BufferIo::with_input(&["10"]);
+        let r = neon::vm::run(&bc, &mut io, &neon::vm::VmConfig::default());
+        assert!(r.result.is_ok(), "[{cfg}] {:?}", r.result);
+        assert_eq!(io.output, "115\n", "[{cfg}]");
+    }
+}

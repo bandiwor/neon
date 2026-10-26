@@ -163,6 +163,12 @@ impl Builtin {
         }
     }
 
+    /// Builtins whose result is a brand new array, map or set that nothing else refers to.
+    pub fn returns_fresh_container(self) -> bool {
+        use Builtin::*;
+        matches!(self, ArrClone | StrSplit | StrChars | MapKeys | MapValues | SetToArray)
+    }
+
     /// Whether the object passed as argument `i` may outlive the call: stored in the heap or handed
     /// back in the result. Everything not listed only looks at its arguments. Exhaustive on purpose.
     pub fn retains_arg(self, i: usize) -> bool {

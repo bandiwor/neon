@@ -1520,3 +1520,107 @@ fn conversions_of_constants_fold_and_printing_skips_the_string() {
     let src = "fn f(var n: i64) { let s = n.to_string(); n += 1; println(s); println(n); }\nf(1);";
     assert_eq!(run(src), "1\n2\n");
 }
+
+#[test]
+fn while_loops_test_at_the_bottom_and_compute_invariants_once() {
+    use crate::runtime::numeric::ArithOp;
+    let cfg = || OptConfig { rotate: true, ..only_simplify() };
+    let subs = |ir: &IrProgram| count_in(ir, "f", |i| matches!(i, Inst::Arith { op: ArithOp::Sub, .. }));
+    // `n - i` can overflow, so it cannot simply be hoisted, but the guard already computed it
+    let src = "fn f(n: i64, i: i64) -> i64 { var j = 0; var s = 0; while j + 1 < n - i { s += j; j += 1; } s }\nprintln(f(10, 2)); println(f(1, 5));";
+    let (ir, stats) = optimized(src, cfg());
+    assert_eq!(stats.rotated, 1, "{ir}");
+    assert_eq!(subs(&ir), 1, "{ir}");
+    assert_eq!(run(src), "21\n0\n");
+    // no jump back to a test: the back edge is the (copied) test itself
+    let back_jumps = fn_named(&ir, "f").blocks.iter().filter(|b| matches!(b.term, Term::Jump(_))).count();
+    assert!(back_jumps <= 1, "{ir}");
+    // a bound that the loop changes is recomputed every time
+    let src = "fn f(n: i64) -> i64 { var i = 0; var m = n; while i < m { i += 1; m -= 1; } i * 100 + m }\nprintln(f(10)); println(f(0)); println(f(7));";
+    assert_eq!(run(src), "505\n0\n403\n");
+    let (ir, _) = optimized(src, cfg());
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::Arith { op: ArithOp::Sub, .. })), 1, "{ir}");
+    // `x = x + 1` in the header is not invariant
+    let src = "fn f(n: i64) -> i64 { var x = 0; var c = 0; while { x += 1; x < n } { c += x; } c }\nprintln(f(5)); println(f(0));";
+    assert_eq!(run(src), "10\n0\n");
+    // loops with early exits and continues
+    let src = "fn f(n: i64) -> i64 { var i = 0; var s = 0; while i < n { i += 1; if i % 3 == 0 { continue; } if i > 20 { break; } s += i; } s }\nprintln(f(10)); println(f(100)); println(f(0));";
+    assert_eq!(run(src), "37\n147\n0\n");
+}
+
+#[test]
+fn equal_constants_share_a_register_but_immediates_stay_immediates() {
+    let consts = |ir: &IrProgram, bits: u64| {
+        count_in(ir, "f", |i| matches!(i, Inst::Const { val: crate::ir::Const::Bits(v), .. } if *v == bits))
+    };
+    // 1000 is used by a comparison in two places and by a multiplication
+    let src = "fn f(a: i64, b: i64) -> i64 { var s = 0; var i = 0; while i < 1000 { s += a * 1000; i += 1; } if b < 1000 { s += 1000 * b; } s }\nprintln(f(2, 3));";
+    let (ir, _) = optimized(src, OptConfig { inline: false, ..OptConfig::default() });
+    assert_eq!(consts(&ir, 1000), 1, "{ir}");
+    assert_eq!(run(src), "2003000\n");
+    // small constants used only by additions are not merged (they become immediates)
+    let src = "fn f(n: i64) -> i64 { var i = 0; var j = 0; while i < n { i += 1; j += 1; } i + j + 1 }\nprintln(f(5));";
+    let (ir, _) = optimized(src, OptConfig { inline: false, ..OptConfig::default() });
+    assert_eq!(run(src), "11\n");
+    assert!(consts(&ir, 1) >= 1, "{ir}");
+}
+
+#[test]
+fn structs_rebuilt_in_loops_live_in_registers() {
+    let allocs = |ir: &IrProgram, name: &str| count_in(ir, name, |i| matches!(i, Inst::NewStruct { .. }));
+    let nofn = || OptConfig { inline: false, ..OptConfig::default() };
+    // the loop-carried struct is replaced by one register per field, copies and all
+    let src = "struct V { x: i64, y: i64 }\nfn f(n: i64) -> i64 { var p = V { x: 0, y: 1 }; var i = 0; while i < n { p = V { x: p.y, y: p.x + p.y }; i += 1; } p.x }\nprintln(f(10)); println(f(0));";
+    let (ir, _) = optimized(src, nofn());
+    assert_eq!(allocs(&ir, "f"), 0, "{ir}");
+    assert_eq!(run(src), "55\n0\n");
+    // an older copy still sees the old fields
+    let src = "struct V { x: i64, y: i64 }\nfn f(n: i64) -> i64 { var p = V { x: 1, y: 2 }; var old = p; var i = 0; while i < n { old = p; p = V { x: p.x + 10, y: p.y * 2 }; i += 1; } old.x * 1000 + old.y * 100 + p.x + p.y }\nprintln(f(3)); println(f(0)); println(f(1));";
+    assert_eq!(run(src), "21847\n1203\n1215\n");
+    let (ir, _) = optimized(src, nofn());
+    assert_eq!(allocs(&ir, "f"), 0, "{ir}");
+    // a field assigned in place is shared state: the struct stays an object
+    let src = "struct V { x: i64 }\nfn f() -> i64 { var p = V { x: 1 }; var q = p; q.x = 5; var i = 0; while i < 2 { p = V { x: p.x + 1 }; i += 1; } p.x + q.x }\nprintln(f());";
+    assert_eq!(run(src), "12\n");
+}
+
+#[test]
+fn reads_of_private_objects_are_invariant_in_loops_that_write_elsewhere() {
+    let lens = |ir: &IrProgram, name: &str| count_in(ir, name, |i| is_intrinsic(i, crate::builtin::Builtin::ArrLen));
+    let nofn = || OptConfig { inline: false, ..OptConfig::default() };
+    // the words are a private array; the loop only writes a map
+    let src = "fn f(text: string) -> i64 { var m = { \"\": 0 }; var c = 0; for w in text.split(\" \") { m[w] = c; c += 1; } c + m.len() }\nprintln(f(\"a b c a\"));";
+    let (ir, _) = optimized(src, nofn());
+    assert_eq!(lens(&ir, "f"), 1, "{ir}");
+    assert_eq!(run(src), "8\n");
+    // the loop appends to the array it walks: the length must be read again
+    let src = "fn f() -> i64 { var xs = [1, 2]; var n = 0; for x in xs.clone() { xs.push(x); n += xs.len(); } n }\nprintln(f());";
+    assert_eq!(run(src), "7\n");
+    let src = "fn f() -> i64 { var xs = [1]; var i = 0; while i < xs.len() { if i < 3 { xs.push(i); } i += 1; } xs.len() }\nprintln(f());";
+    assert_eq!(run(src), "4\n");
+    // an array handed to a function in the loop may be changed by it
+    let src = "fn grow(var a: [i64]) { a.push(0); }\nfn f() -> i64 { var xs = [1]; var i = 0; while i < xs.len() { if i < 2 { grow(xs); } i += 1; } xs.len() }\nprintln(f());";
+    assert_eq!(run(src), "3\n");
+}
+
+#[test]
+fn trapping_reads_that_open_every_iteration_move_in_front_of_the_loop() {
+    let gets = |ir: &IrProgram| count_in(ir, "f", |i| matches!(i, Inst::ArrayGet { .. }));
+    let nofn = || OptConfig { inline: false, ..OptConfig::default() };
+    // `a[i]` is invariant in the inner loop and is its first step: it traps (or not) exactly as before
+    let src = "fn f(a: [i64], i: i64, n: i64) -> i64 { var s = 0; var k = 0; while k < n { s += a[i] * k; k += 1; } s }\nprintln(f([3, 4], 1, 5));";
+    let (ir, _) = optimized(src, nofn());
+    assert_eq!(gets(&ir), 1, "{ir}");
+    assert_eq!(run(src), "40\n");
+    // out of range: still a trap when the loop runs, and nothing when it does not
+    assert_eq!(trap_of("fn f(a: [i64], i: i64, n: i64) -> i64 { var s = 0; var k = 0; while k < n { s += a[i]; k += 1; } s }\nprintln(f([3], 4, 2));"), Trap::IndexOutOfBounds { index: 4, len: 1 });
+    assert_eq!(run("fn f(a: [i64], i: i64, n: i64) -> i64 { var s = 0; var k = 0; while k < n { s += a[i]; k += 1; } s }\nprintln(f([3], 4, 0));"), "0\n");
+    // output before the read keeps it in place
+    let src = "fn f(a: [i64], i: i64, n: i64) -> i64 { var s = 0; var k = 0; while k < n { println(k); s += a[i]; k += 1; } s }\nprintln(f([3], 4, 1));";
+    assert_eq!(run_ir_output_before_trap(src), "0\n");
+}
+
+fn run_ir_output_before_trap(src: &str) -> String {
+    let ir = compile(src);
+    interp::run(&ir, &[]).output
+}

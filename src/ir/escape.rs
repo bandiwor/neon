@@ -50,6 +50,11 @@ impl Classes {
         self.root[r.index()] as usize
     }
 
+    /// A number identifying the alias class of `r` (equal for registers that may hold one object).
+    pub fn class_id(&self, r: VReg) -> usize {
+        self.class(r)
+    }
+
     /// Only ever holds objects this function allocated, none of which escape (they may be returned).
     pub fn is_local(&self, r: VReg) -> bool {
         let c = self.class(r);
@@ -180,7 +185,7 @@ pub fn classify(f: &IrFunc, pe: &ParamEscapes) -> Classes {
                         | Inst::NewMap { .. }
                         | Inst::NewSet { .. }
                         | Inst::Move { .. }
-                );
+                ) || matches!(i, Inst::Intrinsic { b, .. } if b.returns_fresh_container());
                 if !allocation {
                     fresh[root[d.index()] as usize] = false;
                 }

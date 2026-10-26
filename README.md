@@ -278,12 +278,14 @@ non-escaping class is *private*: nothing outside the function can tell what happ
 | `fold` | constant folding and propagation (trapping operations are kept), copy propagation |
 | `sccp` | constant propagation over the whole CFG: values meet at joins, branches decided by a constant only feed the edge they take (arithmetic follows the run-time semantics, trapping operations stay) |
 | `copies` | global copy propagation (available copies across blocks and loops) |
-| `sroa`, `dead objects` | scalar replacement and removal of write-only private objects |
+| `sroa`, `dead objects` | scalar replacement and removal of write-only private objects; also of structs that are rebuilt or copied in loops (`p = V { x: p.x + 1, .. }`) as long as no field is assigned in place |
 | `simplify` | value numbering over extended basic blocks (also calls to const/pure functions and global reads), store-to-load forwarding for fields, elements and globals, known arrays and enums, integer identities, power-of-two division, `!c` branches, `print(a + b)`, dead element loads |
 | `strings` | constant concatenation, merging of adjacent constant prints |
 | `stores` | dead store elimination: a store overwritten later in the block with nothing able to read it in between (fields, elements, globals; constant indices are compared by value) |
 | `dce` | unreachable blocks, jump threading (also on branches decided by a constant set in the jumping block), block merging, boolean diamonds (`if c { true } else { false }`), duplicating tiny return blocks, move coalescing, dead instructions and calls |
-| `licm` | loop-invariant code motion (last, so the other passes see the loop condition) |
+| `rotate` | `while` loops test at the bottom (the header is copied behind the body), and the part of the test that does not change in the loop, even trapping work such as `n - i`, runs once in the guard |
+| `licm` | loop-invariant code motion (last, so the other passes see the loop condition); reads of private objects (`xs.len()` of an array only this function sees) move out of loops that write elsewhere; a loop-bottom copy of an instruction that already ran before the loop is dropped |
+| `consts` | registers holding the same constant are merged (small constants that only feed additions stay separate: they become immediates) |
 | `unroll` | loops of a few instructions that run at most 8 times become straight-line code: the loop is copied, `sccp` decides the exit tests, and the copy is kept only if the original loop becomes unreachable |
 | `tail` | self tail calls become loops (after the first round) |
 | `globals` | stores to globals nobody reads, unused global slots |

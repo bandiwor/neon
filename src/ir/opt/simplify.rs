@@ -26,6 +26,7 @@ use crate::runtime::NumTy;
 pub fn simplify_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     super::copies::copy_propagate(f)
         + super::sroa::sroa_func(f, fx)
+        + super::sroa::sroa_classes(f, fx)
         + super::sroa::dead_objects(f, fx)
         + forward_values(f, fx)
         + algebra(f)
@@ -35,6 +36,57 @@ pub fn simplify_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
 }
 
 // ---- helpers ------------------------------------------------------------------------------------
+
+/// Moves `d = t` that finish an assignment: `t` is computed earlier in the block by an instruction
+/// that is not a move, has no other use and nothing in between touches `d`. The move coalescing
+/// turns the pair into `d = op ..`; reading `t` in place of `d` later would keep `t` alive and
+/// prevent that, so copy propagation leaves these alone.
+pub(super) fn result_moves(f: &IrFunc) -> crate::fx::FxHashSet<(usize, usize)> {
+    let defs = def_counts(f);
+    let uses = use_counts(f);
+    let mut out: crate::fx::FxHashSet<(usize, usize)> = Default::default();
+    for (bi, b) in f.blocks.iter().enumerate() {
+        for (ii, i) in b.insts.iter().enumerate() {
+            let Inst::Move { dst, src } = i else { continue };
+            // follow `t = op; u = t; d = u` back to the instruction that computes the value
+            let mut cur = *src;
+            let mut upto = ii;
+            let found = loop {
+                if cur == *dst || defs[cur.index()] != 1 || uses[cur.index()] != 1 {
+                    break false;
+                }
+                let mut next = None;
+                for k in (0..upto).rev() {
+                    let prev = &b.insts[k];
+                    if prev.def() == Some(cur) {
+                        match prev {
+                            Inst::Move { src: s2, .. } => next = Some((*s2, k)),
+                            _ => next = Some((cur, usize::MAX)),
+                        }
+                        break;
+                    }
+                    let mut touches = prev.def() == Some(*dst);
+                    prev.for_each_use(|r| touches |= r == *dst);
+                    if touches {
+                        break;
+                    }
+                }
+                match next {
+                    Some((_, usize::MAX)) => break true,
+                    Some((s2, k)) => {
+                        cur = s2;
+                        upto = k;
+                    }
+                    None => break false,
+                }
+            };
+            if found {
+                out.insert((bi, ii));
+            }
+        }
+    }
+    out
+}
 
 pub(super) fn def_counts(f: &IrFunc) -> Vec<u32> {
     let mut defs = vec![0u32; f.regs.len()];
@@ -98,6 +150,8 @@ enum Key {
     EnumTag(VReg),
     EnumField(VReg, u32),
     ArrayGet(VReg, VReg, NumTy),
+    /// A map lookup; it traps when the key is absent, so a second one with nothing in between is safe.
+    MapGet(VReg, VReg),
     Intrinsic(Builtin, Option<DescId>, Vec<VReg>),
     /// A call to a function without writes, I/O or allocation; the flag: it reads memory.
     Call(FuncId, Vec<VReg>, bool),
@@ -109,6 +163,7 @@ impl Key {
     fn operands(&self) -> Vec<VReg> {
         match self {
             Key::Arith(_, _, a, b) | Key::Cmp(_, _, a, b) | Key::ArrayGet(a, b, _) => vec![*a, *b],
+            Key::MapGet(a, b) => vec![*a, *b],
             Key::Neg(_, a)
             | Key::BitNot(_, a)
             | Key::BoolNot(a)
@@ -124,7 +179,7 @@ impl Key {
     /// Whether the value can change when memory is written.
     fn reads_mutable_memory(&self) -> bool {
         match self {
-            Key::GetField(..) | Key::ArrayGet(..) | Key::Global(_) => true,
+            Key::GetField(..) | Key::ArrayGet(..) | Key::MapGet(..) | Key::Global(_) => true,
             Key::Intrinsic(b, ..) => b.effects().reads(),
             Key::Call(_, _, reads) => *reads,
             _ => false,
@@ -196,6 +251,7 @@ fn key_of(f: &IrFunc, inst: &Inst, canon: &HashMap<VReg, VReg>, fx: &FuncEffects
         Inst::EnumTag { obj, .. } => Key::EnumTag(c(obj)),
         Inst::EnumField { obj, idx, .. } => Key::EnumField(c(obj), *idx),
         Inst::ArrayGet { arr, idx, idx_ty, .. } => Key::ArrayGet(c(arr), c(idx), *idx_ty),
+        Inst::MapGet { map, key, .. } => Key::MapGet(c(map), c(key)),
         Inst::Intrinsic { b, desc, args, .. } if b.effects().reusable() => {
             Key::Intrinsic(*b, *desc, args.iter().map(c).collect())
         }
@@ -349,6 +405,7 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
         }
     }
 
+    let result_moves = result_moves(f);
     let mut ends: Vec<Option<Avail>> = vec![None; n];
     let mut changes = 0;
     for &b in &order {
@@ -365,7 +422,7 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
             _ => Avail::default(),
         };
         let mut insts = std::mem::take(&mut f.blocks[b].insts);
-        for inst in insts.iter_mut() {
+        for (ii, inst) in insts.iter_mut().enumerate() {
             // read through plain copies: the original register is just as good
             if !avail.copies.is_empty() {
                 inst.for_each_use_mut(|r| {
@@ -435,7 +492,12 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
             avail.exprs.extend(next.exprs);
             avail.aggs.extend(next.aggs);
             if let Inst::Move { dst, src } = *inst {
-                if dst != src && !f.pinned[dst.index()] && !f.pinned[src.index()] && f.reg_ty(dst) == f.reg_ty(src) {
+                if dst != src
+                    && !result_moves.contains(&(b, ii))
+                    && !f.pinned[dst.index()]
+                    && !f.pinned[src.index()]
+                    && f.reg_ty(dst) == f.reg_ty(src)
+                {
                     avail.copies.insert(dst, src);
                 }
             }

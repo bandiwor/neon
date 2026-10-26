@@ -162,10 +162,33 @@ pub(super) fn find_loops(f: &IrFunc, idom: &[usize], preds: &[Vec<usize>]) -> Ve
 /// Whether the instruction can move out of a loop (given its operands are invariant): by its
 /// effects it must be hoistable (no writes, I/O, traps, endless loops, hidden preconditions and no
 /// fresh object per execution), and if it reads memory, nothing in the loop may write any.
-fn movable_kind(i: &Inst, loop_writes_heap: bool, fx: &FuncEffects) -> bool {
+fn movable_kind(
+    i: &Inst,
+    loop_writes_heap: bool,
+    unwritten: &dyn Fn(VReg) -> bool,
+    runs_first: bool,
+    fx: &FuncEffects,
+) -> bool {
     let e = i.effects(fx);
-    if !e.hoistable() || (e.reads() && loop_writes_heap) {
+    // the first thing the loop does on every entry may trap: it traps in the preheader instead,
+    // at the same moment relative to everything the program has done
+    let e_checked = if runs_first { e.without(crate::effects::Effects::TRAPS) } else { e };
+    if !e_checked.hoistable() {
         return false;
+    }
+    if e.reads() && loop_writes_heap {
+        // the loop writes somewhere, but a private object is only reached through its own aliases
+        let mut objects = Vec::new();
+        match i {
+            Inst::GetField { obj, .. } => objects.push(*obj),
+            Inst::ArrayGet { arr, .. } => objects.push(*arr),
+            Inst::MapGet { map, .. } => objects.push(*map),
+            Inst::Intrinsic { args, .. } => objects.extend(args.iter().copied()),
+            _ => return false,
+        }
+        if !objects.iter().all(|&o| unwritten(o)) {
+            return false;
+        }
     }
     // variables captured by closures change behind the back of the loop; global reads stay put too
     !matches!(i, Inst::GetUpval { .. } | Inst::GetGlobal { .. })
@@ -174,7 +197,7 @@ fn movable_kind(i: &Inst, loop_writes_heap: bool, fx: &FuncEffects) -> bool {
 /// Registers that are only ever an operand of an integer `+` or `-`: when they hold a small
 /// constant the bytecode folds them into an immediate (`addi`), so moving them out of a loop would
 /// only cost a register.
-fn immediate_operands(f: &IrFunc) -> Vec<bool> {
+pub(super) fn immediate_operands(f: &IrFunc) -> Vec<bool> {
     use crate::runtime::numeric::ArithOp;
     let mut only = vec![true; f.regs.len()];
     for b in &f.blocks {
@@ -193,12 +216,30 @@ fn small_constant(i: &Inst) -> bool {
     matches!(i, Inst::Const { val: Const::Bits(v), .. } if (-128..=127).contains(&(*v as i64)))
 }
 
+/// Whether everything before position `upto` of the loop's entry block is invisible (no writes, no
+/// output, nothing that can trap) or leaves the loop anyway, so hoisting the next instruction keeps
+/// the order in which the program's visible steps happen.
+fn entry_prefix_is_clean(
+    before: &[Inst],
+    block: usize,
+    hoisted: &[(usize, usize)],
+    repeated: &[(usize, usize)],
+    fx: &FuncEffects,
+) -> bool {
+    before.iter().enumerate().all(|(k, j)| {
+        hoisted.contains(&(block, k))
+            || repeated.contains(&(block, k))
+            || j.effects(fx).without(crate::effects::Effects::READS) == crate::effects::Effects::NONE
+    })
+}
+
 fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let immediates = immediate_operands(f);
     let preds = predecessors(f);
     let rpo = reverse_post_order(f);
     let idom = dominators(f, &rpo, &preds);
     let defs = def_counts(f);
+    let classes = crate::ir::escape::classify(f, fx.escapes());
 
     for lp in find_loops(f, &idom, &preds) {
         if lp.header == 0 {
@@ -213,6 +254,28 @@ fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
         body.sort_unstable();
 
         let loop_writes_heap = body.iter().any(|&b| f.blocks[b].insts.iter().any(|i| clobbers_memory(i, fx)));
+        // classes of private objects that something in the loop may write
+        let mut written: HashSet<usize> = HashSet::default();
+        for &b in &body {
+            for i in &f.blocks[b].insts {
+                let targets: Vec<VReg> = match i {
+                    Inst::SetField { obj, .. } => vec![*obj],
+                    Inst::ArraySet { arr, .. } => vec![*arr],
+                    Inst::MapSet { map, .. } => vec![*map],
+                    Inst::Intrinsic { args, .. } | Inst::Call { args, .. } | Inst::CallClosure { args, .. }
+                        if clobbers_memory(i, fx) =>
+                    {
+                        args.clone()
+                    }
+                    _ => Vec::new(),
+                };
+                for t in targets {
+                    written.insert(classes.class_id(t));
+                }
+            }
+        }
+        let unwritten =
+            |o: VReg| f.reg_ty(o) == IrTy::Ref && classes.is_private(o) && !written.contains(&classes.class_id(o));
         // registers defined in the loop
         let mut defined_in_loop = vec![false; f.regs.len()];
         for &b in &body {
@@ -224,7 +287,18 @@ fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
         }
 
         let mut hoisted: Vec<(usize, usize)> = Vec::new();
+        // instructions that only repeat, inside the loop, what an identical one before it computed
+        // (the bottom test of a loop that was already rotated): they can simply go
+        let mut repeated: Vec<(usize, usize)> = Vec::new();
         let mut moves_out = vec![false; f.regs.len()];
+        let twin_before = |i: &Inst| {
+            f.blocks.iter().enumerate().any(|(jb, blk)| {
+                !lp.body.contains(&jb)
+                    && idom[jb] != usize::MAX
+                    && dominates(&idom, jb, lp.header)
+                    && blk.insts.iter().any(|j| j == i)
+            })
+        };
         'grow: loop {
             let mut grew = false;
             for &b in &body {
@@ -234,9 +308,17 @@ fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
                     }
                     let Some(d) = i.def() else { continue };
                     if hoisted.contains(&(b, ii))
-                        || defs[d.index()] != 1
+                        || repeated.contains(&(b, ii))
+                        || !(defs[d.index()] == 1 || defs[d.index()] == 2)
                         || f.pinned[d.index()]
-                        || !movable_kind(i, loop_writes_heap, fx)
+                        || !movable_kind(
+                            i,
+                            loop_writes_heap,
+                            &unwritten,
+                            b == lp.header
+                                && entry_prefix_is_clean(&f.blocks[b].insts[..ii], b, &hoisted, &repeated, fx),
+                            fx,
+                        )
                         || (small_constant(i) && immediates[d.index()])
                     {
                         continue;
@@ -247,8 +329,12 @@ fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
                             invariant = false;
                         }
                     });
-                    if invariant {
+                    if invariant && defs[d.index()] == 1 {
                         hoisted.push((b, ii));
+                        moves_out[d.index()] = true;
+                        grew = true;
+                    } else if invariant && twin_before(i) {
+                        repeated.push((b, ii));
                         moves_out[d.index()] = true;
                         grew = true;
                     }
@@ -258,8 +344,15 @@ fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
                 break;
             }
         }
-        if hoisted.is_empty() {
+        if hoisted.is_empty() && repeated.is_empty() {
             continue;
+        }
+        if hoisted.is_empty() {
+            repeated.sort_unstable_by(|a, b| b.cmp(a));
+            for (b, ii) in &repeated {
+                f.blocks[*b].insts.remove(*ii);
+            }
+            return repeated.len();
         }
 
         // the preheader
@@ -282,6 +375,7 @@ fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
         // take the instructions out (highest index first so earlier positions stay valid)
         let mut taken: Vec<((usize, usize), Inst)> = Vec::new();
         let mut order = hoisted.clone();
+        order.extend(repeated.iter().copied());
         order.sort_unstable_by(|a, b| b.cmp(a));
         for (b, ii) in order {
             taken.push(((b, ii), f.blocks[b].insts.remove(ii)));
@@ -292,7 +386,7 @@ fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
             let (_, inst) = taken.remove(at);
             f.blocks[pre].insts.push(inst);
         }
-        return hoisted.len();
+        return hoisted.len() + repeated.len();
     }
     0
 }

@@ -149,6 +149,140 @@ pub fn sroa_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     cands.len()
 }
 
+/// Scalar replacement of structs that are rebuilt or copied around (a loop-carried `p = V { .. }`):
+/// when every register that may hold the object is only ever assigned a new struct of one shape or a
+/// copy of another such register, and the struct is only *read* (no field is ever assigned, so a
+/// copy is as good as a shared reference), each register gets one register per field.
+pub fn sroa_classes(f: &mut IrFunc, fx: &FuncEffects) -> usize {
+    use std::collections::BTreeMap;
+    let classes = classify(f, fx.escapes());
+    // members of each class that has a struct allocation
+    let mut members: BTreeMap<usize, Vec<VReg>> = BTreeMap::new();
+    for r in 0..f.regs.len() {
+        let r = VReg(r as u32);
+        if f.reg_ty(r) == IrTy::Ref {
+            members.entry(classes.class_id(r)).or_default().push(r);
+        }
+    }
+    // the shape (field types) of each class, or None when it cannot be replaced
+    let mut shape: BTreeMap<usize, Option<Vec<IrTy>>> = BTreeMap::new();
+    let mut allocs: BTreeMap<usize, usize> = BTreeMap::new();
+    for b in &f.blocks {
+        for i in &b.insts {
+            let Inst::NewStruct { dst, fields, .. } = i else { continue };
+            let c = classes.class_id(*dst);
+            let types: Vec<IrTy> = fields.iter().map(|&r| f.reg_ty(r)).collect();
+            *allocs.entry(c).or_insert(0) += 1;
+            match shape.get(&c) {
+                None => {
+                    shape.insert(c, Some(types));
+                }
+                Some(Some(have)) if *have == types => {}
+                _ => {
+                    shape.insert(c, None);
+                }
+            }
+        }
+    }
+    let mut ok: BTreeMap<usize, bool> = BTreeMap::new();
+    for (&c, s) in &shape {
+        let mem = &members[&c];
+        let good = s.is_some()
+            && mem.iter().all(|&m| classes.is_private(m) && !f.pinned[m.index()] && m.index() >= f.params as usize);
+        ok.insert(c, good);
+    }
+    let in_class = |r: VReg, ok: &BTreeMap<usize, bool>| ok.get(&classes.class_id(r)).copied().unwrap_or(false);
+    // definitions and uses must keep to the allowed shapes
+    for b in &f.blocks {
+        for i in &b.insts {
+            let def_ok = match i {
+                Inst::NewStruct { .. } => true,
+                Inst::Move { dst, src } => {
+                    !in_class(*dst, &ok) || in_class(*src, &ok) && classes.class_id(*dst) == classes.class_id(*src)
+                }
+                other => other.def().is_none_or(|d| !in_class(d, &ok)),
+            };
+            if !def_ok {
+                if let Some(d) = i.def() {
+                    ok.insert(classes.class_id(d), false);
+                }
+            }
+            let mut bad: Vec<VReg> = Vec::new();
+            i.for_each_use(|u| {
+                if !in_class(u, &ok) {
+                    return;
+                }
+                let allowed = match i {
+                    Inst::GetField { obj, .. } => *obj == u && occurrences(i, u) == 1,
+                    Inst::Move { src, dst } => *src == u && in_class(*dst, &ok),
+                    _ => false,
+                };
+                if !allowed {
+                    bad.push(u);
+                }
+            });
+            for u in bad {
+                ok.insert(classes.class_id(u), false);
+            }
+        }
+        let mut bad: Vec<VReg> = Vec::new();
+        b.term.for_each_use(|u| bad.push(u));
+        for u in bad {
+            ok.insert(classes.class_id(u), false);
+        }
+    }
+    // a class that lost its status after others were judged may leave Moves pointing across: recheck
+    for b in &f.blocks {
+        for i in &b.insts {
+            if let Inst::Move { dst, src } = i {
+                if in_class(*dst, &ok) != in_class(*src, &ok) {
+                    ok.insert(classes.class_id(*dst), false);
+                    ok.insert(classes.class_id(*src), false);
+                }
+            }
+        }
+    }
+    let chosen: Vec<usize> = ok.iter().filter(|(_, &g)| g).map(|(&c, _)| c).collect();
+    if chosen.is_empty() {
+        return 0;
+    }
+    // one register per field of every member
+    let mut fr: StdMap<VReg, Vec<VReg>> = StdMap::new();
+    for &c in &chosen {
+        let types = shape[&c].clone().expect("a shape");
+        for &m in &members[&c] {
+            let regs: Vec<VReg> = types.iter().map(|&t| f.new_reg(t)).collect();
+            fr.insert(m, regs);
+        }
+    }
+    for bi in 0..f.blocks.len() {
+        let old = std::mem::take(&mut f.blocks[bi].insts);
+        let mut out = Vec::with_capacity(old.len());
+        for inst in old {
+            match inst {
+                Inst::NewStruct { dst, fields, .. } if fr.contains_key(&dst) => {
+                    for (to, from) in fr[&dst].iter().zip(&fields) {
+                        out.push(Inst::Move { dst: *to, src: *from });
+                    }
+                }
+                Inst::Move { dst, src } if fr.contains_key(&dst) => {
+                    if dst != src {
+                        for (to, from) in fr[&dst].iter().zip(&fr[&src]) {
+                            out.push(Inst::Move { dst: *to, src: *from });
+                        }
+                    }
+                }
+                Inst::GetField { dst, obj, idx } if fr.contains_key(&obj) => {
+                    out.push(Inst::Move { dst, src: fr[&obj][idx as usize] });
+                }
+                other => out.push(other),
+            }
+        }
+        f.blocks[bi].insts = out;
+    }
+    chosen.len()
+}
+
 /// Builtins that only put things into a container they are given, never trap, and whose result
 /// (unit or a flag) nobody has to look at.
 fn write_only(b: Builtin) -> bool {

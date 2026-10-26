@@ -20,12 +20,17 @@ fn resolve(state: &Copies, mut r: VReg) -> VReg {
 }
 
 /// The effect of `inst` on the set of available copies.
-fn step(f: &IrFunc, state: &mut Copies, inst: &Inst) {
+fn step(f: &IrFunc, state: &mut Copies, inst: &Inst, record: bool) {
     if let Some(d) = inst.def() {
         state.retain(|k, v| *k != d && *v != d);
         if let Inst::Move { dst, src } = inst {
             let src = resolve(state, *src);
-            if *dst != src && !f.pinned[dst.index()] && !f.pinned[src.index()] && f.reg_ty(*dst) == f.reg_ty(src) {
+            if record
+                && *dst != src
+                && !f.pinned[dst.index()]
+                && !f.pinned[src.index()]
+                && f.reg_ty(*dst) == f.reg_ty(src)
+            {
                 state.insert(*dst, src);
             }
         }
@@ -54,6 +59,9 @@ pub fn copy_propagate(f: &mut IrFunc) -> usize {
             preds[s.index()].push(i);
         }
     }
+    // `t = op ..; d = t` where `t` has no other use is an assignment `d = op ..` that the move
+    // coalescing will merge; reading `t` in place of `d` later would keep `t` alive and prevent that
+    let result_moves = super::simplify::result_moves(f);
     // reverse post-order
     let mut order = Vec::with_capacity(n);
     let mut seen = vec![false; n];
@@ -92,8 +100,8 @@ pub fn copy_propagate(f: &mut IrFunc) -> usize {
                 }
             };
             let mut state = state_in.clone();
-            for i in &f.blocks[b].insts {
-                step(f, &mut state, i);
+            for (ii, i) in f.blocks[b].insts.iter().enumerate() {
+                step(f, &mut state, i, !result_moves.contains(&(b, ii)));
             }
             input[b] = state_in;
             if out[b].as_ref() != Some(&state) {
@@ -113,7 +121,7 @@ pub fn copy_propagate(f: &mut IrFunc) -> usize {
         }
         let mut state = input[b].clone();
         let mut insts = std::mem::take(&mut f.blocks[b].insts);
-        for inst in insts.iter_mut() {
+        for (ii, inst) in insts.iter_mut().enumerate() {
             if !state.is_empty() {
                 inst.for_each_use_mut(|r| {
                     let n = resolve(&state, *r);
@@ -123,7 +131,7 @@ pub fn copy_propagate(f: &mut IrFunc) -> usize {
                     }
                 });
             }
-            step(f, &mut state, inst);
+            step(f, &mut state, inst, !result_moves.contains(&(b, ii)));
         }
         f.blocks[b].insts = insts;
         if !state.is_empty() {

@@ -39,6 +39,8 @@ pub struct FuncEmitter<'a> {
     pos: u32,
     /// The block emitted after the current one, for fall-through decisions.
     next_block: Option<BlockId>,
+    /// Registers whose only definition is an integer-like constant.
+    known: HashMap<VReg, u64>,
 }
 
 fn block_label(b: BlockId) -> Label {
@@ -47,7 +49,21 @@ fn block_label(b: BlockId) -> Label {
 
 impl<'a> FuncEmitter<'a> {
     pub fn new(f: &'a IrFunc, alloc: &'a Allocation, consts: &'a mut ConstPool) -> Self {
-        FuncEmitter { f, alloc, consts, items: Vec::new(), pos: 0, next_block: None }
+        let mut defs: HashMap<VReg, u32> = HashMap::default();
+        for p in 0..f.params {
+            defs.insert(VReg(p), 1);
+        }
+        let mut known: HashMap<VReg, u64> = HashMap::default();
+        for i in f.blocks.iter().flat_map(|b| &b.insts) {
+            if let Some(d) = i.def() {
+                *defs.entry(d).or_insert(0) += 1;
+                if let Inst::Const { val: Const::Bits(v), .. } = i {
+                    known.insert(d, *v);
+                }
+            }
+        }
+        known.retain(|r, _| defs[r] == 1 && !f.pinned[r.index()]);
+        FuncEmitter { f, alloc, consts, items: Vec::new(), pos: 0, next_block: None, known }
     }
 
     fn err(&self, what: &str) -> CompileError {
@@ -219,6 +235,23 @@ impl<'a> FuncEmitter<'a> {
             }
             I::Arith { dst, op, ty, lhs, rhs } => {
                 let (d, a, b) = (self.s(*dst), self.s(*lhs), self.s(*rhs));
+                // `x + 5` and `x - 5` with a constant operand take it as an immediate
+                if ty.is_int() && matches!(op, ArithOp::Add | ArithOp::Sub) {
+                    let imm = |this: &Self, r: &VReg| {
+                        this.known.get(r).map(|&bits| crate::runtime::numeric::decode_int(*ty, bits))
+                    };
+                    let fused = match (imm(self, lhs), imm(self, rhs)) {
+                        (_, Some(v)) => {
+                            crate::bytecode::peephole::add_imm(*ty, d, a, if *op == ArithOp::Add { v } else { -v })
+                        }
+                        (Some(v), None) if *op == ArithOp::Add => crate::bytecode::peephole::add_imm(*ty, d, b, v),
+                        _ => None,
+                    };
+                    if let Some(insn) = fused {
+                        self.push_def(insn, *dst);
+                        return Ok(());
+                    }
+                }
                 let insn = if matches!(op, ArithOp::And | ArithOp::Or | ArithOp::Xor) {
                     Insn::Bitwise { op: *op, dst: d, a, b }
                 } else {
