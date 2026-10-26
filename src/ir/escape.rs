@@ -208,9 +208,9 @@ pub fn param_escapes(prog: &IrProgram) -> ParamEscapes {
                 continue;
             }
             let classes = classify(f, &pe);
-            for p in 0..f.params as usize {
-                if f.reg_ty(VReg(p as u32)) == IrTy::Ref && !pe[fi][p] && classes.leaves(VReg(p as u32)) {
-                    pe[fi][p] = true;
+            for (p, escapes) in pe[fi].iter_mut().enumerate() {
+                if f.reg_ty(VReg(p as u32)) == IrTy::Ref && !*escapes && classes.leaves(VReg(p as u32)) {
+                    *escapes = true;
                     changed = true;
                 }
             }

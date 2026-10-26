@@ -225,6 +225,40 @@ What the optimizer does with it:
 A repeated call that traps is still reusable (the first execution already trapped), but an
 unused one that traps is not removable.
 
+### Escape analysis
+
+Registers connected by moves may hold one object, so they form an *alias class*. A class is
+*fresh* if everything it can hold was allocated by the function itself, and it *escapes* if the
+object may be kept past the function: stored in the heap, a global or an upvalue, put into another
+object, captured by a closure, handed to a closure, or passed to a callee that retains that
+argument (builtins say which arguments they retain, user functions get a per-parameter summary
+computed as a fixed point over the call graph; returning a parameter counts as keeping it). A fresh,
+non-escaping class is *private*: nothing outside the function can tell what happens to its objects.
+
+* Reads and writes of private objects no longer count in a function's effect summary, so a
+  function that builds and fills a local array is `const` and merely allocates.
+* A private struct or enum used only through field accesses is replaced by registers
+  (scalar replacement). For enums the variant is known statically: tag checks become constants and
+  `match` becomes a jump.
+* A private array, map, set or struct that is only ever written to disappears with its writes.
+
+### IR pass pipeline
+
+`optimize` runs these until nothing changes, then inlines and runs them again:
+
+| pass | what it does |
+|---|---|
+| `fold` | constant folding and propagation (trapping operations are kept), copy propagation |
+| `copies` | global copy propagation (available copies across blocks and loops) |
+| `sroa`, `dead objects` | scalar replacement and removal of write-only private objects |
+| `simplify` | value numbering over extended basic blocks (also calls to const/pure functions and global reads), store-to-load forwarding for fields, elements and globals, known arrays and enums, integer identities, power-of-two division, `!c` branches, `print(a + b)`, dead element loads |
+| `strings` | constant concatenation, merging of adjacent constant prints |
+| `dce` | unreachable blocks, jump threading (also on branches decided by a constant set in the jumping block), block merging, boolean diamonds (`if c { true } else { false }`), duplicating tiny return blocks, move coalescing, dead instructions and calls |
+| `licm` | loop-invariant code motion (last, so the other passes see the loop condition) |
+| `tail` | self tail calls become loops (after the first round) |
+| `globals` | stores to globals nobody reads, unused global slots |
+| `inline`, `prune` | inlining of small functions, removal of unreachable functions |
+
 ### Execution model
 
 * Registers are untagged 64-bit words. Integers are kept in canonical form

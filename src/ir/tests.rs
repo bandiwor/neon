@@ -1158,3 +1158,104 @@ fn write_only_private_objects_disappear_with_their_writes() {
     // popping can trap on an empty array: not a write-only use
     assert_eq!(trap_of("fn f() { var a: [i64] = []; a.pop(); }\nf();"), Trap::EmptyArray);
 }
+
+// ---- control-flow shaping, copies, globals ----------------------------------------------------------
+
+fn only_tail() -> OptConfig {
+    OptConfig { simplify: true, dce: true, fold: true, ..OptConfig::none() }
+}
+
+#[test]
+fn self_tail_calls_become_loops() {
+    let src =
+        "fn sum(n: i64, acc: i64) -> i64 { if n == 0 { acc } else { sum(n - 1, acc + n) } }\nprintln(sum(30, 0));";
+    let (ir, _) = optimized(src, only_tail());
+    assert_eq!(calls_in(&ir, "sum"), 0, "{ir}");
+    assert_eq!(run(src), "465\n");
+    // 100000 frames would not fit; as a loop it runs in constant stack
+    let deep =
+        "fn sum(n: i64, acc: i64) -> i64 { if n == 0 { acc } else { sum(n - 1, acc + n) } }\nprintln(sum(100000, 0));";
+    let (ir, _) = optimized(deep, OptConfig::default());
+    let r = interp::run(&ir, &[]);
+    assert!(r.trap.is_none(), "{:?}", r.trap);
+    assert_eq!(r.output, "5000050000\n");
+    let unoptimized = interp::run(&compile(deep), &[]);
+    assert_eq!(unoptimized.trap, Some(Trap::StackOverflow));
+    // the arguments swap: they must be read before any parameter changes
+    let src = "fn f(a: i64, b: i64, n: i64) -> i64 { if n == 0 { a * 100 + b } else { f(b, a, n - 1) } }\nprintln(f(1, 2, 3)); println(f(1, 2, 4));";
+    assert_eq!(run(src), "201\n102\n");
+    // not a tail call: the result is used afterwards
+    let src = "fn g(n: i64) -> i64 { if n == 0 { 0 } else { g(n - 1) + 1 } }\nprintln(g(10));";
+    let (ir, _) = optimized(src, only_tail());
+    assert_eq!(calls_in(&ir, "g"), 1, "{ir}");
+    assert_eq!(run(src), "10\n");
+    // a parameter captured by a closure keeps its own cell per call
+    let src = "fn h(n: i64, fs: [fn() -> i64]) -> i64 { var fs2 = fs; fs2.push(|| => n); if n == 0 { var s = 0; for f in fs2 { s += f(); } s } else { h(n - 1, fs2) } }\nprintln(h(3, []));";
+    assert_eq!(run(src), "6\n");
+    // unbounded tail recursion is an endless loop now, not a stack overflow: bounded by the step limit only
+}
+
+#[test]
+fn returns_are_duplicated_into_the_jumps_that_reach_them() {
+    let src = "fn f(a: i64) -> i64 { var r = 0; if a > 0 { r = 1; } elif a < 0 { r = 2; } r }\nprintln(f(5)); println(f(-5)); println(f(0));";
+    assert_eq!(run(src), "1\n2\n0\n");
+    let (ir, _) = optimized(src, only_tail());
+    let returns = fn_named(&ir, "f").blocks.iter().filter(|b| matches!(b.term, super::Term::Return(_))).count();
+    assert!(returns >= 2, "{ir}");
+}
+
+#[test]
+fn branches_on_constants_set_by_the_jumping_block_are_threaded() {
+    let src = "fn f(a: bool, b: bool) -> i64 { if a && b { 1 } else { 2 } }\nprintln(f(true, true)); println(f(true, false)); println(f(false, true));";
+    assert_eq!(run(src), "1\n2\n2\n");
+    let src = "fn f(a: bool, b: bool, c: bool) -> i64 { if (a || b) && c { 1 } else { 2 } }\n\
+        println(f(false, false, true)); println(f(false, true, true)); println(f(true, false, false)); println(f(true, true, true));";
+    assert_eq!(run(src), "2\n1\n2\n1\n");
+}
+
+#[test]
+fn boolean_diamonds_are_plain_assignments() {
+    let src = "fn f(c: bool) -> bool { if c { true } else { false } }\nfn g(c: bool) -> bool { if c { false } else { true } }\n\
+        println(f(true)); println(f(false)); println(g(true)); println(g(false));";
+    assert_eq!(run(src), "true\nfalse\nfalse\ntrue\n");
+    let (ir, _) = optimized(src, only_tail());
+    assert!(fn_named(&ir, "f").blocks.len() <= 2, "{ir}");
+    assert!(fn_named(&ir, "g").blocks.len() <= 2, "{ir}");
+}
+
+#[test]
+fn copies_are_propagated_across_blocks_and_loops() {
+    let src = "fn f(a: i64, n: i64) -> i64 { var b = a; var s = 0; var i = 0; while i < n { s += b; i += 1; } s }\nprintln(f(3, 4));";
+    assert_eq!(run(src), "12\n");
+    // a copy that is overwritten on one path must not be used after the join
+    let src = "fn f(a: i64, c: bool) -> i64 { var b = a; if c { b = 100; } b + a }\nprintln(f(1, true)); println(f(1, false));";
+    assert_eq!(run(src), "101\n2\n");
+    // the source changes inside the loop
+    let src = "fn f(n: i64) -> i64 { var a = 1; var b = a; var i = 0; while i < n { a = a + 1; i += 1; } b * 100 + a }\nprintln(f(3));";
+    assert_eq!(run(src), "104\n");
+}
+
+#[test]
+fn global_values_are_forwarded_and_unread_globals_disappear() {
+    let src = "var counter = 0;\nvar unused = 5;\nfn bump() { counter += 1; }\nbump(); bump(); println(counter);";
+    assert_eq!(run(src), "2\n");
+    let (ir, _) = optimized(src, OptConfig::default());
+    let names: Vec<&str> = ir.globals.iter().map(|g| g.name.as_str()).collect();
+    assert_eq!(names, ["counter"], "{names:?}");
+    // a store, then a load: no load
+    let src = "var g = 0;\nfn f(x: i64) -> i64 { g = x; g + g }\nprintln(f(4)); println(g);";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::GetGlobal { .. })), 0, "{ir}");
+    assert_eq!(run(src), "8\n4\n");
+    // a call may change the global
+    let src =
+        "var g = 1;\nfn set() { g = 9; }\nfn f() -> i64 { let a = g; set(); let b = g; a * 10 + b }\nprintln(f());";
+    assert_eq!(run(src), "19\n");
+    // a pure call does not
+    let src = "var g = 1;\nfn read() -> i64 { g }\nfn f() -> i64 { let a = g; let r = read(); let b = g; a + r + b }\nprintln(f());";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::GetGlobal { .. })), 1, "{ir}");
+    assert_eq!(run(src), "3\n");
+    // globals read in closures
+    assert_eq!(run("var g = 0;\nlet inc = || => { g += 1; g };\ninc(); inc(); println(g);"), "2\n");
+}

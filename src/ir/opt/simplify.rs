@@ -24,7 +24,8 @@ use crate::runtime::NumTy;
 
 /// Runs all simplifications on `f`; returns how many rewrites happened.
 pub fn simplify_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
-    super::sroa::sroa_func(f, fx)
+    super::copies::copy_propagate(f)
+        + super::sroa::sroa_func(f, fx)
         + super::sroa::dead_objects(f, fx)
         + forward_values(f, fx)
         + algebra(f)
@@ -100,6 +101,8 @@ enum Key {
     Intrinsic(Builtin, Option<DescId>, Vec<VReg>),
     /// A call to a function without writes, I/O or allocation; the flag: it reads memory.
     Call(FuncId, Vec<VReg>, bool),
+    /// The current value of a global variable.
+    Global(GlobalSlot),
 }
 
 impl Key {
@@ -114,13 +117,14 @@ impl Key {
             | Key::EnumTag(a)
             | Key::EnumField(a, _) => vec![*a],
             Key::Intrinsic(_, _, args) | Key::Call(_, args, _) => args.clone(),
+            Key::Global(_) => Vec::new(),
         }
     }
 
     /// Whether the value can change when memory is written.
     fn reads_mutable_memory(&self) -> bool {
         match self {
-            Key::GetField(..) | Key::ArrayGet(..) => true,
+            Key::GetField(..) | Key::ArrayGet(..) | Key::Global(_) => true,
             Key::Intrinsic(b, ..) => b.effects().reads(),
             Key::Call(_, _, reads) => *reads,
             _ => false,
@@ -187,6 +191,7 @@ fn key_of(f: &IrFunc, inst: &Inst, canon: &HashMap<VReg, VReg>, fx: &FuncEffects
         Inst::Intrinsic { b, desc, args, .. } if b.effects().reusable() => {
             Key::Intrinsic(*b, *desc, args.iter().map(c).collect())
         }
+        Inst::GetGlobal { slot, .. } => Key::Global(*slot),
         Inst::Call { func, args, .. } if fx.of(*func).reusable() => {
             Key::Call(*func, args.iter().map(c).collect(), fx.of(*func).reads())
         }
@@ -390,6 +395,16 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
                             ),
                             *src,
                         ));
+                    }
+                }
+                Inst::SetGlobal { slot, src } => {
+                    avail.exprs.retain(|k, _| match k {
+                        Key::Global(g) => g != slot,
+                        Key::Call(_, _, reads) => !reads,
+                        _ => true,
+                    });
+                    if !f.pinned[src.index()] {
+                        stored = Some((Key::Global(*slot), *src));
                     }
                 }
                 i if clobbers_memory(i, fx) => avail.kill_memory(),

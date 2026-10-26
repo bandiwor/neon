@@ -7,6 +7,9 @@
 //! * [`sroa`]: scalar replacement of private structs/enums and removal of write-only private
 //!   objects, from the escape analysis
 //! * [`strings`]: constant string concatenation and merging of adjacent constant prints
+//! * [`tail`]: self tail calls to loops, return duplication, branch threading, boolean diamonds
+//! * [`copies`]: global copy propagation (available copies across blocks and loops)
+//! * [`globals`]: stores to globals nobody reads, unused global slots
 //! * [`licm`]: loop-invariant code motion
 //! * [`dce`]: unreachable-block removal, CFG simplification and dead code
 //!   elimination
@@ -16,13 +19,16 @@
 //! including run-time traps: an operation that would overflow is never folded
 //! away.
 
+pub mod copies;
 pub mod dce;
 pub mod fold;
+pub mod globals;
 pub mod inline;
 pub mod licm;
 pub mod simplify;
 pub mod sroa;
 pub mod strings;
+pub mod tail;
 
 use super::types::*;
 
@@ -115,6 +121,17 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         }
     };
     simplify(prog, &mut stats);
+    if cfg.simplify {
+        // after the first round the call, its result move and the return are next to each other
+        let mut any = 0;
+        for (i, f) in prog.funcs.iter_mut().enumerate() {
+            any += tail::self_tail(f, FuncId(i as u32));
+        }
+        stats.simplified += any;
+        if any > 0 {
+            simplify(prog, &mut stats);
+        }
+    }
     if cfg.inline {
         for _ in 0..3 {
             let n = inline::inline_round(prog, cfg);
@@ -126,6 +143,9 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         }
     }
     if cfg.dce {
+        if globals::prune_globals(prog) > 0 {
+            simplify(prog, &mut stats);
+        }
         stats.removed_funcs += dce::prune_functions(prog);
     }
     stats

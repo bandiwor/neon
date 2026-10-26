@@ -13,6 +13,9 @@ pub fn dce_func(f: &mut IrFunc, fx: &FuncEffects) -> (usize, usize) {
     loop {
         let before = (insts_removed, blocks_removed);
         blocks_removed += remove_unreachable(f);
+        super::tail::thread_known_branches(f);
+        super::tail::merge_bool_diamonds(f);
+        super::tail::dup_returns(f);
         thread_jumps(f);
         blocks_removed += remove_unreachable(f);
         blocks_removed += merge_blocks(f);
