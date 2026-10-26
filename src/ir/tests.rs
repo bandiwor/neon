@@ -1450,3 +1450,39 @@ fn known_closures_are_called_directly_and_curried_ones_fold_away() {
     let src = "fn apply(f: fn(i64) -> i64, v: i64) -> i64 { f(v) }\nfn main() { let a = 5; println(apply(|x: i64| => x * a, 3)); }";
     assert_eq!(run(src), "15\n");
 }
+
+#[test]
+fn unsigned_comparisons_with_zero_are_decided() {
+    let cmps = |ir: &IrProgram, name: &str| count_in(ir, name, |i| matches!(i, Inst::Cmp { .. }));
+    // `0 <= n` holds for every unsigned n, even through a variable that is zero only at this point
+    let src = "fn f(n: u64) -> u64 { var s = 0; for i in 0..=n { s += i; } s }\nprintln(f(4));";
+    let (ir, _) = optimized(src, OptConfig { inline: false, ..OptConfig::default() });
+    assert_eq!(run(src), "10\n");
+    let guards = count_in(&ir, "f", |i| matches!(i, Inst::Cmp { op: crate::runtime::CmpOp::Le, .. }));
+    assert_eq!(guards, 0, "{ir}");
+    // `n >= 0` and `n < 0`
+    let src = "fn f(n: u32) -> i64 { if n >= 0 { 1 } else { 2 } }\nfn g(n: u32) -> i64 { if n < 0 { 1 } else { 2 } }\nprintln(f(0)); println(g(0));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(cmps(&ir, "f") + cmps(&ir, "g"), 0, "{ir}");
+    assert_eq!(run(src), "1\n2\n");
+    // signed values can be below zero
+    let src = "fn f(n: i64) -> i64 { if n >= 0 { 1 } else { 2 } }\nprintln(f(-3));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(cmps(&ir, "f"), 1, "{ir}");
+    assert_eq!(run(src), "2\n");
+}
+
+#[test]
+fn print_followed_by_println_is_one_call() {
+    let src = "fn f(x: i64) { print(x); println(); }\nf(7); f(8);";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count_in(&ir, "f", |i| is_intrinsic(i, crate::builtin::Builtin::Println)), 1, "{ir}");
+    assert_eq!(count_in(&ir, "f", |i| is_intrinsic(i, crate::builtin::Builtin::Print)), 0, "{ir}");
+    assert_eq!(run(src), "7\n8\n");
+    // the value changes in between: not the same x
+    let src = "fn f(var x: i64) { print(x); x += 1; println(); println(x); }\nf(7);";
+    assert_eq!(run(src), "7\n8\n");
+    // a call in between may print
+    let src = "fn g() { print(\"g\"); }\nfn f(x: i64) { print(x); g(); println(); }\nf(7);";
+    assert_eq!(run(src), "7g\n");
+}

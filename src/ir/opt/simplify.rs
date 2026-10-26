@@ -522,6 +522,19 @@ fn algebra(f: &mut IrFunc) -> usize {
                         _ => None,
                     }
                 }
+                // nothing unsigned is below zero: `0 <= x` and `x >= 0` hold, `x < 0` and `0 > x` do not
+                Inst::Cmp { dst, op, ty: CmpTy::Num(n), lhs, rhs }
+                    if n.is_int()
+                        && !n.is_signed()
+                        && !f.pinned[dst.index()]
+                        && match op {
+                            CmpOp::Le | CmpOp::Gt => consts.get(&lhs) == Some(&0),
+                            CmpOp::Ge | CmpOp::Lt => consts.get(&rhs) == Some(&0),
+                            _ => false,
+                        } =>
+                {
+                    Some(Inst::Const { dst, val: Const::Bits(matches!(op, CmpOp::Le | CmpOp::Ge) as u64) })
+                }
                 // comparing a value with itself (not floats: NaN)
                 Inst::Cmp { dst, op, ty, lhs, rhs }
                     if lhs == rhs && !f.pinned[dst.index()] && matches!(ty, CmpTy::Str | CmpTy::Num(_)) =>

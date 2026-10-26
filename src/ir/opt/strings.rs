@@ -90,6 +90,28 @@ pub fn fold_strings(strings: &mut Vec<String>, f: &mut IrFunc, fx: &FuncEffects)
                     while j < insts.len() && insts[j].removable(fx) {
                         j += 1;
                     }
+                    // `print(x); println()` is `println(x)`
+                    if let (
+                        Inst::Intrinsic { b: Builtin::Print, desc, dst: first_dst, args: print_args },
+                        Some(Inst::Intrinsic { b: Builtin::Println, dst: next_dst, args: line_args, .. }),
+                    ) = (&first, insts.get(j))
+                    {
+                        let between_keeps_x = |x: VReg| insts[ii + 1..j].iter().all(|i| i.def() != Some(x));
+                        if let ([x], true, true, true) = (
+                            print_args.as_slice(),
+                            line_args.is_empty(),
+                            uses[first_dst.index()] == 0,
+                            print_args.first().is_some_and(|&x| between_keeps_x(x)),
+                        ) {
+                            let merged =
+                                Inst::Intrinsic { dst: *next_dst, b: Builtin::Println, desc: *desc, args: vec![*x] };
+                            let insts = &mut f.blocks[bi].insts;
+                            insts[j] = merged;
+                            insts.remove(ii);
+                            changes += 1;
+                            continue;
+                        }
+                    }
                     let (Some((_, one)), Some(next), true) =
                         (const_print(&first, &consts, strings), insts.get(j).cloned(), j < insts.len())
                     else {

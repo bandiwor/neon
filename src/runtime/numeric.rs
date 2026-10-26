@@ -408,6 +408,24 @@ pub fn compare(op: CmpOp, ty: NumTy, a: u64, b: u64) -> bool {
 
 // ---- casts -------------------------------------------------------------------------------------
 
+/// Whether `as` between these types leaves the register untouched: the canonical 64-bit form
+/// (signed values sign-extended, unsigned zero-extended) of every value is the same in both.
+pub fn cast_is_identity(from: NumTy, to: NumTy) -> bool {
+    if from == to {
+        return true;
+    }
+    if from.is_float() || to.is_float() {
+        return false;
+    }
+    match (from.is_signed(), to.is_signed()) {
+        (true, true) => to.bits() >= from.bits(),
+        // a negative value must keep its sign-extended bits, which only a 64-bit target shows
+        (true, false) => to.bits() == 64,
+        (false, true) => to.bits() > from.bits() || (to.bits() == 64 && from.bits() == 64),
+        (false, false) => to.bits() >= from.bits(),
+    }
+}
+
 /// `as` conversion between numeric types: integers wrap, floats convert to
 /// integers by saturating (NaN becomes 0), integers to floats round.
 pub fn cast(from: NumTy, to: NumTy, a: u64) -> u64 {
@@ -454,6 +472,27 @@ pub fn const_int(ty: NumTy, v: i128) -> u64 {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn identity_casts_really_keep_the_bits() {
+        for from in NumTy::INTS {
+            for to in NumTy::INTS {
+                let (lo, hi) = (from.min_value(), from.max_value());
+                let mut samples = vec![lo, lo + 1, -1, 0, 1, 127, 128, 255, 256, 65535, 65536, hi - 1, hi];
+                for bits in [7, 8, 15, 16, 31, 32, 63] {
+                    let p = 1i128 << bits;
+                    samples.extend([p - 1, p, p + 1, -p, -p - 1]);
+                }
+                let mut differs = false;
+                for v in samples.into_iter().filter(|v| (lo..=hi).contains(v)) {
+                    let a = wrap_int(from, v);
+                    differs |= cast(from, to, a) != a;
+                }
+                assert_eq!(super::cast_is_identity(from, to), !differs, "{from:?} -> {to:?}");
+            }
+        }
+        assert!(!super::cast_is_identity(NumTy::I32, NumTy::F64));
+    }
+
     #[test]
     fn native_fast_paths_agree_with_the_i128_reference() {
         let mut state = 0x9E37_79B9_7F4A_7C15u64;

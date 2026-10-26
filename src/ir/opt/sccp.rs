@@ -10,7 +10,7 @@
 //! Registers captured by closures (pinned) can change behind the analysis and are always `Bottom`.
 
 use crate::ir::types::*;
-use crate::runtime::numeric;
+use crate::runtime::{numeric, CmpOp};
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 enum Lat {
@@ -52,7 +52,17 @@ fn value_of(inst: &Inst, st: &[Lat]) -> Lat {
             binary(st[lhs.index()], st[rhs.index()], |a, b| numeric::arith(*op, *ty, a, b).ok())
         }
         Inst::Cmp { op, ty: CmpTy::Num(n), lhs, rhs, .. } => {
-            binary(st[lhs.index()], st[rhs.index()], |a, b| Some(numeric::compare(*op, *n, a, b) as u64))
+            let (l, r) = (st[lhs.index()], st[rhs.index()]);
+            // nothing unsigned is below zero, whatever the other side is
+            let decided = match op {
+                CmpOp::Le | CmpOp::Gt if l == Lat::Const(0) && r != Lat::Top => Some(*op == CmpOp::Le),
+                CmpOp::Ge | CmpOp::Lt if r == Lat::Const(0) && l != Lat::Top => Some(*op == CmpOp::Ge),
+                _ => None,
+            };
+            match decided {
+                Some(v) if n.is_int() && !n.is_signed() => Lat::Const(v as u64),
+                _ => binary(l, r, |a, b| Some(numeric::compare(*op, *n, a, b) as u64)),
+            }
         }
         Inst::Neg { ty, src, .. } => unary(st[src.index()], |a| numeric::neg(*ty, a).ok()),
         Inst::BitNot { ty, src, .. } => unary(st[src.index()], |a| Some(numeric::bit_not(*ty, a))),

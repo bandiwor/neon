@@ -239,6 +239,12 @@ impl<'a> FuncEmitter<'a> {
                 self.push_def(Insn::BitNot { ty: *ty, dst: self.s(*dst), src: self.s(*src) }, *dst)
             }
             I::BoolNot { dst, src } => self.push_def(Insn::BoolNot { dst: self.s(*dst), src: self.s(*src) }, *dst),
+            I::Cast { dst, from, to, src } if crate::runtime::numeric::cast_is_identity(*from, *to) => {
+                let (d, s) = (self.s(*dst), self.s(*src));
+                if d != s {
+                    self.push_def(Insn::Move { dst: d, src: s }, *dst);
+                }
+            }
             I::Cast { dst, from, to, src } => {
                 self.push_def(Insn::Cast { from: *from, to: *to, dst: self.s(*dst), src: self.s(*src) }, *dst)
             }

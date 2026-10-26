@@ -7,7 +7,7 @@
 //! then place their argument window just above every slot that is live
 //! across the call, which is what makes the sliding-window convention work.
 
-use crate::ir::{BlockId, IrFunc, VReg};
+use crate::ir::{BlockId, IrFunc, Term, VReg};
 
 /// Marks a virtual register that never appears in the function body.
 pub const NO_SLOT: u16 = u16::MAX;
@@ -56,11 +56,18 @@ impl VSet {
 
 /// Reachable blocks in emission order. Fall-through successors (the `then`
 /// side of a branch, the target of a jump) are placed right after their
-/// predecessor, so most jumps disappear.
+/// predecessor, so most jumps disappear. A branch never falls through into a block that
+/// just returns when its other side continues the code: those exits go to the end, so the
+/// loop that leaves through them keeps its hot path free of jumps.
 pub fn block_layout(f: &IrFunc) -> Vec<BlockId> {
     let mut placed = vec![false; f.blocks.len()];
     let mut order = Vec::with_capacity(f.blocks.len());
     let mut pending = vec![BlockId(0)];
+    let mut exits: Vec<BlockId> = Vec::new();
+    let is_exit = |b: BlockId| {
+        let blk = &f.blocks[b.index()];
+        matches!(blk.term, Term::Return(_) | Term::Unreachable) && blk.insts.len() <= 2
+    };
     while let Some(start) = pending.pop() {
         let mut cur = start;
         loop {
@@ -70,9 +77,14 @@ pub fn block_layout(f: &IrFunc) -> Vec<BlockId> {
             placed[cur.index()] = true;
             order.push(cur);
             let succ = f.blocks[cur.index()].term.successors();
+            let branching = succ.len() == 2 && succ[0] != succ[1];
             let mut next = None;
             for s in succ {
                 if placed[s.index()] {
+                    continue;
+                }
+                if branching && is_exit(s) {
+                    exits.push(s);
                     continue;
                 }
                 if next.is_none() {
@@ -85,6 +97,13 @@ pub fn block_layout(f: &IrFunc) -> Vec<BlockId> {
                 Some(n) => cur = n,
                 None => break,
             }
+        }
+    }
+    // exits reached only from branches are laid out last (or already are)
+    for e in exits {
+        if !placed[e.index()] {
+            placed[e.index()] = true;
+            order.push(e);
         }
     }
     order
@@ -330,6 +349,23 @@ mod tests {
         f.blocks[2].term = Term::Jump(BlockId(3));
         f.blocks[3].term = Term::Return(VReg(0));
         assert_eq!(block_layout(&f), [BlockId(0), BlockId(1), BlockId(3), BlockId(2)]);
+    }
+
+    #[test]
+    fn returning_blocks_go_last_when_the_other_side_continues() {
+        // b0: jump b1 ; b1: branch b2 (ret) / b3 ; b3: jump b1 (a loop that leaves through b2)
+        let mut f = func(1, 1, vec![]);
+        for _ in 0..4 {
+            f.new_block();
+        }
+        f.blocks[0].term = Term::Jump(BlockId(1));
+        f.blocks[1].term = Term::Branch { cond: VReg(0), then: BlockId(2), els: BlockId(3) };
+        f.blocks[2].term = Term::Return(VReg(0));
+        f.blocks[3].term = Term::Jump(BlockId(1));
+        assert_eq!(block_layout(&f), [BlockId(0), BlockId(1), BlockId(3), BlockId(2)]);
+        // a plain jump to a returning block still falls into it
+        f.blocks[0].term = Term::Jump(BlockId(2));
+        assert_eq!(block_layout(&f), [BlockId(0), BlockId(2)]);
     }
 
     #[test]
