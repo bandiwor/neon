@@ -24,7 +24,13 @@ use crate::runtime::NumTy;
 
 /// Runs all simplifications on `f`; returns how many rewrites happened.
 pub fn simplify_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
-    forward_values(f, fx) + algebra(f) + branch_on_negation(f) + split_print_concat(f) + drop_inrange_loads(f, fx)
+    super::sroa::sroa_func(f, fx)
+        + super::sroa::dead_objects(f, fx)
+        + forward_values(f, fx)
+        + algebra(f)
+        + branch_on_negation(f)
+        + split_print_concat(f)
+        + drop_inrange_loads(f, fx)
 }
 
 // ---- helpers ------------------------------------------------------------------------------------

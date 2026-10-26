@@ -1004,3 +1004,157 @@ fn calls_that_could_trap_print_or_allocate_stay_in_loops() {
         assert_eq!(run(src), out, "{name}");
     }
 }
+
+// ---- escape analysis and scalar replacement ------------------------------------------------------
+
+fn func_id(ir: &IrProgram, name: &str) -> super::FuncId {
+    super::FuncId(ir.funcs.iter().position(|f| f.name == name).unwrap_or_else(|| panic!("no function {name}")) as u32)
+}
+
+#[test]
+fn parameter_escape_summaries() {
+    let src = "struct P { x: i64 }\nvar holder = P { x: 0 };\n\
+        fn read(p: P) -> i64 { p.x }\n\
+        fn store(p: P) { holder = p; }\n\
+        fn give(p: P) -> P { p }\n\
+        fn put(var a: [P], p: P) { a.push(p); }\n\
+        fn pass(p: P) -> i64 { read(p) }\n\
+        fn pass_on(p: P) { store(p); }\n\
+        fn count(p: P, n: i64) -> i64 { if n == 0 { p.x } else { count(p, n - 1) } }\n\
+        fn len_of(a: [P]) -> i64 { a.len() }\n\
+        fn main() {\n\
+            let p = P { x: 1 }; var a: [P] = [];\n\
+            read(p); store(p); give(p); put(a, p); pass(p); pass_on(p); count(p, 2); len_of(a);\n\
+        }";
+    let ir = compile(src);
+    let fx = super::analyze_effects(&ir);
+    let esc = |name: &str, i: usize| fx.param_escapes(func_id(&ir, name), i);
+    assert!(!esc("read", 0) && !esc("pass", 0) && !esc("count", 0) && !esc("len_of", 0));
+    assert!(esc("store", 0), "stored in a global");
+    assert!(esc("give", 0), "returned: the result aliases it");
+    assert!(esc("put", 1), "stored in an array");
+    assert!(!esc("put", 0), "the array itself is only written to");
+    assert!(esc("pass_on", 0), "passed on to something that keeps it");
+}
+
+#[test]
+fn writes_to_private_objects_do_not_make_a_function_impure() {
+    let src = "struct P { x: i64 }\n\
+        fn bump(var p: P) { p.x += 1; }\n\
+        fn local_struct() -> i64 { var p = P { x: 1 }; p.x += 1; p.x }\n\
+        fn local_array(n: i64) -> i64 { var a: [i64] = []; var i = 0; while i < n { a.push(i); i += 1; } a.len() }\n\
+        fn build(n: i64) -> [i64] { var a: [i64] = []; a.push(n); a }\n\
+        fn leaky(var a: [i64]) -> i64 { var b = a; b.push(1); b.len() }\n\
+        fn main() { var p = P { x: 0 }; bump(p); println(local_struct()); println(local_array(3)); println(build(1).len()); println(leaky([1])); }";
+    let ir = compile(src);
+    let fx = super::analyze_effects(&ir);
+    let e = |name: &str| effects_of(&ir, &fx, name);
+    assert!(e("bump").writes(), "a parameter is not private");
+    assert!(!e("local_struct").writes() && !e("local_struct").reads(), "{}", e("local_struct"));
+    assert_eq!(e("local_struct").purity(), Purity::Const);
+    assert!(!e("local_array").writes() && !e("local_array").reads(), "{}", e("local_array"));
+    assert_eq!(e("build"), Effects::ALLOCS, "writes to the fresh result are invisible");
+    assert!(e("leaky").writes(), "it changes the caller's array through an alias");
+}
+
+fn count_in(ir: &IrProgram, name: &str, pred: impl Fn(&Inst) -> bool) -> usize {
+    fn_named(ir, name).blocks.iter().flat_map(|b| &b.insts).filter(|i| pred(i)).count()
+}
+
+#[test]
+fn private_structs_become_registers() {
+    let src = "struct P { x: i64, y: i64 }\n\
+        fn dist(a: i64, b: i64) -> i64 { let p = P { x: a, y: b }; var q = P { x: p.y, y: p.x }; q.x += 1; q.x * q.y }\n\
+        fn main() { println(dist(2, 3)); println(dist(5, 1)); }";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(
+        count_in(&ir, "dist", |i| matches!(i, Inst::NewStruct { .. } | Inst::GetField { .. } | Inst::SetField { .. })),
+        0,
+        "{ir}"
+    );
+    assert_eq!(run(src), "8\n10\n");
+    // one allocation per iteration of a loop: the fields are rewritten each time
+    let src = "struct P { x: i64, y: i64 }\nfn f(n: i64) -> i64 { var s = 0; var i = 0; while i < n { let p = P { x: i, y: 2 }; s += p.x * p.y; i += 1; } s }\nprintln(f(5)); println(f(0));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count_in(&ir, "f", |i| matches!(i, Inst::NewStruct { .. })), 0, "{ir}");
+    assert_eq!(run(src), "20\n0\n");
+}
+
+#[test]
+fn escaping_structs_keep_their_allocation() {
+    let keep = |src: &str, name: &str, out: &str| {
+        let (ir, _) = optimized(src, only_simplify());
+        assert_eq!(count_in(&ir, name, |i| matches!(i, Inst::NewStruct { .. })), 1, "{name}: {ir}");
+        assert_eq!(run(src), out, "{name}");
+    };
+    keep("struct P { x: i64 }\nfn mk(a: i64) -> P { P { x: a } }\nprintln(mk(3).x);", "mk", "3\n");
+    keep(
+        "struct P { x: i64 }\nvar g = P { x: 0 };\nfn f(a: i64) { let p = P { x: a }; g = p; }\nf(4); println(g.x);",
+        "f",
+        "4\n",
+    );
+    keep(
+        "struct P { x: i64 }\nfn f(a: i64) -> i64 { var v: [P] = []; v.push(P { x: a }); v[0].x }\nprintln(f(6));",
+        "f",
+        "6\n",
+    );
+    keep(
+        "struct P { x: i64 }\nfn read(p: P) -> i64 { p.x }\nfn f(a: i64) -> i64 { read(P { x: a }) }\nprintln(f(7));",
+        "f",
+        "7\n",
+    );
+    // a closure that captures it
+    keep(
+        "struct P { x: i64 }\nfn f(a: i64) -> i64 { let p = P { x: a }; let g = || => p.x; g() }\nprintln(f(8));",
+        "f",
+        "8\n",
+    );
+}
+
+#[test]
+fn aliases_are_not_split() {
+    // `q` and `p` are one object
+    let src = "struct P { x: i64 }\nfn f() -> i64 { var p = P { x: 1 }; var q = p; q.x = 5; p.x }\nprintln(f());";
+    assert_eq!(run(src), "5\n");
+    let src = "struct P { x: i64 }\nfn f(c: bool) -> i64 { var p = P { x: 1 }; var q = P { x: 2 }; if c { q = p; } q.x = 9; p.x * 10 + q.x }\nprintln(f(true)); println(f(false));";
+    assert_eq!(run(src), "99\n19\n");
+}
+
+#[test]
+fn matches_on_private_enums_are_decided_at_compile_time() {
+    let src = "fn f(a: i64) -> i64 { let o = Option::Some(a); match o { Option::Some(x) => x + 1, Option::None => 0 } }\n\
+        fn g(a: i64) -> i64 { let o: Option<i64> = if a > 0 { Option::Some(a) } else { Option::None }; match o { Option::Some(x) => x, Option::None => -1 } }\n\
+        fn main() { println(f(4)); println(g(3)); println(g(-3)); }";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(
+        count_in(&ir, "f", |i| matches!(i, Inst::NewEnum { .. } | Inst::EnumTag { .. } | Inst::EnumField { .. })),
+        0,
+        "{ir}"
+    );
+    assert!(fn_named(&ir, "f").blocks.iter().all(|b| !matches!(b.term, super::Term::BranchTag { .. })), "{ir}");
+    assert_eq!(run(src), "5\n3\n-1\n");
+}
+
+#[test]
+fn write_only_private_objects_disappear_with_their_writes() {
+    use crate::builtin::Builtin;
+    let src = "fn build(n: i64) -> i64 { var log: [i64] = []; var i = 0; while i < n { log.push(i); i += 1; } n * 2 }\nfn main() { println(build(3)); }";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(
+        count_in(&ir, "build", |i| matches!(i, Inst::NewArray { .. }) || is_intrinsic(i, Builtin::ArrPush)),
+        0,
+        "{ir}"
+    );
+    assert_eq!(run(src), "6\n");
+    // read, returned or handed on: it stays
+    let src = "fn f(n: i64) -> i64 { var a: [i64] = []; a.push(n); a.len() }\nprintln(f(2));";
+    let (ir, _) = optimized(src, only_simplify());
+    assert_eq!(count_in(&ir, "f", |i| is_intrinsic(i, Builtin::ArrPush)), 1, "{ir}");
+    assert_eq!(run(src), "1\n");
+    assert_eq!(
+        run("fn f(var a: [i64]) { var b: [i64] = []; b.push(1); a.push(2); }\nvar x = [0]; f(x); println(x.len());"),
+        "2\n"
+    );
+    // popping can trap on an empty array: not a write-only use
+    assert_eq!(trap_of("fn f() { var a: [i64] = []; a.pop(); }\nf();"), Trap::EmptyArray);
+}

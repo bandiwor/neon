@@ -6,6 +6,7 @@
 //! * [`print`], [`verify`] — textual form and well-formedness checks
 
 pub mod effects;
+pub mod escape;
 pub mod interp;
 pub mod lower;
 pub mod opt;

@@ -18,6 +18,8 @@ use crate::runtime::numeric::ArithOp;
 #[derive(Debug, Clone, Default)]
 pub struct FuncEffects {
     per_func: Vec<Effects>,
+    /// `[function][parameter]`: may the object passed there escape (see [`super::escape`])?
+    params_escape: super::escape::ParamEscapes,
 }
 
 impl FuncEffects {
@@ -28,6 +30,15 @@ impl FuncEffects {
 
     pub fn of(&self, f: FuncId) -> Effects {
         self.per_func.get(f.index()).copied().unwrap_or(Effects::ALL)
+    }
+
+    /// May the object passed as parameter `i` of `f` outlive the call? Unknown means yes.
+    pub fn param_escapes(&self, f: FuncId, i: usize) -> bool {
+        self.params_escape.get(f.index()).and_then(|p| p.get(i)).copied().unwrap_or(true)
+    }
+
+    pub fn escapes(&self) -> &super::escape::ParamEscapes {
+        &self.params_escape
     }
 
     pub fn purity(&self, f: FuncId) -> Purity {
@@ -126,16 +137,34 @@ fn has_loop(f: &IrFunc) -> bool {
     false
 }
 
+/// The object an instruction reads or writes, when it only touches that one object's own slots.
+fn touched_object(i: &Inst) -> Option<VReg> {
+    match i {
+        Inst::GetField { obj, .. } | Inst::SetField { obj, .. } => Some(*obj),
+        Inst::ArrayGet { arr, .. } | Inst::ArraySet { arr, .. } => Some(*arr),
+        Inst::MapGet { map, .. } | Inst::MapSet { map, .. } => Some(*map),
+        Inst::Intrinsic { b, args, .. } if b.is_container_op() => args.first().copied(),
+        _ => None,
+    }
+}
+
 /// Effects of a function's own instructions, ignoring what its callees do (but a loop may not
-/// terminate).
-fn local_effects(f: &IrFunc) -> Effects {
+/// terminate). Reads and writes of objects the function allocates and keeps to itself do not count:
+/// nothing outside can tell.
+fn local_effects(f: &IrFunc, escapes: &super::escape::ParamEscapes) -> Effects {
     let none = FuncEffects::unknown();
+    let classes = super::escape::classify(f, escapes);
     let mut e = Effects::NONE;
     for b in &f.blocks {
         for i in &b.insts {
-            if !matches!(i, Inst::Call { .. }) {
-                e |= i.effects(&none);
+            if matches!(i, Inst::Call { .. }) {
+                continue;
             }
+            let mut ie = i.effects(&none);
+            if touched_object(i).is_some_and(|o| classes.is_local(o)) {
+                ie = ie.without(Effects::READS.union(Effects::WRITES));
+            }
+            e |= ie;
         }
     }
     if has_loop(f) {
@@ -221,7 +250,8 @@ fn components(graph: &[Vec<usize>]) -> Vec<Vec<usize>> {
 /// Computes the effect summary of every function of `prog`.
 pub fn analyze(prog: &IrProgram) -> FuncEffects {
     let graph = call_graph(prog);
-    let local: Vec<Effects> = prog.funcs.iter().map(local_effects).collect();
+    let params_escape = super::escape::param_escapes(prog);
+    let local: Vec<Effects> = prog.funcs.iter().map(|f| local_effects(f, &params_escape)).collect();
     let mut summary = local.clone();
     // Tarjan yields components callees first, so a component only needs its callees' final values
     for comp in components(&graph) {
@@ -240,7 +270,7 @@ pub fn analyze(prog: &IrProgram) -> FuncEffects {
             summary[f] = shared;
         }
     }
-    FuncEffects { per_func: summary }
+    FuncEffects { per_func: summary, params_escape }
 }
 
 /// One line per function: purity, effects, size. For `neon ir --effects`.

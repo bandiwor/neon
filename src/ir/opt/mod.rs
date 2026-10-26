@@ -4,6 +4,8 @@
 //!   copy propagation
 //! * [`simplify`]: value forwarding / common subexpressions, algebraic identities, `print(a + b)`
 //!   splitting and dead element loads
+//! * [`sroa`]: scalar replacement of private structs/enums and removal of write-only private
+//!   objects, from the escape analysis
 //! * [`strings`]: constant string concatenation and merging of adjacent constant prints
 //! * [`licm`]: loop-invariant code motion
 //! * [`dce`]: unreachable-block removal, CFG simplification and dead code
@@ -19,6 +21,7 @@ pub mod fold;
 pub mod inline;
 pub mod licm;
 pub mod simplify;
+pub mod sroa;
 pub mod strings;
 
 use super::types::*;

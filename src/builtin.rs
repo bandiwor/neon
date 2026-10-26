@@ -156,6 +156,67 @@ impl Builtin {
         }
     }
 
+    /// Whether the object passed as argument `i` may outlive the call: stored in the heap or handed
+    /// back in the result. Everything not listed only looks at its arguments. Exhaustive on purpose.
+    pub fn retains_arg(self, i: usize) -> bool {
+        use Builtin::*;
+        match self {
+            // the value being added to a container
+            ArrPush | SetInsert => i == 1,
+            ArrInsert => i == 2,
+            MapInsert => i >= 1,
+            // the default may be the result
+            MapGetOr => i == 2,
+            Print | Println | Input | Panic | Assert | ToString | StrConcat | StrLen | StrIsEmpty | StrChars
+            | StrSubstring | StrContains | StrStartsWith | StrEndsWith | StrToUpper | StrToLower | StrTrim
+            | StrSplit | StrCharAt | StrFind | StrParseI64 | StrParseF64 | ArrLen | ArrIsEmpty | ArrPop | ArrClear
+            | ArrContains | ArrRemove | ArrReverse | ArrClone | ArrJoin | ArrSort | MapLen | MapIsEmpty
+            | MapContainsKey | MapRemove | MapKeys | MapValues | MapClear | SetLen | SetIsEmpty | SetContains
+            | SetRemove | SetToArray | SetClear | Abs | Pow | Min | Max | Sqrt | Sin | Cos | Tan | Floor | Ceil
+            | Round | Ln | Exp | IsNan | CharIsDigit | CharIsAlphabetic | CharIsWhitespace | CharToUpper
+            | CharToLower | StrTryParseI64 | StrTryParseF64 | StrGetChar | StrTrySubstring | StrIndexOf | ArrGet
+            | ArrTryPop | ArrTryRemove | MapGet | CheckedAdd | CheckedSub | CheckedMul | CheckedDiv | CheckedRem
+            | CheckedPow | CheckedNeg | CheckedShl | CheckedShr | ReadLine => false,
+        }
+    }
+
+    /// Builtins that work on the container in argument 0 alone: its length, its slots, the values put
+    /// into it. On an object that nothing else can see, their reads and writes are invisible.
+    pub fn is_container_op(self) -> bool {
+        use Builtin::*;
+        matches!(
+            self,
+            ArrLen
+                | ArrIsEmpty
+                | ArrPush
+                | ArrPop
+                | ArrClear
+                | ArrInsert
+                | ArrRemove
+                | ArrReverse
+                | ArrGet
+                | ArrTryPop
+                | ArrTryRemove
+                | MapLen
+                | MapIsEmpty
+                | MapInsert
+                | MapGetOr
+                | MapContainsKey
+                | MapRemove
+                | MapKeys
+                | MapValues
+                | MapClear
+                | MapGet
+                | SetLen
+                | SetIsEmpty
+                | SetInsert
+                | SetContains
+                | SetRemove
+                | SetToArray
+                | SetClear
+        )
+    }
+
     /// const / pure / impure.
     pub fn purity(self) -> Purity {
         self.effects().purity()

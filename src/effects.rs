@@ -53,6 +53,11 @@ impl Effects {
         Effects(self.0 | other.0)
     }
 
+    /// These effects minus `other`.
+    pub const fn without(self, other: Effects) -> Effects {
+        Effects(self.0 & !other.0)
+    }
+
     pub const fn contains(self, other: Effects) -> bool {
         self.0 & other.0 == other.0
     }
