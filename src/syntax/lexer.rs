@@ -663,7 +663,8 @@ impl<'a> Lexer<'a> {
             self.pending.extend(toks);
             self.push(TokenKind::FStrClose, rest, rest);
             self.push(TokenKind::FStrEnd, rest, rest);
-            self.pos = rest + 1;
+            // no closing quote before the end of the file: do not step past it
+            self.pos = (rest + 1).min(self.src.len());
             let _ = string_lo;
             return;
         };
@@ -1160,6 +1161,15 @@ mod tests {
         assert_eq!(last_str.span.lo, 8);
         assert_eq!(last_str.span.hi as usize, "let s = \"abc\nlet t = 1;".len());
         assert_eq!(out.tokens.last().unwrap().kind, Eof);
+    }
+
+    #[test]
+    fn a_format_field_cut_off_by_the_end_of_the_file_does_not_run_past_it() {
+        for src in ["println(f\"[{", "let k = f\"k{", "f\"{x:", "f\"{x:{", "f\"{x:{y"] {
+            let out = lex(src);
+            assert!(out.error_codes().contains(&"E0007") || out.error_codes().contains(&"E0002"), "{src}");
+            assert_eq!(out.tokens.last().unwrap().kind, Eof, "{src}");
+        }
     }
 
     #[test]

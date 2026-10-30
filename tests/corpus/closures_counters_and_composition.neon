@@ -1,0 +1,41 @@
+// closures, captured vars in loops, recursion, global state
+var counter = 0;
+fn bump() -> i64 { counter += 1; counter }
+fn make_adder(n: i64) -> fn(i64) -> i64 { |x: i64| => x + n }
+fn make_counter() -> fn() -> i64 {
+    var c = 0;
+    || => { c += 1; c }
+}
+fn compose(f: fn(i64) -> i64, g: fn(i64) -> i64) -> fn(i64) -> i64 { |x: i64| => g(f(x)) }
+fn fib(n: i64) -> i64 { if n < 2 { n } else { fib(n - 1) + fib(n - 2) } }
+fn apply_n(f: fn(i64) -> i64, n: i64, x: i64) -> i64 {
+    var r = x;
+    for _ in 0..n { r = f(r); }
+    r
+}
+fn main() {
+    println(bump() + bump() * 10);
+    let add5 = make_adder(5);
+    println(add5(10));
+    let c1 = make_counter();
+    let c2 = make_counter();
+    println(c1()); println(c1()); println(c2()); println(c1());
+    let both = compose(add5, make_adder(100));
+    println(both(1));
+    var fs: [fn() -> i64] = [];
+    for i in 0..4 { fs.push(|| => i * i); }
+    for f in fs { print(f()); print(" "); }
+    println("");
+    var acc = [0];
+    let push = |v: i64| => { acc.push(v); acc.len() };
+    println(push(7)); println(push(8));
+    println(acc);
+    println(fib(20));
+    println(apply_n(|x: i64| => x * 2, 10, 1));
+    let words = ["a", "bb", "ccc"];
+    var total = 0;
+    for w in words { let n = w.len(); let f = || => n * 2; total += f(); }
+    println(total);
+    let nested = |a: i64| => |b: i64| => |c: i64| => a * 100 + b * 10 + c;
+    println(nested(1)(2)(3));
+}

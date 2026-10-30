@@ -1,0 +1,19 @@
+fn main() {
+    let n = 42; let neg = -42; let pi = 3.14159; let big = 1234567.891; let s = "héllo"; let u: u64 = 18446744073709551615;
+    for spec in ["", "d", "5", "<5", ">5", "^5", "*^9", "05", "+", " ", "x", "X", "#x", "#b", "#o", "b", "o", ",", "_", "_x"] {
+        println(f"[{n.format(spec)}] [{neg.format(spec)}]");
+    }
+    for spec in ["", "f", ".2f", "10.3f", "<10.1f", "e", ".3e", "E", "g", ".3g", "G", "%", ".1%", ",.2f", "+.1f", "010.2f", "#g", "08"] {
+        println(f"[{pi.format(spec)}] [{big.format(spec)}] [{(0.0 / 0.0).format(spec)}] [{(-1.0 / 0.0).format(spec)}]");
+    }
+    for spec in ["", "s", ">8", "<8", "^8", "-^9", ".2", "8.2"] {
+        println(f"[{s.format(spec)}]");
+    }
+    println(u.format(","));
+    println(u.format("x"));
+    println(true.format("") + "|" + true.format(">6") + "|" + true.format("d"));
+    println('x'.format("") + "|" + 'x'.format(">3") + "|" + 'x'.format("d"));
+    println((1.0e-7).format("") + "|" + (1.0e22).format("g") + "|" + (123456789.0).format("g") + "|" + (0.0001234).format("g"));
+    println(f"{1e100}|{1.5e300:e}|{5e-324}");
+    println(f"{255:08b}|{-255:+#x}|{1000000:_}|{12345.6789:,.1f}");
+}

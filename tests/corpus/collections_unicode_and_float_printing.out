@@ -1,0 +1,40 @@
+{"b": [1, 2], "a": [3], "c": []}
+true
+false
+["b", "c"]
+[[1, 2], []]
+set{"x", "z", "w"}
+["x", "z", "w"]
+[-2.25, 1.0, 3.5, 10.0, NaN]
+["Zed", "apple", "fig", "pear", "été"]
+Zed|apple|fig|pear|été
+HÉLLO WÖRLD ÄÖÜ Ñ
+héllo wörld
+5
+é
+él
+2
+["a", "b", "c"]
+["a", "b", "c"]
+x y|
+[P { name: "ann", age: 3 }, P { name: "bob", age: -4 }]
+[Shape::Circle(1.5), Shape::Rect(2.0, 3.0), Shape::Empty]
+set{3, 1, 2}
+{1: "one", 2: "two"}
+["a\"b", "c\nd"]
+['a', '\'', '\n']
+1e20
+1.5e-7
+0.30000000000000004
+100.0
+1000000000000000.0
+123456789.125
+1e16
+0.0001
+1e-5
+-0.0
+inf
+-inf
+0.1
+0.3
+16777216.0

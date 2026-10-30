@@ -36,6 +36,7 @@ neon check <file>     report errors without running
 neon disasm <file>    print the bytecode (-a / --annotate: a `# r1 = r1 + 4` note on every line)
 neon ir <file>        print the optimized intermediate representation (--effects: and the
                       const / pure / impure verdict for every function)
+neon c <file>         translate to one self-contained C file (stdout, or -o out.c)
 neon repl             interactive session
 neon fmt <file>...    formatter (-w rewrites files, --check verifies, no file = stdin)
 neon lsp              language server on stdin/stdout (see "Editor support")
@@ -309,6 +310,46 @@ non-escaping class is *private*: nothing outside the function can tell what happ
 * Heap handles are 1-based; 0 is null. With `--gc-limit` the heap has a hard
   cap and traps with *out of memory* only if live data exceeds it.
 
+### Translation to C
+
+`neon c program.neon -o program.c` writes the optimized IR as **one independent C99 file**
+that builds with any C compiler and cross-compiles like any C program:
+
+```sh
+neon c tests/corpus/sample_sieve.neon -o sieve.c && cc -O2 sieve.c -o sieve -lm
+```
+
+The file is laid out in the order a reader wants it: the `#include`s, the runtime's declarations
+(hint macros, types, prototypes), the program's declarations (globals, string constants,
+prototypes), the program's functions, `main`, and last the runtime's implementation. **Nothing
+unused is emitted**: the runtime is cut into small pieces (a string builder, `arr_sort`, the
+collector, each checked `add_i32`, ...) that are pulled in through their dependencies, so
+`println(1 + 2)` produces a file without a collector, maps or string functions. **Every function is
+`static`** and none is `inline` (the compiler decides).
+
+* Registers become typed locals (`int32_t v3`, `Obj *v7`); containers hold 64-bit words.
+  Control flow is `goto` in the layout order of the bytecode compiler, so most jumps are
+  fall-throughs. Single-assignment constants are folded into their uses.
+* Integer arithmetic traps like the VM does (`add_i32`, `div_i64`, ... use
+  `__builtin_*_overflow`); casts, float formatting (`1.0`, `1e16`, `NaN`), `{x:>8.2f}`
+  format specifiers, UTF-8 strings and insertion-ordered maps behave like the VM — a
+  differential test builds every corpus program with the system C compiler and compares.
+* Runtime errors print `runtime error: ...` to stderr and exit with status 2, like `neon run`;
+  recursion deeper than `NEON_MAX_DEPTH` (20000, `-DNEON_MAX_DEPTH=n`) is a stack overflow.
+* Memory is a precise mark-and-sweep collector: functions that hold references register them in a
+  `Frame` (only those that can reach an allocation), collections run at `GC_POINT()`s
+  before allocating instructions, variables captured by closures live in shared heap cells.
+  `-DNEON_GC_STRESS` collects at every safe-point.
+* Compiler hints, guarded by `__GNUC__`/`__clang__` so other compilers still work: `LIKELY` /
+  `UNLIKELY` on every trap check, `NORETURN COLD` on the trap functions, `CONST_FN` / `PURE_FN` on
+  user functions the effect analysis proves free of side effects (not recursive, no allocation,
+  no traps; reading memory only for `PURE_FN`).
+* Limits: structs and enum variants with more than 64 fields are rejected; case mapping and
+  `is_alphabetic` cover ASCII, Latin, Greek, Cyrillic and the common CJK / kana / Hangul ranges
+  (no full Unicode tables); the checked arithmetic needs GCC or Clang.
+  Not tried here for lack of a sysroot: a real cross build (the code assumes only C99, 8/16/32/64-bit
+  integers, IEEE floats and 32- or 64-bit pointers).
+
 ### WebAssembly
 
 The compiler, analyzer and VM never touch `std::fs` or the process streams.
@@ -330,6 +371,10 @@ Highlights:
   compiled under every optimizer setting, executed by the reference
   interpreter and by the VM, with and without a collection at *every*
   safe-point, and run through the real binary.
+* `tests/phase13_c.rs` — the C backend: every corpus program is translated, built with `-Wall -Wextra
+  -Werror -pedantic` (also with `-DNEON_GC_STRESS`), run and compared with the VM; run-time errors,
+  `input()`/`read_line()` and the file layout (sections, `static`-only, unused pieces left out) are
+  checked as well. The test skips itself when there is no C compiler.
 * `tests/phase9_math.rs` — boundary-value arithmetic for every numeric type,
   operator and cast, VM against interpreter.
 * `tests/phase8_gc.rs`, `src/gc/tests.rs` — collector behavior under restricted

@@ -19,6 +19,7 @@ Commands:
   run <file>      compile and run a program (the default for `neon <file>`)
   check <file>    report errors without running
   disasm <file>   print the compiled bytecode (--annotate adds pseudo-code to every line)
+  c <file>        translate to one self-contained C file (stdout, or -o <out.c>)
   ir <file>       print the (optimized) intermediate representation (--effects: and what each
                   function can do: const / pure / impure, traps, allocates, ...)
   repl            start an interactive session
@@ -34,6 +35,7 @@ Options:
   --max-steps <n>     stop with a panic after n instructions
   --max-frames <n>    maximum call depth
   --stats             print collector statistics to stderr after the run
+  -o, --output <file> (c) write the C source to a file instead of stdout
   -a, --annotate      (disasm) explain every instruction as `# r1 = r1 + 4`
   -w, --write         (fmt) rewrite the files in place
   --check             (fmt) exit with status 1 if a file is not formatted
@@ -53,6 +55,7 @@ enum Command {
     Run,
     Check,
     Disasm,
+    C,
     Ir,
     Repl,
     Lsp,
@@ -69,6 +72,7 @@ struct Args {
     check: bool,
     annotate: bool,
     effects: bool,
+    output: Option<String>,
     opts: Options,
     vm: VmConfig,
     stats: bool,
@@ -100,6 +104,7 @@ fn parse_args(args: &[String]) -> Parsed {
     let mut check = false;
     let mut annotate = false;
     let mut effects = false;
+    let mut output = None;
     let mut opts = Options { opt: OptConfig::default(), compile: CompileOptions { peephole: true } };
     let mut vmcfg = VmConfig::default();
     let mut gc = GcConfig::default();
@@ -129,6 +134,10 @@ fn parse_args(args: &[String]) -> Parsed {
             "--check" => check = true,
             "-a" | "--annotate" => annotate = true,
             "--effects" => effects = true,
+            "-o" | "--output" => match value("--output") {
+                Ok(v) => output = Some(v),
+                Err(e) => return usage(e),
+            },
             // editors launch `neon lsp --stdio`; stdio is the only transport
             "--stdio" => {}
             "--gc-limit" => match value("--gc-limit").and_then(|v| parse_size(&v).ok_or(format!("bad size `{v}`"))) {
@@ -153,6 +162,7 @@ fn parse_args(args: &[String]) -> Parsed {
             "run" if command.is_none() && file.is_none() => command = Some(Command::Run),
             "check" if command.is_none() && file.is_none() => command = Some(Command::Check),
             "disasm" if command.is_none() && file.is_none() => command = Some(Command::Disasm),
+            "c" if command.is_none() && file.is_none() => command = Some(Command::C),
             "ir" if command.is_none() && file.is_none() => command = Some(Command::Ir),
             "repl" if command.is_none() && file.is_none() => command = Some(Command::Repl),
             "lsp" if command.is_none() && file.is_none() => command = Some(Command::Lsp),
@@ -172,7 +182,7 @@ fn parse_args(args: &[String]) -> Parsed {
     if !matches!(command, Command::Repl | Command::Lsp | Command::Fmt) && file.is_none() {
         return usage("this command needs a file".to_string());
     }
-    Parsed::Go(Args { command, file, files, write, check, annotate, effects, opts, vm: vmcfg, stats })
+    Parsed::Go(Args { command, file, files, write, check, annotate, effects, output, opts, vm: vmcfg, stats })
 }
 
 /// Reads the compiler's verdict: prints diagnostics and returns `None` on errors.
@@ -288,6 +298,28 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
     let Some(compiled) = compile_or_report(compiled, stderr) else { return EXIT_COMPILE };
     match args.command {
         Command::Check => EXIT_OK,
+        Command::C => {
+            let ir = compiled.ir.as_ref().expect("ir");
+            let text = match crate::cgen::emit_c(ir) {
+                Ok(t) => t,
+                Err(e) => {
+                    let _ = writeln!(stderr, "error: {e}");
+                    return EXIT_COMPILE;
+                }
+            };
+            match &args.output {
+                Some(path) => {
+                    if let Err(e) = vfs.write(path, &text) {
+                        let _ = writeln!(stderr, "error: cannot write {path}: {e}");
+                        return EXIT_RUNTIME;
+                    }
+                }
+                None => {
+                    let _ = stdout.write_all(text.as_bytes());
+                }
+            }
+            EXIT_OK
+        }
         Command::Ir => {
             let ir = compiled.ir.as_ref().expect("ir");
             if args.effects {
@@ -448,6 +480,22 @@ mod tests {
         // the `run` command is the default
         let (code, out, _) = go(&["p.neon"], &[("p.neon", src)], "Bob\n");
         assert_eq!((code, out.as_str()), (0, "hi Bob\n42\n"));
+    }
+
+    #[test]
+    fn the_c_command_prints_one_translation_unit() {
+        let files = [("p.neon", "println(f\"{1 + 2}\");")];
+        let (code, out, err) = go(&["c", "p.neon"], &files, "");
+        assert_eq!((code, err.as_str()), (EXIT_OK, ""));
+        assert!(out.starts_with("/* Generated by the Neon compiler") && out.contains("int main(void)"), "{out}");
+        // `--no-opt` changes the code, a compile error still exits 1, a missing file is a usage error
+        let (_, plain, _) = go(&["c", "--no-opt", "p.neon"], &files, "");
+        assert_ne!(plain, out);
+        let (code, _, err) = go(&["c", "bad.neon"], &[("bad.neon", "println(y);")], "");
+        assert_eq!(code, EXIT_COMPILE);
+        assert!(err.contains("error["), "{err}");
+        let (code, _, _) = go(&["c"], &[], "");
+        assert_eq!(code, EXIT_USAGE);
     }
 
     #[test]

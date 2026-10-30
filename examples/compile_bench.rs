@@ -36,7 +36,9 @@ fn loops(n: usize) -> String {
 }
 
 fn main() {
-    if let Some(t) = std::env::var("NEON_THREADS").ok().and_then(|v| v.parse().ok()) { neon::par::set_threads(t); }
+    if let Some(t) = std::env::var("NEON_THREADS").ok().and_then(|v| v.parse().ok()) {
+        neon::par::set_threads(t);
+    }
     let programs: Vec<(&str, String)> = vec![
         ("hello (prelude only)", "println(\"hi\");".to_string()),
         ("10 functions", big(10)),
