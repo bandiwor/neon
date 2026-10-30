@@ -334,8 +334,15 @@ collector, each checked `add_i32`, ...) that are pulled in through their depende
   `__builtin_*_overflow`); casts, float formatting (`1.0`, `1e16`, `NaN`), `{x:>8.2f}`
   format specifiers, UTF-8 strings and insertion-ordered maps behave like the VM — a
   differential test builds every corpus program with the system C compiler and compares.
-* Runtime errors print `runtime error: ...` to stderr and exit with status 2, like `neon run`;
-  recursion deeper than `NEON_MAX_DEPTH` (20000, `-DNEON_MAX_DEPTH=n`) is a stack overflow.
+* Runtime errors print `runtime error: ...` to stderr and exit with status 2, like `neon run`.
+* **Debug and release are one macro.** By default (and with `-DNEON_CHECKS=1`) the file is a checked
+  build: integer overflow, division by zero, bad shifts and recursion deeper than `NEON_MAX_DEPTH`
+  (20000, `-DNEON_MAX_DEPTH=n`) end the program with an error. `cc -O3 -DNDEBUG` (or
+  `-DNEON_CHECKS=0`) is the release build: integers wrap around, division by zero and `MIN / -1` are
+  left to C (undefined), shift counts are masked, and the recursion is not counted. The checks, the
+  trap functions and the overflow macros disappear from what the C compiler sees. Array bounds, map
+  keys, parsing, `assert` and `panic` stay checked in both, and `checked_add` & co. keep returning
+  `Option`.
 * Memory is a precise mark-and-sweep collector: functions that hold references register them in a
   `Frame` (only those that can reach an allocation), collections run at `GC_POINT()`s
   before allocating instructions, variables captured by closures live in shared heap cells.
@@ -344,6 +351,10 @@ collector, each checked `add_i32`, ...) that are pulled in through their depende
   `UNLIKELY` on every trap check, `NORETURN COLD` on the trap functions, `CONST_FN` / `PURE_FN` on
   user functions the effect analysis proves free of side effects (not recursive, no allocation,
   no traps; reading memory only for `PURE_FN`).
+* IR inlining is left on, `--no-inline` turns it off. Measured with gcc -O3 on small programs, turning
+  it off made structure- and closure-heavy code about 4.5x slower (the IR optimizer then no longer
+  removes the temporary objects and the closure calls, which the C compiler cannot see through the
+  collector's heap), `fib` 1.2-1.6x slower, and changed nothing for plain loops.
 * Limits: structs and enum variants with more than 64 fields are rejected; case mapping and
   `is_alphabetic` cover ASCII, Latin, Greek, Cyrillic and the common CJK / kana / Hangul ranges
   (no full Unicode tables); the checked arithmetic needs GCC or Clang.

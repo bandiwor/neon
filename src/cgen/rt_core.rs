@@ -5,6 +5,22 @@ use super::rt::{Kind::*, Piece};
 
 pub static PIECES: &[Piece] = &[
     Piece {
+        name: "checks",
+        deps: &[],
+        hdrs: &[],
+        kind: Decl,
+        src: r##"/* Debug or release. Checked (debug) builds trap on integer overflow, division by zero, bad shifts and
+ * too deep recursion; with -DNDEBUG (or -DNEON_CHECKS=0) integers wrap around, division by zero is
+ * left to C and the recursion is not counted. Array bounds, map keys, parsing and panics are always checked. */
+#ifndef NEON_CHECKS
+#ifdef NDEBUG
+#define NEON_CHECKS 0
+#else
+#define NEON_CHECKS 1
+#endif
+#endif"##,
+    },
+    Piece {
         name: "hint_expect",
         deps: &[],
         hdrs: &[],
@@ -157,13 +173,20 @@ static size_t gc_nstack, gc_capstack;
     },
     Piece {
         name: "depth",
-        deps: &["hint_expect"],
+        deps: &["checks"],
         hdrs: &[],
         kind: Decl,
-        src: r##"#ifndef NEON_MAX_DEPTH
+        src: r##"#if NEON_CHECKS
+#ifndef NEON_MAX_DEPTH
 #define NEON_MAX_DEPTH 20000   /* deeper recursion is reported as a stack overflow */
 #endif
-static unsigned rt_depth;"##,
+static unsigned rt_depth;
+#define DEPTH_ENTER() do { if (UNLIKELY(++rt_depth > NEON_MAX_DEPTH)) trap_stack(); } while (0)
+#define DEPTH_LEAVE() (rt_depth--)
+#else
+#define DEPTH_ENTER() ((void)0)
+#define DEPTH_LEAVE() ((void)0)
+#endif"##,
     },
     // ---- traps ---------------------------------------------------------------------------
     Piece {

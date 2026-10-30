@@ -28,6 +28,7 @@ Commands:
 
 Options:
   --no-opt            disable IR optimizations (folding, DCE, inlining)
+  --inline / --no-inline  force IR inlining on or off
   --no-peephole       disable the bytecode peephole optimizer
   -j, --threads <n>   compiler threads (0 = all cores, 1 = none; default: NEON_THREADS or all cores)
   --gc-limit <size>   cap the heap (e.g. 512k, 64m); exceeding it traps
@@ -105,6 +106,7 @@ fn parse_args(args: &[String]) -> Parsed {
     let mut annotate = false;
     let mut effects = false;
     let mut output = None;
+    let mut inline = None;
     let mut opts = Options { opt: OptConfig::default(), compile: CompileOptions { peephole: true } };
     let mut vmcfg = VmConfig::default();
     let mut gc = GcConfig::default();
@@ -118,6 +120,8 @@ fn parse_args(args: &[String]) -> Parsed {
             "-h" | "--help" => return Parsed::Exit(USAGE.to_string(), EXIT_OK),
             "-V" | "--version" => return Parsed::Exit(format!("neon {}\n", env!("CARGO_PKG_VERSION")), EXIT_OK),
             "--no-opt" => opts.opt = OptConfig::none(),
+            "--inline" => inline = Some(true),
+            "--no-inline" => inline = Some(false),
             "--no-peephole" => opts.compile.peephole = false,
             "-j" | "--threads" => match value("--threads")
                 .and_then(|v| v.parse::<usize>().map_err(|_| format!("bad thread count `{v}`")))
@@ -179,6 +183,9 @@ fn parse_args(args: &[String]) -> Parsed {
     }
     vmcfg.gc = gc;
     let command = command.unwrap_or(if file.is_some() { Command::Run } else { Command::Repl });
+    if let Some(on) = inline {
+        opts.opt.inline = on;
+    }
     if !matches!(command, Command::Repl | Command::Lsp | Command::Fmt) && file.is_none() {
         return usage("this command needs a file".to_string());
     }

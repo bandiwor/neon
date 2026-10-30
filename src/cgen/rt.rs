@@ -27,7 +27,7 @@ pub fn all() -> Vec<&'static Piece> {
     super::rt_core::PIECES.iter().chain(super::rt_data::PIECES).chain(super::rt_fmt::PIECES).collect()
 }
 
-/// The names of `names` and everything they depend on.
+/// The names in `names` and everything they depend on.
 pub fn closure(names: &BTreeSet<String>) -> BTreeSet<&'static str> {
     let pieces = all();
     let mut out: BTreeSet<&'static str> = BTreeSet::new();

@@ -139,6 +139,29 @@ fn runtime_errors_end_like_the_vms() {
 }
 
 #[test]
+fn release_builds_drop_the_arithmetic_checks_and_debug_builds_keep_them() {
+    let Some(cc) = c_compiler() else { return };
+    let dir = scratch("release");
+    let src = dir.join("p.neon");
+    std::fs::write(&src, "let x: i32 = 2147483647; let y = 1; println(x + y); println(7 / (y - 1 + 1));").unwrap();
+    let c = translate(&src, &[]);
+    let debug = run(&mut Command::new(build(&cc, &dir, "dbg", &c, &[])), "");
+    assert_eq!(debug.code, 2);
+    assert_eq!(debug.err.lines().next(), Some("runtime error: integer overflow"));
+    let release = run(&mut Command::new(build(&cc, &dir, "rel", &c, &["-DNDEBUG"])), "");
+    assert_eq!((release.code, release.out.as_str()), (0, "-2147483648\n7\n"), "{}", release.err);
+    // -DNEON_CHECKS=1 wins over -DNDEBUG
+    let forced = run(&mut Command::new(build(&cc, &dir, "forced", &c, &["-DNDEBUG", "-DNEON_CHECKS=1"])), "");
+    assert_eq!(forced.code, 2);
+    // after the preprocessor a release build contains no trap for arithmetic
+    let pre = Command::new(&cc).args(["-E", "-P", "-DNDEBUG"]).arg(dir.join("rel.c")).output();
+    if let Ok(pre) = pre {
+        let text = String::from_utf8_lossy(&pre.stdout);
+        assert!(!text.contains("trap_overflow") && !text.contains("OVF_"), "{text}");
+    }
+}
+
+#[test]
 fn input_and_end_of_input_behave_like_the_vm() {
     let Some(cc) = c_compiler() else { return };
     let src = "let name = input(); println(\"hi \" + name);\n\

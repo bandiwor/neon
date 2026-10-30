@@ -19,13 +19,17 @@ use crate::runtime::{ArithOp, CmpOp, NumTy};
 /// A runtime function generated for one type (checked arithmetic, conversions).
 struct SysFn {
     src: String,
+    /// Present in release builds too (otherwise it only exists under `NEON_CHECKS`).
+    release: bool,
 }
 
 pub struct Gen<'p> {
     pub prog: &'p IrProgram,
     fx: FuncEffects,
     /// Runtime pieces the program asks for directly.
-    pub needs: BTreeSet<String>,
+    needs: BTreeSet<String>,
+    /// Pieces only the checks of a debug build use (overflow traps, the recursion guard).
+    checked: BTreeSet<String>,
     sys: BTreeMap<String, SysFn>,
     live: Vec<bool>,
     names: Vec<String>,
@@ -42,7 +46,15 @@ pub struct Gen<'p> {
 }
 
 /// The program's code, the runtime pieces it asks for, and the generated runtime functions.
-pub type Generated = (Output, BTreeSet<String>, BTreeMap<String, String>);
+pub type Generated = (Output, Needs, BTreeMap<String, (String, bool)>);
+
+/// Runtime pieces the program asks for: those every build needs, and those only a checked (debug)
+/// build needs.
+#[derive(Debug, Default)]
+pub struct Needs {
+    pub always: BTreeSet<String>,
+    pub checked: BTreeSet<String>,
+}
 
 /// The pieces of the generated program, before they are put in order.
 pub struct Output {
@@ -217,6 +229,7 @@ impl<'p> Gen<'p> {
             prog,
             fx: analyze(prog),
             needs: BTreeSet::new(),
+            checked: BTreeSet::new(),
             sys: BTreeMap::new(),
             live: vec![false; prog.funcs.len()],
             names: vec![String::new(); prog.funcs.len()],
@@ -242,9 +255,25 @@ impl<'p> Gen<'p> {
         }
     }
 
-    fn sysfn(&mut self, name: &str, deps: &[&str], src: String) {
+    /// A piece that only a build with `NEON_CHECKS` uses.
+    fn need_checked(&mut self, names: &[&str]) {
+        self.need("checks");
+        for n in names {
+            self.checked.insert(n.to_string());
+        }
+    }
+
+    /// A generated runtime function. `deps` are what every build needs, `checked_deps` what only a
+    /// checked build does; `release` says whether release builds contain the function at all.
+    fn sysfn(&mut self, name: &str, deps: &[&str], checked_deps: &[&str], release: bool, src: String) {
         self.needs_all(deps);
-        self.sys.entry(name.to_string()).or_insert(SysFn { src });
+        if checked_deps.is_empty() {
+            self.need("checks");
+        } else {
+            self.need_checked(checked_deps);
+        }
+        let e = self.sys.entry(name.to_string()).or_insert(SysFn { src, release });
+        e.release |= release;
     }
 
     // ---- program-wide analyses -----------------------------------------------------------------
@@ -389,7 +418,8 @@ impl<'p> Gen<'p> {
 
     // ---- generated runtime functions --------------------------------------------------------------
 
-    /// The checked arithmetic function for `op` on `ty`.
+    /// The arithmetic function for `op` on `ty`. A checked (debug) build traps on overflow, division by
+    /// zero and bad shifts; a release build wraps around and leaves the rest to C.
     fn arith_fn(&mut self, op: ArithOp, ty: NumTy) -> String {
         let c = num_cty(ty);
         let n = ty.name();
@@ -397,65 +427,79 @@ impl<'p> Gen<'p> {
         let name = format!("{}_{n}", op.name());
         let signed = ty.is_signed();
         let bits = ty.bits();
-        let src = match op {
+        let wide = if bits <= 32 { "uint32_t" } else { "uint64_t" };
+        let (src, deps): (String, &[&str]) = match op {
             ArithOp::Add | ArithOp::Sub | ArithOp::Mul => {
                 let m = op.name().to_uppercase();
-                self.needs_all(&["ovf", "trap_overflow", "hint_expect"]);
-                format!(
-                    "static {c} {name}({c} a, {c} b) {{\n    {c} r;\n    if (UNLIKELY(OVF_{m}(a, b, &r))) trap_overflow();\n    return r;\n}}"
+                let sym = match op {
+                    ArithOp::Add => '+',
+                    ArithOp::Sub => '-',
+                    _ => '*',
+                };
+                (
+                    format!(
+                        "static {c} {name}({c} a, {c} b) {{\n#if NEON_CHECKS\n    {c} r;\n    if (UNLIKELY(OVF_{m}(a, b, &r))) trap_overflow();\n    return r;\n#else\n    return ({c})(({wide})a {sym} ({wide})b);\n#endif\n}}"
+                    ),
+                    &["ovf", "trap_overflow", "hint_expect"],
                 )
             }
             ArithOp::Div => {
-                self.needs_all(&["trap_div0", "trap_overflow", "hint_expect"]);
                 let ovf = if signed {
                     format!("    if (UNLIKELY(a == {min} && b == -1)) trap_overflow();\n")
                 } else {
                     String::new()
                 };
-                format!(
-                    "static {c} {name}({c} a, {c} b) {{\n    if (UNLIKELY(b == 0)) trap_div0();\n{ovf}    return ({c})(a / b);\n}}"
+                (
+                    format!(
+                        "static {c} {name}({c} a, {c} b) {{\n#if NEON_CHECKS\n    if (UNLIKELY(b == 0)) trap_div0();\n{ovf}#endif\n    return ({c})(a / b);\n}}"
+                    ),
+                    &["trap_div0", "trap_overflow", "hint_expect"],
                 )
             }
             ArithOp::Rem => {
-                self.needs_all(&["trap_div0", "hint_expect"]);
                 let minus =
                     if signed { "    if (b == -1) return 0;  /* MIN % -1 is 0, not an overflow */\n" } else { "" };
-                format!(
-                    "static {c} {name}({c} a, {c} b) {{\n    if (UNLIKELY(b == 0)) trap_div0();\n{minus}    return ({c})(a % b);\n}}"
+                (
+                    format!(
+                        "static {c} {name}({c} a, {c} b) {{\n#if NEON_CHECKS\n    if (UNLIKELY(b == 0)) trap_div0();\n{minus}#endif\n    return ({c})(a % b);\n}}"
+                    ),
+                    &["trap_div0", "hint_expect"],
                 )
             }
-            ArithOp::Shl => {
-                self.needs_all(&["trap_shift", "hint_expect"]);
+            ArithOp::Shl | ArithOp::Shr => {
                 let u = unsigned_cty(ty);
-                format!(
-                    "static {c} {name}({c} a, int64_t n) {{\n    if (UNLIKELY((uint64_t)n >= {bits})) trap_shift();\n    return ({c})(({u})a << n);\n}}"
-                )
-            }
-            ArithOp::Shr => {
-                self.needs_all(&["trap_shift", "hint_expect"]);
-                format!(
-                    "static {c} {name}({c} a, int64_t n) {{\n    if (UNLIKELY((uint64_t)n >= {bits})) trap_shift();\n    return ({c})(a >> n);\n}}"
+                let body = if op == ArithOp::Shl {
+                    format!("({c})(({u})a << (n & {}))", bits - 1)
+                } else {
+                    format!("({c})(a >> (n & {}))", bits - 1)
+                };
+                (
+                    format!(
+                        "static {c} {name}({c} a, int64_t n) {{\n#if NEON_CHECKS\n    if (UNLIKELY((uint64_t)n >= {bits})) trap_shift();\n#endif\n    return {body};\n}}"
+                    ),
+                    &["trap_shift", "hint_expect"],
                 )
             }
             ArithOp::And | ArithOp::Or | ArithOp::Xor => unreachable!("bitwise operators are inline"),
         };
-        self.sysfn(&name, &[], src);
+        self.sysfn(&name, &[], deps, true, src);
         name
     }
 
     fn neg_fn(&mut self, ty: NumTy) -> String {
         let (c, n) = (num_cty(ty), ty.name());
         let name = format!("neg_{n}");
-        self.needs_all(&["trap_overflow", "hint_expect"]);
-        let src = if ty.is_signed() {
+        let wide = if ty.bits() <= 32 { "uint32_t" } else { "uint64_t" };
+        let check = if ty.is_signed() {
             let (min, _) = limits(ty);
-            format!(
-                "static {c} {name}({c} a) {{\n    if (UNLIKELY(a == {min})) trap_overflow();\n    return ({c})-a;\n}}"
-            )
+            format!("    if (UNLIKELY(a == {min})) trap_overflow();\n")
         } else {
-            format!("static {c} {name}({c} a) {{\n    if (UNLIKELY(a != 0)) trap_overflow();\n    return 0;\n}}")
+            "    if (UNLIKELY(a != 0)) trap_overflow();\n".to_string()
         };
-        self.sysfn(&name, &[], src);
+        let src = format!(
+            "static {c} {name}({c} a) {{\n#if NEON_CHECKS\n{check}#endif\n    return ({c})(0 - ({wide})a);\n}}"
+        );
+        self.sysfn(&name, &[], &["trap_overflow", "hint_expect"], true, src);
         name
     }
 
@@ -463,16 +507,17 @@ impl<'p> Gen<'p> {
         let (c, n) = (num_cty(ty), ty.name());
         let name = format!("abs_{n}");
         let (min, _) = limits(ty);
+        let wide = if ty.bits() <= 32 { "uint32_t" } else { "uint64_t" };
         let src = format!(
-            "static {c} {name}({c} a) {{\n    if (UNLIKELY(a == {min})) trap_overflow();\n    return a < 0 ? ({c})-a : a;\n}}"
+            "static {c} {name}({c} a) {{\n#if NEON_CHECKS\n    if (UNLIKELY(a == {min})) trap_overflow();\n#endif\n    return a < 0 ? ({c})(0 - ({wide})a) : a;\n}}"
         );
-        self.sysfn(&name, &["trap_overflow", "hint_expect"], src);
+        self.sysfn(&name, &[], &["trap_overflow", "hint_expect"], true, src);
         name
     }
 
     /// `chk_<op>_<ty>(a, b, &r)`: stores the result and returns 1, or returns 0 where the plain
-    /// operation would trap.
-    fn chk_fn(&mut self, b: Builtin, ty: NumTy) -> String {
+    /// operation would trap. `release`: used by `checked_*` calls, which every build needs.
+    fn chk_fn(&mut self, b: Builtin, ty: NumTy, release: bool) -> String {
         use Builtin::*;
         let (c, n) = (num_cty(ty), ty.name());
         let signed = ty.is_signed();
@@ -518,19 +563,24 @@ impl<'p> Gen<'p> {
         };
         let name = format!("chk_{op}_{n}");
         let src = format!("static int {name}({params}, {c} *r) {{\n{body}\n}}");
-        self.sysfn(&name, &["ovf"], src);
+        if release {
+            self.sysfn(&name, &["ovf"], &[], true, src);
+        } else {
+            self.sysfn(&name, &[], &["ovf"], false, src);
+        }
         name
     }
 
-    /// `pow_<ty>(base, exp)` for integers: traps on overflow.
+    /// `pow_<ty>(base, exp)` for integers: a checked build traps on overflow, a release build wraps.
     fn pow_fn(&mut self, ty: NumTy) -> String {
-        let chk = self.chk_fn(Builtin::CheckedPow, ty);
+        let chk = self.chk_fn(Builtin::CheckedPow, ty, false);
         let (c, n) = (num_cty(ty), ty.name());
         let name = format!("pow_{n}");
+        let wide = if ty.bits() <= 32 { "uint32_t" } else { "uint64_t" };
         let src = format!(
-            "static {c} {name}({c} base, uint64_t exp) {{\n    {c} r;\n    if (UNLIKELY(!{chk}(base, exp, &r))) trap_overflow();\n    return r;\n}}"
+            "static {c} {name}({c} base, uint64_t exp) {{\n#if NEON_CHECKS\n    {c} r;\n    if (UNLIKELY(!{chk}(base, exp, &r))) trap_overflow();\n    return r;\n#else\n    {c} result = 1, square = base;\n    while (exp > 0) {{\n        if (exp & 1) result = ({c})(({wide})result * ({wide})square);\n        exp >>= 1;\n        square = ({c})(({wide})square * ({wide})square);\n    }}\n    return result;\n#endif\n}}"
         );
-        self.sysfn(&name, &["trap_overflow", "hint_expect"], src);
+        self.sysfn(&name, &[], &["trap_overflow", "hint_expect"], true, src);
         name
     }
 
@@ -549,7 +599,7 @@ impl<'p> Gen<'p> {
                 )
             }
         };
-        self.sysfn(&name, &[], src);
+        self.sysfn(&name, &[], &[], true, src);
         name
     }
 
@@ -776,7 +826,7 @@ impl<'p> Gen<'p> {
             }
         }
         let typedefs = self.fnptrs.iter().map(|(_, t)| t.clone()).collect();
-        let sys = self.sys.iter().map(|(n, s)| (n.clone(), s.src.clone())).collect();
+        let sys = self.sys.iter().map(|(n, s)| (n.clone(), (s.src.clone(), s.release))).collect();
         let out = Output {
             fn_protos,
             fn_bodies,
@@ -786,7 +836,7 @@ impl<'p> Gen<'p> {
             ref_globals,
             entry: self.names[self.prog.entry.index()].clone(),
         };
-        Ok((out, self.needs, sys))
+        Ok((out, Needs { always: self.needs, checked: self.checked }, sys))
     }
 
     /// `n_f_clo(up, args)` calls the plain function `n_f(args)`, so it can sit in a closure object.
@@ -985,8 +1035,9 @@ impl<'p> Gen<'p> {
             let _ = writeln!(text, "    Frame fr = {{NULL, fr_roots, {}}};", roots.len());
         }
         if guarded {
-            self.needs_all(&["depth", "trap_stack", "hint_expect"]);
-            let _ = writeln!(text, "    if (UNLIKELY(++rt_depth > NEON_MAX_DEPTH)) trap_stack();");
+            self.need("depth");
+            self.need_checked(&["trap_stack", "hint_expect"]);
+            let _ = writeln!(text, "    DEPTH_ENTER();");
         }
         if need_frame {
             let _ = writeln!(text, "    fr.up = gc_top;\n    gc_top = &fr;");
@@ -1122,7 +1173,7 @@ impl FnEmit<'_, '_> {
 
     fn epilogue(&mut self) {
         if self.guarded {
-            self.line("rt_depth--;");
+            self.line("DEPTH_LEAVE();");
         }
         if self.frame {
             self.line("gc_top = fr.up;");
@@ -1818,7 +1869,7 @@ impl FnEmit<'_, '_> {
                     Some(TypeDesc::Num(n)) => *n,
                     other => return Err(format!("checked operation with payload {other:?}")),
                 };
-                let chk = self.g.chk_fn(b, ty);
+                let chk = self.g.chk_fn(b, ty, true);
                 self.g.needs_all(&["opt_some", "opt_none"]);
                 let rhs = match b {
                     CheckedNeg => String::new(),
