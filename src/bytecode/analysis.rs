@@ -307,7 +307,7 @@ mod tests {
                 .enumerate()
                 .map(|(i, it)| {
                     matches!(it.insn, Insn::Move { .. } | Insn::LoadI { .. } | Insn::Arith { .. })
-                        && (i + seed as usize) % 3 == 0
+                        && (i + seed as usize).is_multiple_of(3)
                 })
                 .collect();
             let kept: Vec<Item> = items.iter().zip(&dead).filter(|(_, d)| !**d).map(|(it, _)| it.clone()).collect();
