@@ -41,6 +41,7 @@ neon fmt <file>...    formatter (-w rewrites files, --check verifies, no file = 
 neon lsp              language server on stdin/stdout (see "Editor support")
 
 --no-opt  --no-peephole      turn optimizers off
+-j N, --threads N            compiler threads (0 = every core, 1 = none; NEON_THREADS does the same)
 --gc-limit 64k               cap the heap; exceeding it is a run-time error
 --gc-stress                  collect at every safe-point (finds missing roots)
 --max-steps N  --max-frames N
@@ -396,12 +397,29 @@ rebuild their index on removal, and structs and enums with up to four fields kee
 their words inside the object slot instead of a separate allocation (which also
 halves the number of collections).
 
-`compile/*` measures source → bytecode, including the prelude: about
-1.3 MiB/s of source on this machine (400 generated functions in ~150 ms;
-roughly 2 ms of fixed prelude cost for a tiny program). Parsing is ~3% of
-the total; the optimizer passes roughly triple compile time (12 ms without them, 42 ms with
-them on the 200-function benchmark) in exchange for the 20–45% instruction-count
-reduction visible in the `vm` vs `vm-noopt` columns.
+`compile/*` measures source → bytecode, including the prelude. The optimizer and the code
+generator work on one function at a time, so they run on all cores (`std::thread::scope`, no
+dependencies; on `wasm32` everything runs inline): optimizing functions in parallel, merging their string
+constants in function order afterwards, and building the constant pool in function order after the
+per-function code generation, make the output byte-for-byte independent of the thread count (a test
+compares 1, 2, 4 and all cores). Phase times for 400 generated functions, from
+`cargo run --release --example phases`:
+
+| | 1 thread | 4 threads |
+|---|---|---|
+| parse + analysis + lowering | 9 ms | 9 ms |
+| IR optimizer | 70 ms | 24 ms |
+| register allocation, code generation, peephole | 10 ms | 4 ms |
+| **total** | **90 ms** (was 142 ms) | **37 ms** |
+
+On one thread the work went down by a third without changing a byte of the output: a worklist
+liveness analysis, dense per-register tables instead of hash maps, no per-block allocations in the hot
+passes, an unroller that rules out loops before copying them, and constant propagation that only runs
+where something can change. Functions with thousands of statements used to grow super-linearly
+(a 1000-statement `main` took 3.2 s; type-variable chains, whole-function liveness after every
+peephole rewrite and an all-intervals scan per call were the culprits), now 0.27 s. The optimizer
+passes still cost compile time (12 ms without them, ~70 ms with them on 400 functions) in exchange for
+the 20–45% instruction-count reduction visible in the `vm` vs `vm-noopt` columns.
 
 What the numbers say, honestly: the dispatch loop is a straightforward
 `match` over decoded words, so the VM is ~1.5–2× faster than the reference

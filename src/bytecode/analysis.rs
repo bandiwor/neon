@@ -292,11 +292,11 @@ mod tests {
             let full = liveness(&items, &always);
             let none = vec![false; items.len()];
             let mut q = LiveQuery::new();
-            for k in 0..items.len() {
+            for (k, live) in full.iter().enumerate() {
                 for r in 0..8u8 {
                     assert_eq!(
                         q.live_after(&items, &none, k, r, &always),
-                        full[k].contains(r),
+                        live.contains(r),
                         "seed {seed} item {k} r{r}"
                     );
                 }
