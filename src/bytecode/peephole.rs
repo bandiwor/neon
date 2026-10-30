@@ -21,7 +21,7 @@
 
 use crate::fx::{FxHashMap as HashMap, FxHashSet as HashSet};
 
-use super::analysis::liveness;
+use super::analysis::LiveQuery;
 use super::insn::*;
 use super::opcode::{CmpKind, FusedKind};
 use crate::gc::BitSet;
@@ -90,69 +90,75 @@ fn invert(kind: CmpKind, a: Reg, b: Reg) -> Option<(CmpKind, Reg, Reg)> {
 }
 
 fn local_rules(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats) {
+    // Removed instructions are only marked: positions (and so the label table) stay valid for the whole
+    // pass, and one compaction at the end replaces a quadratic number of element shifts.
+    let mut dead = vec![false; items.len()];
+    let next_live = |dead: &[bool], from: usize| (from + 1..dead.len()).find(|&j| !dead[j]);
     let mut i = 0;
-    let mut live = liveness(items, always);
+    let mut live = LiveQuery::new();
     while i < items.len() {
+        if dead[i] {
+            i += 1;
+            continue;
+        }
         let mut changed = false;
         // 1. self-moves
         if let Insn::Move { dst, src } = items[i].insn {
             if dst == src {
-                items.remove(i);
+                dead[i] = true;
                 stats.moves_removed += 1;
-                live = liveness(items, always);
                 continue;
             }
         }
         // 2. dead pure definitions
         if items[i].insn.is_pure() {
             if let Some(d) = items[i].insn.def() {
-                if !live[i].contains(d) {
-                    items.remove(i);
+                if !live.live_after(items, &dead, i, d, always) {
+                    dead[i] = true;
                     stats.dead_removed += 1;
-                    live = liveness(items, always);
                     continue;
                 }
             }
         }
-        if i + 1 < items.len() {
-            let (first, second) = (items[i].insn.clone(), items[i + 1].insn.clone());
+        if let Some(j) = next_live(&dead, i) {
+            let (first, second) = (items[i].insn.clone(), items[j].insn.clone());
             match (&first, &second) {
                 // 3. `move a, b; move b, a` / duplicate moves: the second is redundant
                 (Insn::Move { dst: a, src: b }, Insn::Move { dst: c, src: d })
                     if (a == d && b == c) || (a == c && b == d) =>
                 {
-                    items.remove(i + 1);
+                    dead[j] = true;
                     stats.moves_removed += 1;
                     changed = true;
                 }
                 // 4. retarget `op t; move d, t` to write `d` directly
                 (_, Insn::Move { dst: d, src: t })
                     if first.def() == Some(*t)
-                        && !live[i + 1].contains(*t)
+                        && !live.live_after(items, &dead, j, *t, always)
                         && *t != *d
                         && first.clone().set_def_probe(*d) =>
                 {
                     items[i].insn.set_def(*d);
-                    items.remove(i + 1);
+                    dead[j] = true;
                     stats.coalesced += 1;
                     changed = true;
                 }
                 // 5. fuse compare + branch
                 (Insn::Cmp { kind, dst: t, a, b }, Insn::JmpIfNot { cond, to })
-                    if cond == t && !live[i + 1].contains(*t) && kind.fused().is_some() =>
+                    if cond == t && kind.fused().is_some() && !live.live_after(items, &dead, j, *t, always) =>
                 {
                     items[i].insn = Insn::CmpJmp { kind: kind.fused().unwrap(), a: *a, b: *b, to: *to };
-                    items.remove(i + 1);
+                    dead[j] = true;
                     stats.fused += 1;
                     changed = true;
                 }
                 (Insn::Cmp { kind, dst: t, a, b }, Insn::JmpIf { cond, to })
-                    if cond == t && !live[i + 1].contains(*t) =>
+                    if cond == t && !live.live_after(items, &dead, j, *t, always) =>
                 {
                     if let Some((k2, a2, b2)) = invert(*kind, *a, *b) {
                         if let Some(f) = k2.fused() {
                             items[i].insn = Insn::CmpJmp { kind: f, a: a2, b: b2, to: *to };
-                            items.remove(i + 1);
+                            dead[j] = true;
                             stats.fused += 1;
                             changed = true;
                         }
@@ -160,15 +166,15 @@ fn local_rules(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats
                 }
                 // 5b. read the source of a copy directly when the copy dies in the next instruction
                 (Insn::Move { dst: t, src: s }, next)
-                    if t != s && !live[i + 1].contains(*t) && {
+                    if t != s && !live.live_after(items, &dead, j, *t, always) && {
                         let mut probe = next.clone();
                         replace_use(&mut probe, *t, *s)
                     } =>
                 {
-                    let mut replaced = items[i + 1].insn.clone();
+                    let mut replaced = items[j].insn.clone();
                     replace_use(&mut replaced, *t, *s);
-                    items[i + 1].insn = replaced;
-                    items.remove(i);
+                    items[j].insn = replaced;
+                    dead[i] = true;
                     stats.forwarded += 1;
                     changed = true;
                 }
@@ -176,7 +182,7 @@ fn local_rules(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats
                 (Insn::LoadI { dst: t, imm }, Insn::Arith { op, ty, dst, a, b })
                     if ty.is_int()
                         && matches!(op, ArithOp::Add | ArithOp::Sub)
-                        && (!live[i + 1].contains(*t) || dst == t) =>
+                        && (dst == t || !live.live_after(items, &dead, j, *t, always)) =>
                 {
                     let v = decode_int(*ty, *imm as i64 as u64);
                     let operand = if b == t && a != t {
@@ -194,7 +200,7 @@ fn local_rules(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats
                         if let Some(r) = replacement {
                             items[i].insn = r;
                             items[i].ref_result = false;
-                            items.remove(i + 1);
+                            dead[j] = true;
                             stats.immediates += 1;
                             changed = true;
                         }
@@ -203,12 +209,17 @@ fn local_rules(items: &mut Vec<Item>, always: &BitSet, stats: &mut PeepholeStats
                 _ => {}
             }
         }
-        if changed {
-            live = liveness(items, always);
-            // re-examine the same position: the new instruction may combine again
-        } else {
+        if !changed {
             i += 1;
         }
+        // (after a change the same position is examined again: the new instruction may combine further)
+    }
+    if dead.iter().any(|&d| d) {
+        let mut k = 0;
+        items.retain(|_| {
+            k += 1;
+            !dead[k - 1]
+        });
     }
 }
 

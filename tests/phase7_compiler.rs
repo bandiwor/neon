@@ -261,3 +261,33 @@ fn the_bytecode_does_not_depend_on_the_number_of_threads() {
         assert_eq!(texts[0].3, t.3, "constant pools differ for {} threads", t.0);
     }
 }
+
+#[test]
+fn a_very_long_function_compiles_and_runs_the_same_under_every_setting() {
+    // 600 statements in one function: this used to take seconds (type-variable chains, whole-function
+    // liveness after every peephole rewrite, a scan of every interval for every call)
+    let mut src = String::from("fn main() {\n    var acc = 0;\n");
+    let mut expected = String::new();
+    let mut acc = 0i64;
+    for i in 0..600 {
+        src += &format!(
+            "    let v{i} = acc + {i};\n    if v{i} % 3 == 0 {{ acc += v{i}; }} else {{ acc -= 1; }}\n    println(f\"line {i}: {{acc}}\");\n"
+        );
+        let v = acc + i;
+        if v % 3 == 0 {
+            acc += v;
+        } else {
+            acc -= 1;
+        }
+        expected += &format!("line {i}: {acc}\n");
+    }
+    src += "}\n";
+    for (cfg, opts) in configs() {
+        let bc = bytecode(&src, opts_ref(&opts));
+        verify_program(&bc).unwrap_or_else(|e| panic!("[{cfg}] {e}"));
+        let mut io = neon::vm::BufferIo::new();
+        let r = neon::vm::run(&bc, &mut io, &neon::vm::VmConfig::default());
+        assert!(r.result.is_ok(), "[{cfg}] {:?}", r.result);
+        assert_eq!(io.output, expected, "[{cfg}]");
+    }
+}

@@ -20,9 +20,13 @@ fn resolve(state: &Copies, mut r: VReg) -> VReg {
 }
 
 /// The effect of `inst` on the set of available copies.
-fn step(f: &IrFunc, state: &mut Copies, inst: &Inst, record: bool) {
+fn step(f: &IrFunc, state: &mut Copies, inst: &Inst, record: bool, sources: &[bool]) {
     if let Some(d) = inst.def() {
-        state.retain(|k, v| *k != d && *v != d);
+        state.remove(&d);
+        // only a register that is the source of some move can be the target of a copy
+        if sources[d.index()] {
+            state.retain(|_, v| *v != d);
+        }
         if let Inst::Move { dst, src } = inst {
             let src = resolve(state, *src);
             if record
@@ -62,6 +66,12 @@ pub fn copy_propagate(f: &mut IrFunc) -> usize {
     // `t = op ..; d = t` where `t` has no other use is an assignment `d = op ..` that the move
     // coalescing will merge; reading `t` in place of `d` later would keep `t` alive and prevent that
     let result_moves = super::simplify::result_moves(f);
+    let mut sources = vec![false; f.regs.len()];
+    for i in f.blocks.iter().flat_map(|b| &b.insts) {
+        if let Inst::Move { src, .. } = i {
+            sources[src.index()] = true;
+        }
+    }
     // reverse post-order
     let mut order = Vec::with_capacity(n);
     let mut seen = vec![false; n];
@@ -101,7 +111,7 @@ pub fn copy_propagate(f: &mut IrFunc) -> usize {
             };
             let mut state = state_in.clone();
             for (ii, i) in f.blocks[b].insts.iter().enumerate() {
-                step(f, &mut state, i, !result_moves.contains(&(b, ii)));
+                step(f, &mut state, i, !result_moves.contains(&(b, ii)), &sources);
             }
             input[b] = state_in;
             if out[b].as_ref() != Some(&state) {
@@ -131,7 +141,7 @@ pub fn copy_propagate(f: &mut IrFunc) -> usize {
                     }
                 });
             }
-            step(f, &mut state, inst, !result_moves.contains(&(b, ii)));
+            step(f, &mut state, inst, !result_moves.contains(&(b, ii)), &sources);
         }
         f.blocks[b].insts = insts;
         if !state.is_empty() {

@@ -154,8 +154,11 @@ impl InferCtx {
                     (k1, k2) if k1 == k2 => k1,
                     _ => return Err(Mismatch),
                 };
-                self.set_kind(*y, merged);
-                self.bind(*x, b);
+                // the younger variable points at the older one: a chain of unifications with fresh
+                // variables stays one link long instead of growing with every statement
+                let (child, root, root_ty) = if x.0 > y.0 { (*x, *y, b) } else { (*y, *x, a) };
+                self.set_kind(root, merged);
+                self.bind(child, root_ty);
                 Ok(())
             }
             (TyKind::Infer(v), _) => self.bind_var(types, *v, b, &kb),

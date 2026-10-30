@@ -46,6 +46,13 @@ impl VSet {
         changed
     }
 
+    /// `self |= keep & !drop`.
+    pub fn union_diff(&mut self, keep: &VSet, drop: &VSet) {
+        for ((a, k), d) in self.words.iter_mut().zip(&keep.words).zip(&drop.words) {
+            *a |= k & !d;
+        }
+    }
+
     pub fn iter(&self) -> impl Iterator<Item = usize> + '_ {
         self.words
             .iter()
@@ -109,55 +116,88 @@ pub fn block_layout(f: &IrFunc) -> Vec<BlockId> {
     order
 }
 
-/// Live-in / live-out virtual registers of each block (indexed by block id).
+/// Live-in / live-out virtual registers of each block (indexed by block id), as sorted lists.
+///
+/// Only registers that are read in a block without being written there first (upward-exposed) can ever
+/// be live across a block boundary; the data-flow equations run over just those, so the work grows
+/// with the number of values that really cross blocks, not with the size of the register file.
 #[derive(Debug)]
 pub struct BlockLiveness {
-    pub live_in: Vec<VSet>,
-    pub live_out: Vec<VSet>,
+    pub live_in: Vec<Vec<u32>>,
+    pub live_out: Vec<Vec<u32>>,
 }
 
 pub fn block_liveness(f: &IrFunc, order: &[BlockId]) -> BlockLiveness {
     let nr = f.regs.len();
     let nb = f.blocks.len();
-    let mut uses = vec![VSet::new(nr); nb];
-    let mut defs = vec![VSet::new(nr); nb];
-    for &b in order {
-        let blk = &f.blocks[b.index()];
-        let (u, d) = (&mut uses[b.index()], &mut defs[b.index()]);
+    // per block: registers read before any write in it, and registers written in it
+    let mut exposed: Vec<Vec<u32>> = vec![Vec::new(); nb];
+    let mut written: Vec<Vec<u32>> = vec![Vec::new(); nb];
+    let mut def_stamp = vec![0u32; nr];
+    let mut use_stamp = vec![0u32; nr];
+    let mut crossing = vec![false; nr];
+    for (k, &b) in order.iter().enumerate() {
+        let bi = b.index();
+        let stamp = k as u32 + 1;
+        let blk = &f.blocks[bi];
+        let (u, w) = (&mut exposed[bi], &mut written[bi]);
+        let mut read = |r: usize, def_stamp: &[u32], u: &mut Vec<u32>| {
+            if def_stamp[r] != stamp && use_stamp[r] != stamp {
+                use_stamp[r] = stamp;
+                crossing[r] = true;
+                u.push(r as u32);
+            }
+        };
         for inst in &blk.insts {
-            inst.for_each_use(|r| {
-                if !d.contains(r.index()) {
-                    u.insert(r.index());
-                }
-            });
+            inst.for_each_use(|r| read(r.index(), &def_stamp, u));
             if let Some(r) = inst.def() {
-                d.insert(r.index());
+                if def_stamp[r.index()] != stamp {
+                    def_stamp[r.index()] = stamp;
+                    w.push(r.index() as u32);
+                }
             }
         }
-        blk.term.for_each_use(|r| {
-            if !d.contains(r.index()) {
-                u.insert(r.index());
-            }
-        });
+        blk.term.for_each_use(|r| read(r.index(), &def_stamp, u));
     }
-    let mut live_in = vec![VSet::new(nr); nb];
-    let mut live_out = vec![VSet::new(nr); nb];
+    // dense numbering of the registers that can cross a block boundary
+    let mut dense = vec![u32::MAX; nr];
+    let mut regs: Vec<u32> = Vec::new();
+    for r in 0..nr {
+        if crossing[r] {
+            dense[r] = regs.len() as u32;
+            regs.push(r as u32);
+        }
+    }
+    let g = regs.len();
+    let to_set = |list: &[u32], only_crossing: bool| {
+        let mut set = VSet::new(g);
+        for &r in list {
+            let d = dense[r as usize];
+            if d != u32::MAX {
+                set.insert(d as usize);
+            } else {
+                debug_assert!(only_crossing);
+            }
+        }
+        set
+    };
+    let uses: Vec<VSet> = exposed.iter().map(|l| to_set(l, false)).collect();
+    let defs: Vec<VSet> = written.iter().map(|l| to_set(l, true)).collect();
+    let mut live_in = vec![VSet::new(g); nb];
+    let mut live_out = vec![VSet::new(g); nb];
     let mut changed = true;
     while changed {
         changed = false;
         for &b in order.iter().rev() {
             let bi = b.index();
-            let mut out = VSet::new(nr);
-            for s in f.blocks[bi].term.successors() {
+            let mut out = VSet::new(g);
+            let (slots, n) = f.blocks[bi].term.successor_slots();
+            for s in &slots[..n] {
                 out.union_with(&live_in[s.index()]);
             }
             // in = uses ∪ (out − defs)
             let mut inn = uses[bi].clone();
-            for r in out.iter() {
-                if !defs[bi].contains(r) {
-                    inn.insert(r);
-                }
-            }
+            inn.union_diff(&out, &defs[bi]);
             if out != live_out[bi] || inn != live_in[bi] {
                 live_out[bi] = out;
                 live_in[bi] = inn;
@@ -165,7 +205,8 @@ pub fn block_liveness(f: &IrFunc, order: &[BlockId]) -> BlockLiveness {
             }
         }
     }
-    BlockLiveness { live_in, live_out }
+    let list = |set: &VSet| -> Vec<u32> { set.iter().map(|d| regs[d]).collect() };
+    BlockLiveness { live_in: live_in.iter().map(list).collect(), live_out: live_out.iter().map(list).collect() }
 }
 
 /// The result of allocation for one function.
@@ -179,6 +220,8 @@ pub struct Allocation {
     pub slots: Vec<u16>,
     /// `[start, end]` positions of each virtual register's live interval.
     pub intervals: Vec<Option<(u32, u32)>>,
+    /// The intervals sharing each frame slot, sorted by start (they never overlap).
+    by_slot: Vec<Vec<(u32, u32)>>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -189,15 +232,15 @@ impl Allocation {
     /// instruction at `pos` (it must survive, so a callee frame or argument
     /// window has to start above it).
     pub fn floor_at(&self, pos: u32) -> u16 {
-        let mut floor = 0;
-        for (v, iv) in self.intervals.iter().enumerate() {
-            if let Some((s, e)) = *iv {
-                if s < pos && pos < e {
-                    floor = floor.max(self.slots[v] + 1);
-                }
+        // the highest slot with an interval strictly around `pos`; each slot's intervals are
+        // disjoint and sorted, so at most one can be, and a binary search finds it
+        for (slot, ivs) in self.by_slot.iter().enumerate().rev() {
+            let k = ivs.partition_point(|&(s, _)| s < pos);
+            if k > 0 && pos < ivs[k - 1].1 {
+                return slot as u16 + 1;
             }
         }
-        floor
+        0
     }
 }
 
@@ -234,11 +277,11 @@ pub fn allocate(f: &IrFunc) -> Result<Allocation, OutOfRegisters> {
     for &b in &order {
         let bi = b.index();
         let blk = &f.blocks[bi];
-        for r in live.live_in[bi].iter() {
-            touch(&mut intervals, r, block_start[bi] - 1);
+        for &r in &live.live_in[bi] {
+            touch(&mut intervals, r as usize, block_start[bi] - 1);
         }
-        for r in live.live_out[bi].iter() {
-            touch(&mut intervals, r, block_end[bi] + 1);
+        for &r in &live.live_out[bi] {
+            touch(&mut intervals, r as usize, block_end[bi] + 1);
         }
         let mut p = block_start[bi];
         for inst in &blk.insts {
@@ -290,7 +333,14 @@ pub fn allocate(f: &IrFunc) -> Result<Allocation, OutOfRegisters> {
         let iv = intervals[v].unwrap();
         assign(&mut slots, v, iv, None)?;
     }
-    Ok(Allocation { order, block_start, block_end, slots, intervals })
+    let mut by_slot: Vec<Vec<(u32, u32)>> = vec![Vec::new(); busy_until.len()];
+    for (v, iv) in intervals.iter().enumerate() {
+        if let Some(iv) = iv {
+            by_slot[slots[v] as usize].push(*iv);
+        }
+    }
+    by_slot.iter_mut().for_each(|l| l.sort_unstable());
+    Ok(Allocation { order, block_start, block_end, slots, intervals, by_slot })
 }
 
 impl Allocation {
@@ -382,10 +432,10 @@ mod tests {
         f.blocks[2].term = Term::Return(VReg(1));
         let order = block_layout(&f);
         let live = block_liveness(&f, &order);
-        assert!(live.live_in[1].contains(0) && live.live_in[1].contains(1));
-        assert!(live.live_out[1].contains(0) && live.live_out[1].contains(1));
-        assert!(!live.live_out[1].contains(2));
-        assert!(!live.live_in[0].contains(1));
+        assert!(live.live_in[1].contains(&0) && live.live_in[1].contains(&1));
+        assert!(live.live_out[1].contains(&0) && live.live_out[1].contains(&1));
+        assert!(!live.live_out[1].contains(&2));
+        assert!(!live.live_in[0].contains(&1));
     }
 
     #[test]
