@@ -34,6 +34,21 @@
    ...
 }
 
+# The same handle, created when the compiler first starts worker threads from the main thread
+# (`neon::par`): `thread::scope` asks for the current thread, std allocates its handle lazily and
+# keeps it in a thread-local until exit.
+{
+   rust-main-thread-handle-from-par
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   ...
+   fun:*init_current*
+   ...
+   fun:*neon*par*run*
+   ...
+}
+
 # std::io::stdin(): the process-wide stdin buffer lives in a OnceLock that is
 # never dropped (used by the `neon` binary, which reads program input from it).
 {
