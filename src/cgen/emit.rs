@@ -752,7 +752,7 @@ impl<'p> Gen<'p> {
                 }
             }
             TypeDesc::Enum { name: ename, variants } => {
-                let _ = writeln!(body, "    const Agg *g = AGG(o);\n    switch (g->tag) {{");
+                let _ = writeln!(body, "    const Agg *g = AGG(o);\n    switch (g->h.flags) {{");
                 for (t, (vname, fds)) in variants.iter().enumerate() {
                     let _ = writeln!(body, "    case {t}:");
                     let _ = writeln!(body, "        {}", self.put_str(&format!("{ename}::{vname}")));
@@ -1227,7 +1227,7 @@ impl FnEmit<'_, '_> {
             Term::BranchTag { obj, tag, then, els } => {
                 let o = self.rd(*obj);
                 self.g.need("objects");
-                self.branch(format!("AGG({o})->tag == {tag}"), *then, *els, next);
+                self.branch(format!("TAG({o}) == {tag}"), *then, *els, next);
             }
             Term::Return(r) => {
                 let e = self.rd(*r);
@@ -1389,7 +1389,7 @@ impl FnEmit<'_, '_> {
                 self.g.need("objects");
                 let o = self.rd(*obj);
                 let c = cty(self.ty(*dst));
-                self.emit_set(*dst, &format!("({c})AGG({o})->tag"));
+                self.emit_set(*dst, &format!("({c})TAG({o})"));
             }
             Inst::NewArray { dst, desc, elems } => {
                 self.gc_point();

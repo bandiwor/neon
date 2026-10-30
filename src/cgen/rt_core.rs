@@ -106,25 +106,25 @@ pub static PIECES: &[Piece] = &[
         deps: &["word"],
         hdrs: &[],
         kind: Decl,
-        src: r##"/* Heap objects. Every object starts with the same header; `flags` and `n` depend on `kind`:
+        src: r##"/* Heap objects. Every object starts with the same 8-byte header; `flags` and `n` depend on `kind`:
  *   K_ARR  flags & 1: the elements are references
- *   K_AGG  n = field count (structs and enum variants)
+ *   K_AGG  flags = variant number, n = field count (structs and enum variants)
  *   K_MAP  flags: MF_* below (maps and sets share one layout)
  *   K_CLO  n = number of captured cells
- *   K_CELL flags & 1: the value is a reference                                              */
-enum { K_STR, K_ARR, K_AGG, K_MAP, K_CLO, K_CELL };
+ *   K_CELL flags & 1: the value is a reference
+ *   K_FREE a cell of the allocator that holds no object                                     */
+enum { K_STR, K_ARR, K_AGG, K_MAP, K_CLO, K_CELL, K_FREE = 255 };
 enum { MF_KREF = 1, MF_VREF = 2, MF_KSTR = 4, MF_SET = 8 };
 
 typedef struct Obj Obj;
 struct Obj {
-    Obj *next;          /* all objects form a list for the sweep phase */
     uint8_t kind, mark;
     uint16_t flags;
     uint32_t n;
 };
 typedef struct { Obj h; size_t len; char s[]; } Str;                       /* UTF-8, NUL-terminated */
 typedef struct { Obj h; size_t len, cap; W *a; } Arr;
-typedef struct { Obj h; uint64_t mask; uint32_t tag; W f[]; } Agg;         /* mask: which fields are references */
+typedef struct { Obj h; uint64_t mask; W f[]; } Agg;                       /* mask: which fields are references */
 typedef struct { Obj h; size_t len, cap, ixcap; W *k, *v; int32_t *ix; } Map;  /* insertion ordered + hash index */
 typedef struct { Obj h; void (*fn)(void); Obj *c[]; } Clo;                 /* code + captured cells */
 typedef struct { Obj h; W v; } Cell;                                       /* a captured variable */
@@ -132,6 +132,7 @@ typedef struct { Obj h; W v; } Cell;                                       /* a 
 #define STR(o)  ((Str *)(o))
 #define ARR(o)  ((Arr *)(o))
 #define AGG(o)  ((Agg *)(o))
+#define TAG(o)  (AGG(o)->h.flags)
 #define MAP(o)  ((Map *)(o))
 #define CLO(o)  ((Clo *)(o))
 #define CELL(o) ((Cell *)(o))
@@ -143,8 +144,19 @@ typedef struct { Obj h; W v; } Cell;                                       /* a 
         deps: &["objects"],
         hdrs: &[],
         kind: Decl,
-        src: r##"static Obj *gc_all;            /* every object, for the sweep phase */
-static size_t gc_bytes;        /* bytes allocated since the last collection, plus the survivors */"##,
+        src: r##"/* The allocator. Objects of up to GC_SMALL bytes live in 64 KB blocks cut into cells of one size class
+ * (a multiple of 16 bytes); freed cells go on a per-class list. Bigger objects are plain malloc blocks
+ * behind a small prefix. Nothing ever moves, so references stay valid across collections. */
+enum { GC_BLOCK = 65536, GC_SMALL = 256, GC_CLASSES = GC_SMALL / 16 };
+typedef struct Block Block;
+struct Block { Block *next; size_t cls, top, pad; };   /* the cells follow; `top` = bytes carved so far */
+typedef struct Big Big;
+struct Big { Big *next; size_t size; };                /* the object follows */
+static Block *gc_blocks;                 /* every block */
+static Block *gc_cur[GC_CLASSES + 1];    /* the block being carved, per size class */
+static Obj *gc_free[GC_CLASSES + 1];     /* free cells, per size class (linked through the cell body) */
+static Big *gc_big;                      /* every big object */
+static size_t gc_bytes;                  /* bytes allocated since the last collection, plus the survivors */"##,
     },
     Piece {
         name: "gcstate",
@@ -347,19 +359,51 @@ static unsigned rt_depth;
 }"##,
     },
     Piece {
+        name: "gc_block",
+        deps: &["heapstate", "rt_malloc"],
+        hdrs: &[],
+        kind: Funcs,
+        src: r##"static Block *gc_block(size_t cls) {
+    Block *b = (Block *)rt_malloc(sizeof(Block) + GC_BLOCK);
+    b->next = gc_blocks;
+    b->cls = cls;
+    b->top = 0;
+    gc_blocks = b;
+    gc_cur[cls] = b;
+    return b;
+}"##,
+    },
+    Piece {
         name: "obj_new",
-        deps: &["objects", "heapstate", "rt_malloc"],
+        deps: &["objects", "heapstate", "rt_malloc", "gc_block", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *obj_new(size_t size, unsigned kind, unsigned flags) {
-    Obj *o = (Obj *)rt_malloc(size);
-    o->next = gc_all;
-    gc_all = o;
+    Obj *o;
+    size_t cls = (size + 15) >> 4;
+    if (LIKELY(cls <= GC_CLASSES)) {
+        o = gc_free[cls];
+        if (LIKELY(o != NULL)) {
+            gc_free[cls] = *(Obj **)((char *)o + 8);
+        } else {
+            Block *b = gc_cur[cls];
+            if (UNLIKELY(b == NULL || b->top + cls * 16 > GC_BLOCK)) b = gc_block(cls);
+            o = (Obj *)((char *)(b + 1) + b->top);
+            b->top += cls * 16;
+        }
+        gc_bytes += cls * 16;
+    } else {
+        Big *g = (Big *)rt_malloc(sizeof(Big) + size);
+        g->next = gc_big;
+        g->size = size;
+        gc_big = g;
+        o = (Obj *)(g + 1);
+        gc_bytes += size;
+    }
     o->kind = (uint8_t)kind;
     o->mark = 0;
     o->flags = (uint16_t)flags;
     o->n = 0;
-    gc_bytes += size;
     return o;
 }"##,
     },
@@ -412,59 +456,94 @@ static unsigned rt_depth;
 }"##,
     },
     Piece {
-        name: "gc_size",
+        name: "gc_extern",
         deps: &["objects"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static size_t gc_size(const Obj *o) {
-    switch (o->kind) {
-    case K_STR: return sizeof(Str) + ((const Str *)o)->len + 1;
-    case K_ARR: return sizeof(Arr) + ((const Arr *)o)->cap * sizeof(W);
-    case K_AGG: return sizeof(Agg) + o->n * sizeof(W);
-    case K_MAP: return sizeof(Map) + ((const Map *)o)->cap * 2 * sizeof(W) + ((const Map *)o)->ixcap * sizeof(int32_t);
-    case K_CLO: return sizeof(Clo) + o->n * sizeof(Obj *);
-    default:    return sizeof(Cell);
-    }
+        src: r##"/* Bytes an object holds outside its cell (array and map buffers). */
+static size_t gc_extern(const Obj *o) {
+    if (o->kind == K_ARR) return ((const Arr *)o)->cap * sizeof(W);
+    if (o->kind == K_MAP) return ((const Map *)o)->cap * 2 * sizeof(W) + ((const Map *)o)->ixcap * sizeof(int32_t);
+    return 0;
 }"##,
     },
     Piece {
-        name: "gc_free",
+        name: "gc_finish",
         deps: &["objects"],
         hdrs: &["stdlib.h"],
         kind: Funcs,
-        src: r##"static void gc_free(Obj *o) {
+        src: r##"/* Releases what a dead object owns besides its cell. */
+static void gc_finish(Obj *o) {
     if (o->kind == K_ARR) free(ARR(o)->a);
     if (o->kind == K_MAP) { free(MAP(o)->k); free(MAP(o)->v); free(MAP(o)->ix); }
-    free(o);
+}"##,
+    },
+    Piece {
+        name: "gc_sweep",
+        deps: &["heapstate", "gc_extern", "gc_finish"],
+        hdrs: &["stdlib.h", "string.h"],
+        kind: Funcs,
+        src: r##"/* Frees the unmarked objects and rebuilds the free lists (in address order). */
+static void gc_sweep(void) {
+    size_t cls, stride, live = 0;
+    Block *b;
+    Big *g, **link;
+    Obj **tail[GC_CLASSES + 1], *o;
+    char *p, *end;
+    for (cls = 1; cls <= GC_CLASSES; cls++) tail[cls] = &gc_free[cls];
+    for (b = gc_blocks; b != NULL; b = b->next) {
+        stride = b->cls * 16;
+        end = (char *)(b + 1) + b->top;
+        for (p = (char *)(b + 1); p < end; p += stride) {
+            o = (Obj *)p;
+            if (o->kind != K_FREE) {
+                if (o->mark) {
+                    o->mark = 0;
+                    live += stride + gc_extern(o);
+                    continue;
+                }
+                gc_finish(o);
+                o->kind = K_FREE;
+#ifdef NEON_GC_STRESS   /* make a stale reference fail loudly */
+                memset(p + 8, 0xDD, stride - 8);
+#endif
+            }
+            *tail[b->cls] = o;
+            tail[b->cls] = (Obj **)(p + 8);
+        }
+    }
+    for (cls = 1; cls <= GC_CLASSES; cls++) *tail[cls] = NULL;
+    link = &gc_big;
+    while ((g = *link) != NULL) {
+        o = (Obj *)(g + 1);
+        if (o->mark) {
+            o->mark = 0;
+            live += g->size + gc_extern(o);
+            link = &g->next;
+        } else {
+            *link = g->next;
+            gc_finish(o);
+            free(g);
+        }
+    }
+    gc_bytes = live;
 }"##,
     },
     Piece {
         name: "gc_collect",
-        deps: &["gcstate", "gc_mark", "gc_scan", "gc_size", "gc_free", "user_roots_decl"],
+        deps: &["gcstate", "gc_mark", "gc_scan", "gc_sweep", "user_roots_decl"],
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Mark and sweep. Called only at GC_POINT()s, so no runtime function ever sees a collection. */
 static void gc_collect(void) {
     Frame *f;
-    Obj **link, *o;
-    size_t i, live = 0;
+    size_t i;
     for (f = gc_top; f != NULL; f = f->up)
         for (i = 0; i < f->n; i++) gc_mark(*f->slots[i]);
     user_roots();
     while (gc_nstack > 0) gc_scan(gc_stack[--gc_nstack]);
-    link = &gc_all;
-    while ((o = *link) != NULL) {
-        if (o->mark) {
-            o->mark = 0;
-            live += gc_size(o);
-            link = &o->next;
-        } else {
-            *link = o->next;
-            gc_free(o);
-        }
-    }
-    gc_bytes = live;
-    gc_next = live * 2 > ((size_t)4 << 20) ? live * 2 : ((size_t)4 << 20);
+    gc_sweep();
+    gc_next = gc_bytes * 2 > ((size_t)4 << 20) ? gc_bytes * 2 : ((size_t)4 << 20);
 }"##,
     },
     // ---- bit casts ------------------------------------------------------------------------------

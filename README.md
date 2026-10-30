@@ -343,7 +343,9 @@ collector, each checked `add_i32`, ...) that are pulled in through their depende
   trap functions and the overflow macros disappear from what the C compiler sees. Array bounds, map
   keys, parsing, `assert` and `panic` stay checked in both, and `checked_add` & co. keep returning
   `Option`.
-* Memory is a precise mark-and-sweep collector: functions that hold references register them in a
+* Memory is a precise mark-and-sweep collector over a size-class allocator (objects up to 256 bytes are
+  cut from 64 KB blocks and recycled through per-class free lists, an 8-byte header, no per-object
+  `malloc`; bigger ones are plain `malloc` blocks): functions that hold references register them in a
   `Frame` (only those that can reach an allocation), collections run at `GC_POINT()`s
   before allocating instructions, variables captured by closures live in shared heap cells.
   `-DNEON_GC_STRESS` collects at every safe-point.

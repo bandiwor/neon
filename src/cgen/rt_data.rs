@@ -15,7 +15,7 @@ static Obj *agg_new(uint32_t tag, uint32_t n, uint64_t mask) {
     Agg *g = (Agg *)obj_new(sizeof(Agg) + n * sizeof(W), K_AGG, 0);
     g->h.n = n;
     g->mask = mask;
-    g->tag = tag;
+    g->h.flags = (uint16_t)tag;
     for (i = 0; i < n; i++) g->f[i] = 0;
     return &g->h;
 }"##,
