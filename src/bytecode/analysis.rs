@@ -72,24 +72,51 @@ pub fn transfer(insn: &Insn, live_out: &BitSet, always_live: &BitSet) -> BitSet 
 }
 
 /// Live-out sets: `result[i]` holds the registers live after item `i` executes.
+///
+/// A backward worklist: every item is visited once in reverse order (which is all straight-line
+/// code needs), and only items whose successors' sets changed are visited again.
 pub fn liveness(items: &[Item], always_live: &BitSet) -> Vec<BitSet> {
     let cfg = build_cfg(items);
     let n = items.len();
+    // predecessor lists in one flat array
+    let mut start = vec![0u32; n + 1];
+    for succ in &cfg.succ {
+        for &s in succ {
+            start[s + 1] += 1;
+        }
+    }
+    for i in 0..n {
+        start[i + 1] += start[i];
+    }
+    let mut fill = start.clone();
+    let mut preds = vec![0u32; start[n] as usize];
+    for (i, succ) in cfg.succ.iter().enumerate() {
+        for &s in succ {
+            preds[fill[s] as usize] = i as u32;
+            fill[s] += 1;
+        }
+    }
+
     let mut live_in = vec![BitSet::new(); n];
     let mut live_out = vec![BitSet::new(); n];
-    let mut changed = true;
-    while changed {
-        changed = false;
-        for i in (0..n).rev() {
-            let mut out = *always_live;
-            for &s in &cfg.succ[i] {
-                out.union_with(&live_in[s]);
-            }
-            let inn = transfer(&items[i].insn, &out, always_live);
-            if inn != live_in[i] || out != live_out[i] {
-                live_in[i] = inn;
-                live_out[i] = out;
-                changed = true;
+    let mut queued = vec![true; n];
+    let mut work: Vec<u32> = (0..n as u32).collect(); // popped from the end: last item first
+    while let Some(i) = work.pop() {
+        let i = i as usize;
+        queued[i] = false;
+        let mut out = *always_live;
+        for &s in &cfg.succ[i] {
+            out.union_with(&live_in[s]);
+        }
+        let inn = transfer(&items[i].insn, &out, always_live);
+        live_out[i] = out;
+        if inn != live_in[i] {
+            live_in[i] = inn;
+            for &p in &preds[start[i] as usize..start[i + 1] as usize] {
+                if !queued[p as usize] {
+                    queued[p as usize] = true;
+                    work.push(p);
+                }
             }
         }
     }

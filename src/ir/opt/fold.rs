@@ -43,16 +43,7 @@ fn fold_once(f: &mut IrFunc) -> usize {
     let counts = def_counts(f);
 
     // single-definition constants
-    let mut consts: HashMap<VReg, u64> = HashMap::default();
-    for b in &f.blocks {
-        for i in &b.insts {
-            if let Inst::Const { dst, val: Const::Bits(v) } = i {
-                if counts[dst.index()] == 1 && !f.pinned[dst.index()] {
-                    consts.insert(*dst, *v);
-                }
-            }
-        }
-    }
+    let consts = super::simplify::single_def_bits(f, &counts);
 
     // single-definition copies of registers that never change
     let stable = |r: VReg| counts[r.index()] == 1 && !f.pinned[r.index()];

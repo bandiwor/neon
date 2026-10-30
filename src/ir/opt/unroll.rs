@@ -39,6 +39,65 @@ fn reachable(f: &IrFunc) -> Vec<bool> {
     seen
 }
 
+/// A cheap test that rules out most loops before the expensive attempt: constant propagation can only
+/// decide a loop exit whose condition is computed from constants and from registers the loop
+/// updates starting from constants. Anything read from a parameter, memory, a call or another
+/// non-constant outside definition spoils every value computed from it.
+fn exit_may_be_decided(f: &IrFunc, body: &crate::fx::FxHashSet<usize>) -> bool {
+    let mut unknown = vec![false; f.regs.len()];
+    unknown.iter_mut().take(f.params as usize).for_each(|u| *u = true);
+    for (r, &p) in f.pinned.iter().enumerate() {
+        unknown[r] |= p;
+    }
+    for (b, blk) in f.blocks.iter().enumerate() {
+        if body.contains(&b) {
+            continue;
+        }
+        for inst in &blk.insts {
+            if let (Some(d), false) = (inst.def(), matches!(inst, Inst::Const { .. })) {
+                unknown[d.index()] = true;
+            }
+        }
+    }
+    loop {
+        let mut changed = false;
+        for &b in body {
+            for inst in &f.blocks[b].insts {
+                let Some(d) = inst.def() else { continue };
+                if unknown[d.index()] {
+                    continue;
+                }
+                let pure = matches!(
+                    inst,
+                    Inst::Const { .. }
+                        | Inst::Move { .. }
+                        | Inst::Arith { .. }
+                        | Inst::Cmp { .. }
+                        | Inst::Neg { .. }
+                        | Inst::BitNot { .. }
+                        | Inst::BoolNot { .. }
+                        | Inst::Cast { .. }
+                );
+                let mut taint = !pure;
+                inst.for_each_use(|r| taint |= unknown[r.index()]);
+                if taint {
+                    unknown[d.index()] = true;
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    body.iter().any(|&b| match f.blocks[b].term {
+        Term::Branch { cond, then, els } => {
+            body.contains(&then.index()) != body.contains(&els.index()) && !unknown[cond.index()]
+        }
+        _ => false,
+    })
+}
+
 pub fn unroll_func(f: &mut IrFunc) -> usize {
     if inst_count(f) > MAX_FUNC_INSTS {
         return 0;
@@ -62,6 +121,12 @@ pub fn unroll_func(f: &mut IrFunc) -> usize {
             }
             tried.push(lp.header);
             attempts += 1;
+            if !exit_may_be_decided(f, &lp.body) {
+                if attempts >= MAX_ATTEMPTS {
+                    break;
+                }
+                continue;
+            }
             if let Some(g) = try_unroll(f, &lp, &preds, &idom) {
                 *f = g;
                 done += 1;

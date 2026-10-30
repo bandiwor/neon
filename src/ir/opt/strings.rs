@@ -168,7 +168,7 @@ fn fold_conversion(
     descs: &[TypeDesc],
     strings: &StringPool<'_>,
     texts: &HashMap<VReg, u32>,
-    nums: &HashMap<VReg, u64>,
+    nums: &super::simplify::RegMap<u64>,
 ) -> Option<String> {
     use crate::runtime::{fmtspec, format as fmt};
     let Inst::Intrinsic { b: b @ (Builtin::ToString | Builtin::Format), desc: Some(d), args, .. } = inst else {
@@ -208,16 +208,7 @@ pub fn fold_strings(strings: &mut StringPool<'_>, descs: &[TypeDesc], f: &mut Ir
             }
         }
     }
-    let mut nums: HashMap<VReg, u64> = HashMap::default();
-    for b in &f.blocks {
-        for i in &b.insts {
-            if let Inst::Const { dst, val: Const::Bits(v) } = i {
-                if defs[dst.index()] == 1 && !f.pinned[dst.index()] {
-                    nums.insert(*dst, *v);
-                }
-            }
-        }
-    }
+    let nums = super::simplify::single_def_bits(f, &defs);
     let mut changes = 0;
     for bi in 0..f.blocks.len() {
         let mut ii = 0;

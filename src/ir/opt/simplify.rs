@@ -55,6 +55,43 @@ pub fn simplify_func(f: &mut IrFunc, fx: &FuncEffects) -> usize {
 
 // ---- helpers ------------------------------------------------------------------------------------
 
+/// A map keyed by register number, stored densely (registers are small consecutive integers, so a
+/// vector beats a hash table both in speed and in allocations).
+#[derive(Debug, Clone)]
+pub(super) struct RegMap<T> {
+    slots: Vec<Option<T>>,
+}
+
+impl<T> RegMap<T> {
+    pub(super) fn new(regs: usize) -> RegMap<T> {
+        RegMap { slots: (0..regs).map(|_| None).collect() }
+    }
+
+    pub(super) fn insert(&mut self, r: VReg, v: T) {
+        self.slots[r.index()] = Some(v);
+    }
+
+    pub(super) fn get(&self, r: &VReg) -> Option<&T> {
+        self.slots.get(r.index()).and_then(|s| s.as_ref())
+    }
+}
+
+/// The value of every register whose only definition is a numeric constant and which no closure can
+/// change.
+pub(super) fn single_def_bits(f: &IrFunc, defs: &[u32]) -> RegMap<u64> {
+    let mut out = RegMap::new(f.regs.len());
+    for b in &f.blocks {
+        for i in &b.insts {
+            if let Inst::Const { dst, val: Const::Bits(v) } = i {
+                if defs[dst.index()] == 1 && !f.pinned[dst.index()] {
+                    out.insert(*dst, *v);
+                }
+            }
+        }
+    }
+    out
+}
+
 /// Moves `d = t` that finish an assignment: `t` is computed earlier in the block by an instruction
 /// that is not a move, has no other use and nothing in between touches `d`. The move coalescing
 /// turns the pair into `d = op ..`; reading `t` in place of `d` later would keep `t` alive and
@@ -195,6 +232,24 @@ impl Key {
         }
     }
 
+    fn visit_operands(&self, mut f: impl FnMut(VReg)) {
+        match self {
+            Key::Arith(_, _, a, b) | Key::Cmp(_, _, a, b) | Key::ArrayGet(a, b, _) | Key::MapGet(a, b) => {
+                f(*a);
+                f(*b);
+            }
+            Key::Neg(_, a)
+            | Key::BitNot(_, a)
+            | Key::BoolNot(a)
+            | Key::Cast(_, _, a)
+            | Key::GetField(a, _)
+            | Key::EnumTag(a)
+            | Key::EnumField(a, _) => f(*a),
+            Key::Intrinsic(_, _, args) | Key::Call(_, args, _) => args.iter().for_each(|&r| f(r)),
+            Key::Global(_) => {}
+        }
+    }
+
     /// Whether `r` is one of the operands (without building the list).
     fn mentions(&self, r: VReg) -> bool {
         match self {
@@ -249,10 +304,33 @@ struct Avail {
     aggs: HashMap<VReg, Agg>,
     /// `dst -> src` for registers that are currently plain copies of another register.
     copies: HashMap<VReg, VReg>,
+    /// Registers that appear in some fact (once set a bit stays, so this may over-approximate): a
+    /// definition of any other register cannot invalidate anything and skips the scan.
+    mentioned: Vec<u64>,
 }
 
 impl Avail {
+    fn note(&mut self, r: VReg) {
+        let (w, bit) = (r.index() / 64, r.index() % 64);
+        if self.mentioned.len() <= w {
+            self.mentioned.resize(w + 1, 0);
+        }
+        self.mentioned[w] |= 1 << bit;
+    }
+
+    fn note_key(&mut self, k: &Key, value: VReg) {
+        self.note(value);
+        k.visit_operands(|r| self.note(r));
+    }
+
+    fn is_mentioned(&self, r: VReg) -> bool {
+        self.mentioned.get(r.index() / 64).is_some_and(|w| w & (1 << (r.index() % 64)) != 0)
+    }
+
     fn kill_reg(&mut self, r: VReg) {
+        if !self.is_mentioned(r) {
+            return;
+        }
         self.exprs.retain(|k, v| *v != r && !k.mentions(r));
         self.aggs.retain(|a, g| *a != r && !g.fields().contains(&r));
         self.copies.retain(|d, c| *d != r && *c != r);
@@ -274,7 +352,7 @@ impl Avail {
 }
 
 /// The expression key of a pure instruction, when every register involved is stable.
-fn key_of(f: &IrFunc, inst: &Inst, canon: &HashMap<VReg, VReg>, fx: &FuncEffects) -> Option<Key> {
+fn key_of(f: &IrFunc, inst: &Inst, canon: &RegMap<VReg>, fx: &FuncEffects) -> Option<Key> {
     let ok = |rs: &[VReg]| rs.iter().all(|r| !f.pinned[r.index()]);
     let c = |r: &VReg| canon.get(r).copied().unwrap_or(*r);
     let key = match inst {
@@ -307,8 +385,8 @@ fn rewrite(
     f: &IrFunc,
     inst: &mut Inst,
     avail: &Avail,
-    canon: &HashMap<VReg, VReg>,
-    consts: &HashMap<VReg, u64>,
+    canon: &RegMap<VReg>,
+    consts: &RegMap<u64>,
     fx: &FuncEffects,
 ) -> bool {
     let same_ty = |a: VReg, b: VReg| f.reg_ty(a) == f.reg_ty(b);
@@ -367,7 +445,7 @@ fn rewrite(
     false
 }
 
-fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &HashMap<VReg, VReg>, fx: &FuncEffects) {
+fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &RegMap<VReg>, fx: &FuncEffects) {
     let Some(dst) = inst.def() else { return };
     let stable = |rs: &[VReg]| rs.iter().all(|r| !f.pinned[r.index()]) && !f.pinned[dst.index()];
     match inst {
@@ -425,14 +503,13 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
 
     // registers that hold the same constant all over the function count as one when comparing keys
     let defs = def_counts(f);
-    let mut canon: HashMap<VReg, VReg> = HashMap::default();
-    let mut const_vals: HashMap<VReg, u64> = HashMap::default();
+    let mut canon: RegMap<VReg> = RegMap::new(f.regs.len());
+    let const_vals = single_def_bits(f, &defs);
     let mut first_const: HashMap<(IrTy, u64), VReg> = HashMap::default();
     for b in &f.blocks {
         for i in &b.insts {
-            if let Inst::Const { dst, val: Const::Bits(v) } = i {
-                if defs[dst.index()] == 1 && !f.pinned[dst.index()] {
-                    const_vals.insert(*dst, *v);
+            if let Inst::Const { dst, .. } = i {
+                if let Some(v) = const_vals.get(dst) {
                     let rep = *first_const.entry((f.reg_ty(*dst), *v)).or_insert(*dst);
                     if rep != *dst {
                         canon.insert(*dst, rep);
@@ -532,6 +609,13 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
             if let Some(d) = inst.def() {
                 avail.kill_reg(d);
             }
+            for (k, v) in &next.exprs {
+                avail.note_key(k, *v);
+            }
+            for (r, g) in &next.aggs {
+                avail.note(*r);
+                g.fields().iter().for_each(|&x| avail.note(x));
+            }
             avail.exprs.extend(next.exprs);
             avail.aggs.extend(next.aggs);
             if let Inst::Move { dst, src } = *inst {
@@ -541,10 +625,13 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
                     && !f.pinned[src.index()]
                     && f.reg_ty(dst) == f.reg_ty(src)
                 {
+                    avail.note(dst);
+                    avail.note(src);
                     avail.copies.insert(dst, src);
                 }
             }
             if let Some((key, value)) = stored {
+                avail.note_key(&key, value);
                 avail.exprs.insert(key, value);
             }
             if avail.exprs.len() + avail.aggs.len() + avail.copies.len() > MAX_FACTS {
@@ -581,16 +668,7 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
 
 fn algebra(f: &mut IrFunc) -> usize {
     let defs = def_counts(f);
-    let mut consts: HashMap<VReg, u64> = HashMap::default();
-    for b in &f.blocks {
-        for i in &b.insts {
-            if let Inst::Const { dst, val: Const::Bits(v) } = i {
-                if defs[dst.index()] == 1 && !f.pinned[dst.index()] {
-                    consts.insert(*dst, *v);
-                }
-            }
-        }
-    }
+    let consts = single_def_bits(f, &defs);
     let mut changes = 0;
     for bi in 0..f.blocks.len() {
         let mut ii = 0;

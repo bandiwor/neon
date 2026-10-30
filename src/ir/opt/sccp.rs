@@ -112,6 +112,21 @@ pub fn sccp_func(f: &mut IrFunc) -> usize {
     if n == 0 || regs == 0 || n * regs > 2_000_000 {
         return 0;
     }
+    // a register with one definition is already handled by `fold`; the dataflow only pays off
+    // for variables assigned in several places (loop counters, merged branches)
+    let mut defs = vec![0u32; regs];
+    for d in defs.iter_mut().take(f.params as usize) {
+        *d += 1;
+    }
+    for i in f.blocks.iter().flat_map(|b| &b.insts) {
+        if let Some(d) = i.def() {
+            defs[d.index()] += 1;
+        }
+    }
+    let multi = (0..regs).any(|r| defs[r] >= 2 && !matches!(f.regs[r], IrTy::Ref | IrTy::Unit));
+    if !multi {
+        return 0;
+    }
     let mut input: Vec<Option<Vec<Lat>>> = vec![None; n];
     // references and unit never hold a number: they stay `Bottom` and are not part of any merge
     let tracked: Vec<usize> = (0..regs).filter(|&r| !matches!(f.regs[r], IrTy::Ref | IrTy::Unit)).collect();

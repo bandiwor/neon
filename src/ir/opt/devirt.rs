@@ -118,11 +118,11 @@ fn returned_closures(prog: &IrProgram, mutated: &[Vec<bool>]) -> Vec<Option<Retu
 
 /// Globals assigned exactly once, at start-up, from a closure without captures.
 fn global_closures(prog: &IrProgram) -> HashMap<GlobalSlot, FuncId> {
-    let mut stores: HashMap<GlobalSlot, usize> = HashMap::default();
+    let mut stores = vec![0u32; prog.globals.len()];
     for f in &prog.funcs {
         for i in f.blocks.iter().flat_map(|b| &b.insts) {
             if let Inst::SetGlobal { slot, .. } = i {
-                *stores.entry(*slot).or_insert(0) += 1;
+                stores[slot.index()] += 1;
             }
         }
     }
@@ -131,7 +131,7 @@ fn global_closures(prog: &IrProgram) -> HashMap<GlobalSlot, FuncId> {
     let mut out = HashMap::default();
     for i in entry.blocks.iter().flat_map(|b| &b.insts) {
         let Inst::SetGlobal { slot, src } = i else { continue };
-        if stores[slot] != 1 || defs[src.index()] != 1 {
+        if stores[slot.index()] != 1 || defs[src.index()] != 1 {
             continue;
         }
         let def = entry.blocks.iter().flat_map(|b| &b.insts).find(|d| d.def() == Some(*src));
@@ -201,6 +201,12 @@ struct Known {
 }
 
 pub fn devirtualize(prog: &mut IrProgram) -> usize {
+    // nothing to do in a program that never calls a closure
+    let calls_closures =
+        prog.funcs.iter().flat_map(|f| &f.blocks).flat_map(|b| &b.insts).any(|i| matches!(i, Inst::CallClosure { .. }));
+    if !calls_closures {
+        return 0;
+    }
     let mutated = mutated_upvals(prog);
     let rets = returned_closures(prog, &mutated);
     let globals = global_closures(prog);
