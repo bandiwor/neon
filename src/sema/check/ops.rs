@@ -262,6 +262,15 @@ impl Checker<'_> {
                     None => {}
                 }
             }
+            NodeKind::Field { .. } if self.info().sys_args.contains(&node) => {
+                let span = ast.span(node);
+                self.err(
+                    span,
+                    "E0220",
+                    "cannot assign to `sys.args`",
+                    "it is read-only; copy it into a `var` to change it",
+                );
+            }
             NodeKind::Field { base, .. } | NodeKind::Index { base, .. } => self.check_mutable_place(base),
             _ => {}
         }

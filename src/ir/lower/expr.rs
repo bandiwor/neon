@@ -102,6 +102,11 @@ impl FnLower<'_, '_> {
             }
             NodeKind::Call { callee, args } => self.call_expr(id, callee, ast.list(args)),
             NodeKind::MethodCall { receiver, args, .. } => self.method_call_expr(id, receiver, ast.list(args)),
+            NodeKind::Field { .. } if self.cx.prog.modules[self.module.index()].info.sys_args.contains(&id) => {
+                let dst = self.new_reg_for(id);
+                self.emit(Inst::Intrinsic { dst, b: Builtin::Args, desc: None, args: vec![] });
+                dst
+            }
             NodeKind::Field { base, .. } => {
                 let obj = self.expr_fast(base);
                 let idx = self.cx.prog.modules[self.module.index()].info.field_indices[&id];

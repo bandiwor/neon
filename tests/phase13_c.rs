@@ -162,6 +162,26 @@ fn release_builds_drop_the_arithmetic_checks_and_debug_builds_keep_them() {
 }
 
 #[test]
+fn command_line_arguments_reach_the_program_like_in_the_vm() {
+    let Some(cc) = c_compiler() else { return };
+    let dir = scratch("args");
+    let src = dir.join("p.neon");
+    std::fs::write(&src, "println(sys.args.len()); for a in sys.args { println(f\"[{a}]\"); }").unwrap();
+    let c = translate(&src, &[]);
+    assert!(c.contains("int main(int argc, char **argv)"));
+    let exe = build(&cc, &dir, "p", &c, &[]);
+    for args in [&[][..], &["one"], &["a b", "", "ü", "--x"]] {
+        let native = run(Command::new(&exe).args(args), "");
+        let vm = run(neon().arg("run").arg(&src).arg("--").args(args), "");
+        assert_eq!((native.code, &native.out), (0, &vm.out), "{args:?}");
+    }
+    // programs that do not look at the arguments keep a plain `main(void)`
+    let plain = dir.join("q.neon");
+    std::fs::write(&plain, "println(1);").unwrap();
+    assert!(translate(&plain, &[]).contains("int main(void)"));
+}
+
+#[test]
 fn input_and_end_of_input_behave_like_the_vm() {
     let Some(cc) = c_compiler() else { return };
     let src = "let name = input(); println(\"hi \" + name);\n\

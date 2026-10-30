@@ -40,6 +40,7 @@ Options:
   -a, --annotate      (disasm) explain every instruction as `# r1 = r1 + 4`
   -w, --write         (fmt) rewrite the files in place
   --check             (fmt) exit with status 1 if a file is not formatted
+  --                  (run) everything after it is the program's `sys.args`
   -h, --help          show this help
   -V, --version       show the version
 
@@ -74,6 +75,8 @@ struct Args {
     annotate: bool,
     effects: bool,
     output: Option<String>,
+    /// `sys.args`: what follows `--`
+    prog_args: Vec<String>,
     opts: Options,
     vm: VmConfig,
     stats: bool,
@@ -107,12 +110,17 @@ fn parse_args(args: &[String]) -> Parsed {
     let mut effects = false;
     let mut output = None;
     let mut inline = None;
+    let mut prog_args: Vec<String> = Vec::new();
     let mut opts = Options { opt: OptConfig::default(), compile: CompileOptions { peephole: true } };
     let mut vmcfg = VmConfig::default();
     let mut gc = GcConfig::default();
     let mut stats = false;
     let mut it = args.iter().peekable();
     while let Some(a) = it.next() {
+        if a == "--" {
+            prog_args = it.by_ref().cloned().collect();
+            break;
+        }
         let mut value = |name: &str| -> Result<String, String> {
             it.next().cloned().ok_or_else(|| format!("`{name}` needs a value"))
         };
@@ -189,7 +197,20 @@ fn parse_args(args: &[String]) -> Parsed {
     if !matches!(command, Command::Repl | Command::Lsp | Command::Fmt) && file.is_none() {
         return usage("this command needs a file".to_string());
     }
-    Parsed::Go(Args { command, file, files, write, check, annotate, effects, output, opts, vm: vmcfg, stats })
+    Parsed::Go(Args {
+        command,
+        file,
+        files,
+        write,
+        check,
+        annotate,
+        effects,
+        output,
+        prog_args,
+        opts,
+        vm: vmcfg,
+        stats,
+    })
 }
 
 /// Reads the compiler's verdict: prints diagnostics and returns `None` on errors.
@@ -354,7 +375,7 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
         }
         Command::Run => {
             let bc = compiled.bytecode.as_ref().expect("bytecode");
-            let mut io = StreamIo::new(stdin, std::io::BufWriter::new(stdout));
+            let mut io = StreamIo::new(stdin, std::io::BufWriter::new(stdout)).with_args(args.prog_args.clone());
             let report = vm::run(bc, &mut io, &args.vm);
             let (_, mut w) = io.into_parts();
             let _ = w.flush();
@@ -503,6 +524,28 @@ mod tests {
         assert!(err.contains("error["), "{err}");
         let (code, _, _) = go(&["c"], &[], "");
         assert_eq!(code, EXIT_USAGE);
+    }
+
+    #[test]
+    fn arguments_after_double_dash_become_sys_args() {
+        let src = "println(sys.args.len()); for a in sys.args { println(a); }";
+        let files = [("p.neon", src)];
+        let (code, out, _) = go(&["run", "p.neon"], &files, "");
+        assert_eq!((code, out.as_str()), (EXIT_OK, "0\n"));
+        let (code, out, _) = go(&["run", "p.neon", "--", "a", "b c", "--flag"], &files, "");
+        assert_eq!((code, out.as_str()), (EXIT_OK, "3\na\nb c\n--flag\n"));
+        // the bare form works too
+        let (_, out, _) = go(&["p.neon", "--", "x"], &files, "");
+        assert_eq!(out, "1\nx\n");
+        // `sys` has one member, which is read-only; a variable called `sys` wins
+        let (code, _, err) = go(&["check", "e.neon"], &[("e.neon", "println(sys.nope);")], "");
+        assert_eq!(code, EXIT_COMPILE);
+        assert!(err.contains("`sys` has no member `nope`"), "{err}");
+        let (code, _, err) = go(&["check", "e.neon"], &[("e.neon", "sys.args = [];")], "");
+        assert_eq!(code, EXIT_COMPILE);
+        assert!(err.contains("cannot assign to `sys.args`"), "{err}");
+        let (code, out, _) = go(&["run", "e.neon"], &[("e.neon", "let sys = [1, 2]; println(sys.len());")], "");
+        assert_eq!((code, out.as_str()), (EXIT_OK, "2\n"));
     }
 
     #[test]

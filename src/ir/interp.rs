@@ -58,6 +58,7 @@ pub struct Interp<'p> {
     globals: Vec<u64>,
     output: String,
     input: VecDeque<String>,
+    args: Vec<String>,
     steps: u64,
     max_steps: u64,
 }
@@ -71,6 +72,11 @@ pub struct RunResult {
 
 /// Runs `prog` from its entry function, feeding `input` lines to `input()`.
 pub fn run(prog: &IrProgram, input: &[&str]) -> RunResult {
+    run_with_args(prog, input, &[])
+}
+
+/// Like [`run`], with the program's command-line arguments (`sys.args`).
+pub fn run_with_args(prog: &IrProgram, input: &[&str], args: &[&str]) -> RunResult {
     let mut it = Interp {
         prog,
         heap: Vec::new(),
@@ -80,6 +86,7 @@ pub fn run(prog: &IrProgram, input: &[&str]) -> RunResult {
         globals: vec![0; prog.globals.len()],
         output: String::new(),
         input: input.iter().map(|s| s.to_string()).collect(),
+        args: args.iter().map(|s| s.to_string()).collect(),
         steps: 0,
         max_steps: 200_000_000,
     };
@@ -106,6 +113,7 @@ pub fn eval_const(prog: &IrProgram) -> Result<ConstValue, Trap> {
         globals: vec![0; prog.globals.len()],
         output: String::new(),
         input: VecDeque::new(),
+        args: Vec::new(),
         steps: 0,
         max_steps: 1_000_000,
     };
@@ -804,6 +812,10 @@ impl Interp<'_> {
                 let ty = crate::runtime::value::option_payload_num(&self.prog.descs, desc.expect("result descriptor"));
                 let x = if b == CheckedNeg { 0 } else { a[1] };
                 self.option(mathfn::checked_op(b, ty, a[0], x))
+            }
+            Args => {
+                let handles: Vec<u64> = self.args.clone().into_iter().map(|a| self.alloc_str(a)).collect();
+                self.alloc(Obj::Array(handles))
             }
             ReadLine => match self.input.pop_front() {
                 Some(l) => {

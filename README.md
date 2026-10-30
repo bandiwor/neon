@@ -31,7 +31,7 @@ target/release/neon repl
 ```
 
 ```
-neon run <file>       compile and run (also: neon <file>)
+neon run <file> [-- args...]   compile and run (also: neon <file>); what follows `--` is `sys.args`
 neon check <file>     report errors without running
 neon disasm <file>    print the bytecode (-a / --annotate: a `# r1 = r1 + 4` note on every line)
 neon ir <file>        print the optimized intermediate representation (--effects: and the
@@ -84,6 +84,9 @@ Diagnostics (with source snippets) go to stderr, program output to stdout.
 * **Traits**: `trait`/`impl`, default methods, operator traits (`Add`, `Mul`,
   `Neg`, `Eq`, `Ord`, ...), `Display` used by `println`. Resolution is static
   (monomorphization), there are no trait objects.
+* **Command-line arguments**: `sys.args` is an `[string]` of the arguments after the program
+  (`neon run prog.neon -- a b`, or `./prog a b` for the C translation); it is read-only and a
+  variable, function or module alias named `sys` takes precedence. There is no `main(args)`.
 * **Modules**: `import { f } from "dir/file"`, `import "dir/file" as m`,
   `export`. A module DAG is built through the virtual file system.
 * **Arithmetic is checked**: integer overflow, division by zero, bad shifts,

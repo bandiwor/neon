@@ -1711,6 +1711,7 @@ impl FnEmit<'_, '_> {
             }
             Input => call!("rt_input", "rt_input()".into()),
             ReadLine => call!("rt_read_line", "rt_read_line()".into()),
+            Args => call!("rt_args", "rt_args()".into()),
             Panic => {
                 self.g.need("trap_panic");
                 self.line(format!("trap_panic({});", a[0]));

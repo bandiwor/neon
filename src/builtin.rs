@@ -124,6 +124,8 @@ builtins! {
     CheckedShl = "checked_shl",
     CheckedShr = "checked_shr",
     ReadLine = "read_line",
+    // `sys.args`: the command-line arguments after the program, as an array of strings
+    Args = "args",
 }
 
 impl Builtin {
@@ -139,6 +141,8 @@ impl Builtin {
             // formatting reads whatever object it is given
             Print | Println => Effects::IO.union(R),
             Input | ReadLine => Effects::IO.union(T).union(A),
+            // reads state of the host, builds a fresh array
+            Args => Effects::IO.union(A),
             Panic | Assert => T,
             ToString => R.union(A),
             Format => R.union(A).union(T),
@@ -166,7 +170,7 @@ impl Builtin {
     /// Builtins whose result is a brand new array, map or set that nothing else refers to.
     pub fn returns_fresh_container(self) -> bool {
         use Builtin::*;
-        matches!(self, ArrClone | StrSplit | StrChars | MapKeys | MapValues | SetToArray)
+        matches!(self, ArrClone | StrSplit | StrChars | MapKeys | MapValues | SetToArray | Args)
     }
 
     /// Whether the object passed as argument `i` may outlive the call: stored in the heap or handed
@@ -190,7 +194,7 @@ impl Builtin {
             | CharIsWhitespace | CharToUpper | CharToLower | StrTryParseI64 | StrTryParseU64 | StrTryParseF64
             | StrGetChar | StrTrySubstring | StrIndexOf | ArrGet | ArrTryPop | ArrTryRemove | MapGet | CheckedAdd
             | CheckedSub | CheckedMul | CheckedDiv | CheckedRem | CheckedPow | CheckedNeg | CheckedShl | CheckedShr
-            | ReadLine => false,
+            | ReadLine | Args => false,
         }
     }
 

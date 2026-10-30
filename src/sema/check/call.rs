@@ -351,8 +351,28 @@ impl Checker<'_> {
         ty
     }
 
+    /// Is `base` the built-in `sys` (an identifier nothing else in scope claims)?
+    fn is_builtin_sys(&mut self, base: NodeId) -> bool {
+        let NodeKind::Ident(sym) = *self.ast.kind(base) else { return false };
+        self.name(sym) == "sys"
+            && self.lookup_local(sym).is_none()
+            && self.prog.lookup_item(self.module, sym).is_none()
+            && !self.prog.modules[self.module.index()].scope.aliases.contains_key(&sym)
+    }
+
     pub fn field(&mut self, id: NodeId, base: NodeId, name: Symbol) -> Ty {
         let span = self.span(id);
+        if self.is_builtin_sys(base) {
+            // `sys.args`: the command-line arguments, an array of strings
+            if self.name(name) == "args" {
+                self.info().sys_args.insert(id);
+                let s = self.prog.types.prim(Prim::Str);
+                return self.prog.types.array(s);
+            }
+            let n = self.name(name).to_string();
+            self.err(span, "E0217", format!("`sys` has no member `{n}`"), "the only member is `sys.args`");
+            return self.error_ty();
+        }
         let bt = self.expr(base, None);
         let n = self.name(name).to_string();
         match self.kind(bt) {

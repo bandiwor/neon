@@ -19,6 +19,11 @@ pub trait VmIo {
     /// `input()`: the next line without its terminator; `Ok(None)` at end of
     /// input (the program then sees an empty string).
     fn input(&mut self) -> Result<Option<String>, String>;
+
+    /// `sys.args`: the command-line arguments of the program (without the program itself).
+    fn args(&self) -> Vec<String> {
+        Vec::new()
+    }
 }
 
 /// Collects output in a string and serves input from a queue of lines.
@@ -26,6 +31,7 @@ pub trait VmIo {
 pub struct BufferIo {
     pub output: String,
     input: VecDeque<String>,
+    args: Vec<String>,
 }
 
 impl BufferIo {
@@ -34,7 +40,17 @@ impl BufferIo {
     }
 
     pub fn with_input<S: AsRef<str>>(lines: &[S]) -> BufferIo {
-        BufferIo { output: String::new(), input: lines.iter().map(|l| l.as_ref().to_string()).collect() }
+        BufferIo {
+            output: String::new(),
+            input: lines.iter().map(|l| l.as_ref().to_string()).collect(),
+            args: Vec::new(),
+        }
+    }
+
+    /// The program's command-line arguments (`sys.args`).
+    pub fn with_args<S: AsRef<str>>(mut self, args: &[S]) -> BufferIo {
+        self.args = args.iter().map(|a| a.as_ref().to_string()).collect();
+        self
     }
 }
 
@@ -46,6 +62,10 @@ impl VmIo for BufferIo {
     fn input(&mut self) -> Result<Option<String>, String> {
         Ok(self.input.pop_front())
     }
+
+    fn args(&self) -> Vec<String> {
+        self.args.clone()
+    }
 }
 
 /// Adapts any reader / writer pair (stdin and stdout for the CLI).
@@ -53,13 +73,20 @@ impl VmIo for BufferIo {
 pub struct StreamIo<R: BufRead, W: Write> {
     reader: R,
     writer: W,
+    args: Vec<String>,
     /// The first write error, kept so output problems are not silently lost.
     pub write_error: Option<String>,
 }
 
 impl<R: BufRead, W: Write> StreamIo<R, W> {
     pub fn new(reader: R, writer: W) -> StreamIo<R, W> {
-        StreamIo { reader, writer, write_error: None }
+        StreamIo { reader, writer, args: Vec::new(), write_error: None }
+    }
+
+    /// The program's command-line arguments (`sys.args`).
+    pub fn with_args(mut self, args: Vec<String>) -> StreamIo<R, W> {
+        self.args = args;
+        self
     }
 
     pub fn into_parts(self) -> (R, W) {
@@ -68,6 +95,10 @@ impl<R: BufRead, W: Write> StreamIo<R, W> {
 }
 
 impl<R: BufRead, W: Write> VmIo for StreamIo<R, W> {
+    fn args(&self) -> Vec<String> {
+        self.args.clone()
+    }
+
     fn print(&mut self, s: &str) {
         if let Err(e) = self.writer.write_all(s.as_bytes()) {
             self.write_error.get_or_insert_with(|| e.to_string());
@@ -94,6 +125,15 @@ impl<R: BufRead, W: Write> VmIo for StreamIo<R, W> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn arguments_are_served_to_the_program() {
+        let io = BufferIo::with_input::<&str>(&[]).with_args(&["a", "b"]);
+        assert_eq!(io.args(), ["a", "b"]);
+        assert!(BufferIo::new().args().is_empty());
+        let io = StreamIo::new(std::io::Cursor::new(Vec::new()), Vec::new()).with_args(vec!["x".into()]);
+        assert_eq!(io.args(), ["x"]);
+    }
 
     #[test]
     fn buffer_io_collects_output_and_serves_lines() {

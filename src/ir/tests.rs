@@ -1624,3 +1624,16 @@ fn run_ir_output_before_trap(src: &str) -> String {
     let ir = compile(src);
     interp::run(&ir, &[]).output
 }
+
+#[test]
+fn sys_args_reaches_the_program_with_and_without_optimization() {
+    let src = "fn main() { for a in sys.args { println(a); } println(sys.args.len()); }";
+    let ir = compile(src);
+    let r = interp::run_with_args(&ir, &[], &["x", "y z"]);
+    assert_eq!((r.trap, r.output.as_str()), (None, "x\ny z\n2\n"));
+    let mut opt = ir.clone();
+    optimize(&mut opt, &OptConfig::default());
+    verify_program(&opt).unwrap();
+    assert_eq!(interp::run_with_args(&opt, &[], &["x", "y z"]).output, "x\ny z\n2\n");
+    assert_eq!(interp::run(&opt, &[]).output, "0\n");
+}

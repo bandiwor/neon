@@ -265,6 +265,8 @@ pub struct ModuleInfo {
     pub binding_locals: HashMap<NodeId, LocalId>,
     /// `Field`, `FieldInit` node to the field index.
     pub field_indices: HashMap<NodeId, u32>,
+    /// `sys.args` expressions (`Field` nodes whose base is the built-in `sys`).
+    pub sys_args: crate::fx::FxHashSet<NodeId>,
     /// `PatVariant` node to its variant.
     pub pat_variants: HashMap<NodeId, (AdtId, u32)>,
     pub closures: HashMap<NodeId, ClosureInfo>,

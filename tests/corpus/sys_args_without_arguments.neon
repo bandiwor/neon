@@ -1,0 +1,9 @@
+// `sys.args` is the list of command-line arguments after the program; none were given here
+let args = sys.args;
+println(args.len());
+println(args);
+for a in sys.args { println(f"unexpected {a}"); }
+var mine = sys.args;
+mine.push("copy");
+println(mine);
+println(sys.args.len());

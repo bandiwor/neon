@@ -131,7 +131,15 @@ pub fn emit_c(prog: &IrProgram) -> Result<String, String> {
 
     // ---- main ------------------------------------------------------------------------------------------
     section(&mut s, "Entry point");
-    let _ = writeln!(s, "int main(void) {{\n    {}();\n    fflush(stdout);\n    return 0;\n}}\n", out.entry);
+    if pieces.contains("rt_args") {
+        let _ = writeln!(
+            s,
+            "int main(int argc, char **argv) {{\n    rt_argc = argc;\n    rt_argv = argv;\n    {}();\n    fflush(stdout);\n    return 0;\n}}\n",
+            out.entry
+        );
+    } else {
+        let _ = writeln!(s, "int main(void) {{\n    {}();\n    fflush(stdout);\n    return 0;\n}}\n", out.entry);
+    }
 
     // ---- runtime implementation ------------------------------------------------------------------------
     section(&mut s, "Runtime: implementation");

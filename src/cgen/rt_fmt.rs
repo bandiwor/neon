@@ -259,6 +259,27 @@ static Obj *rt_read_line(void) {
     return opt_some(O2W(sb_take()), 1);
 }"##,
     },
+    Piece {
+        name: "args_state",
+        deps: &[],
+        hdrs: &[],
+        kind: Decl,
+        src: r##"static int rt_argc;       /* the arguments of main, for sys.args */
+static char **rt_argv;"##,
+    },
+    Piece {
+        name: "rt_args",
+        deps: &["args_state", "arr_push", "str_new"],
+        hdrs: &["string.h"],
+        kind: Funcs,
+        src: r##"/* sys.args: the command-line arguments without the program name. */
+static Obj *rt_args(void) {
+    int i;
+    Obj *a = arr_new(rt_argc > 1 ? (size_t)rt_argc - 1 : 0, 1);
+    for (i = 1; i < rt_argc; i++) arr_push(a, O2W(str_new(rt_argv[i], strlen(rt_argv[i]))));
+    return a;
+}"##,
+    },
     // ---- character classes and case -------------------------------------------------------------
     Piece {
         name: "cp_is_digit",

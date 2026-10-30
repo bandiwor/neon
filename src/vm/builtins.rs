@@ -324,6 +324,13 @@ impl Vm<'_, '_> {
                 let ty = option_payload_num(&self.prog.descs, crate::ir::DescId(desc.expect("result descriptor")));
                 self.option(desc, mathfn::checked_op(b, ty, a[0], 0))?
             }
+            Args => {
+                let mut handles = Vec::new();
+                for a in self.io.args() {
+                    handles.push(self.heap.alloc_str(a)?);
+                }
+                self.heap.alloc_array(handles, true)?
+            }
             ReadLine => {
                 let line = self.io.input().map_err(Trap::Io)?;
                 match line {
