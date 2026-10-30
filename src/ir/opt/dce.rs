@@ -105,31 +105,29 @@ fn thread_jumps(f: &mut IrFunc) {
 
 /// Appends a block to its only predecessor when that predecessor jumps to it.
 fn merge_blocks(f: &mut IrFunc) -> usize {
-    let mut merged = 0;
-    loop {
-        let mut preds = vec![0u32; f.blocks.len()];
-        for b in &f.blocks {
-            for s in b.term.successors() {
-                preds[s.index()] += 1;
-            }
+    let mut preds = vec![0u32; f.blocks.len()];
+    for b in &f.blocks {
+        let (slots, n) = b.term.successor_slots();
+        for s in &slots[..n] {
+            preds[s.index()] += 1;
         }
-        let mut did = false;
-        for a in 0..f.blocks.len() {
-            let Term::Jump(t) = f.blocks[a].term else { continue };
+    }
+    let mut merged = 0;
+    for a in 0..f.blocks.len() {
+        // a block that took over its successor's terminator may be able to take over the next one
+        while let Term::Jump(t) = f.blocks[a].term {
             let t = t.index();
             if t == a || t == 0 || preds[t] != 1 {
-                continue;
+                break;
             }
+            // (the successors of `t` keep their predecessor counts: the edge now starts in `a`)
             let tail = std::mem::replace(&mut f.blocks[t], Block { insts: Vec::new(), term: Term::Unreachable });
             f.blocks[a].insts.extend(tail.insts);
             f.blocks[a].term = tail.term;
             merged += 1;
-            did = true;
-            break; // `t` is now an orphan; recompute
         }
-        if !did {
-            break;
-        }
+    }
+    if merged > 0 {
         remove_unreachable(f);
     }
     merged

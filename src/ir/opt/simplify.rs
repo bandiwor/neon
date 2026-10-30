@@ -170,15 +170,49 @@ fn use_counts(f: &IrFunc) -> Vec<u32> {
 }
 
 /// Predecessor lists (an edge counts once per terminator slot).
-pub(super) fn predecessors(f: &IrFunc) -> Vec<Vec<usize>> {
-    let mut preds = vec![Vec::new(); f.blocks.len()];
-    for (i, b) in f.blocks.iter().enumerate() {
-        let (slots, n) = b.term.successor_slots();
-        for s in &slots[..n] {
-            preds[s.index()].push(i);
+pub(super) fn predecessors(f: &IrFunc) -> Preds {
+    let n = f.blocks.len();
+    let mut start = vec![0usize; n + 1];
+    for b in &f.blocks {
+        let (slots, count) = b.term.successor_slots();
+        for s in &slots[..count] {
+            start[s.index() + 1] += 1;
         }
     }
-    preds
+    for i in 0..n {
+        start[i + 1] += start[i];
+    }
+    let mut fill = start.clone();
+    let mut list = vec![0usize; start[n]];
+    for (i, b) in f.blocks.iter().enumerate() {
+        let (slots, count) = b.term.successor_slots();
+        for s in &slots[..count] {
+            list[fill[s.index()]] = i;
+            fill[s.index()] += 1;
+        }
+    }
+    Preds { start, list }
+}
+
+/// Predecessor lists of all blocks in two flat arrays (no allocation per block).
+#[derive(Debug)]
+pub(super) struct Preds {
+    start: Vec<usize>,
+    list: Vec<usize>,
+}
+
+impl Preds {
+    pub(super) fn iter(&self) -> impl Iterator<Item = &[usize]> + '_ {
+        (0..self.start.len() - 1).map(|i| &self[i])
+    }
+}
+
+impl std::ops::Index<usize> for Preds {
+    type Output = [usize];
+
+    fn index(&self, b: usize) -> &[usize] {
+        &self.list[self.start[b]..self.start[b + 1]]
+    }
 }
 
 /// Whether executing `i` may write memory other code can read (calls count as what their callee does).
@@ -216,22 +250,6 @@ enum Key {
 }
 
 impl Key {
-    fn operands(&self) -> Vec<VReg> {
-        match self {
-            Key::Arith(_, _, a, b) | Key::Cmp(_, _, a, b) | Key::ArrayGet(a, b, _) => vec![*a, *b],
-            Key::MapGet(a, b) => vec![*a, *b],
-            Key::Neg(_, a)
-            | Key::BitNot(_, a)
-            | Key::BoolNot(a)
-            | Key::Cast(_, _, a)
-            | Key::GetField(a, _)
-            | Key::EnumTag(a)
-            | Key::EnumField(a, _) => vec![*a],
-            Key::Intrinsic(_, _, args) | Key::Call(_, args, _) => args.clone(),
-            Key::Global(_) => Vec::new(),
-        }
-    }
-
     fn visit_operands(&self, mut f: impl FnMut(VReg)) {
         match self {
             Key::Arith(_, _, a, b) | Key::Cmp(_, _, a, b) | Key::ArrayGet(a, b, _) | Key::MapGet(a, b) => {
@@ -377,7 +395,9 @@ fn key_of(f: &IrFunc, inst: &Inst, canon: &RegMap<VReg>, fx: &FuncEffects) -> Op
         _ => return None,
     };
     let dst = inst.def()?;
-    (ok(&key.operands()) && ok(&[dst])).then_some(key)
+    let mut good = ok(&[dst]);
+    key.visit_operands(|r| good &= ok(&[r]));
+    good.then_some(key)
 }
 
 /// Rewrites `inst` using what is known; returns `true` when it changed.
@@ -445,32 +465,30 @@ fn rewrite(
     false
 }
 
-fn record(f: &IrFunc, inst: &Inst, avail: &mut Avail, canon: &RegMap<VReg>, fx: &FuncEffects) {
-    let Some(dst) = inst.def() else { return };
+/// What an instruction teaches the value numbering.
+enum Fact {
+    Expr(Key, VReg),
+    Agg(VReg, Agg),
+}
+
+fn record(f: &IrFunc, inst: &Inst, canon: &RegMap<VReg>, fx: &FuncEffects) -> Option<Fact> {
+    let dst = inst.def()?;
     let stable = |rs: &[VReg]| rs.iter().all(|r| !f.pinned[r.index()]) && !f.pinned[dst.index()];
     match inst {
         Inst::NewStruct { fields, .. } if stable(fields) && !fields.contains(&dst) => {
-            avail.aggs.insert(dst, Agg::Struct(fields.clone()));
+            Some(Fact::Agg(dst, Agg::Struct(fields.clone())))
         }
         Inst::NewArray { elems, .. } if stable(elems) && !elems.contains(&dst) => {
-            avail.aggs.insert(dst, Agg::Array(elems.clone()));
+            Some(Fact::Agg(dst, Agg::Array(elems.clone())))
         }
         Inst::NewEnum { tag, fields, .. } if stable(fields) && !fields.contains(&dst) => {
-            avail.aggs.insert(dst, Agg::Enum { tag: *tag, fields: fields.clone() });
+            Some(Fact::Agg(dst, Agg::Enum { tag: *tag, fields: fields.clone() }))
         }
-        Inst::Move { src, .. } if *src != dst && stable(&[*src]) => {
-            if let Some(a) = avail.aggs.get(src).cloned() {
-                if !a.fields().contains(&dst) {
-                    avail.aggs.insert(dst, a);
-                }
-            }
-        }
+        // (a copy of an aggregate has never carried its description over)
+        Inst::Move { .. } => None,
         _ => {
-            if let Some(key) = key_of(f, inst, canon, fx) {
-                if !key.operands().contains(&dst) {
-                    avail.exprs.insert(key, dst);
-                }
-            }
+            let key = key_of(f, inst, canon, fx)?;
+            (!key.mentions(dst)).then_some(Fact::Expr(key, dst))
         }
     }
 }
@@ -604,20 +622,22 @@ fn forward_values(f: &mut IrFunc, fx: &FuncEffects) -> usize {
                 _ => {}
             }
             // facts are computed from the operands before the definition invalidates anything
-            let mut next = Avail::default();
-            record(f, inst, &mut next, &canon, fx);
+            let fact = record(f, inst, &canon, fx);
             if let Some(d) = inst.def() {
                 avail.kill_reg(d);
             }
-            for (k, v) in &next.exprs {
-                avail.note_key(k, *v);
+            match fact {
+                Some(Fact::Expr(k, v)) => {
+                    avail.note_key(&k, v);
+                    avail.exprs.insert(k, v);
+                }
+                Some(Fact::Agg(r, g)) => {
+                    avail.note(r);
+                    g.fields().iter().for_each(|&x| avail.note(x));
+                    avail.aggs.insert(r, g);
+                }
+                None => {}
             }
-            for (r, g) in &next.aggs {
-                avail.note(*r);
-                g.fields().iter().for_each(|&x| avail.note(x));
-            }
-            avail.exprs.extend(next.exprs);
-            avail.aggs.extend(next.aggs);
             if let Inst::Move { dst, src } = *inst {
                 if dst != src
                     && !result_moves.contains(&(b, ii))
@@ -878,7 +898,7 @@ fn drop_inrange_loads(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let defs = def_counts(f);
     let mut changes = 0;
     for (bi, pred) in preds.iter().enumerate() {
-        let [p] = pred.as_slice() else { continue };
+        let [p] = pred else { continue };
         let p = *p;
         let Term::Branch { cond, then, els } = f.blocks[p].term else { continue };
         if then.index() != bi || els.index() == bi || p == bi {

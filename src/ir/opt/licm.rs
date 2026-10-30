@@ -70,7 +70,7 @@ pub(super) fn reverse_post_order(f: &IrFunc) -> Vec<usize> {
 }
 
 /// Immediate dominators (Cooper, Harvey, Kennedy); `usize::MAX` for unreachable blocks.
-pub(super) fn dominators(f: &IrFunc, rpo: &[usize], preds: &[Vec<usize>]) -> Vec<usize> {
+pub(super) fn dominators(f: &IrFunc, rpo: &[usize], preds: &super::simplify::Preds) -> Vec<usize> {
     let n = f.blocks.len();
     let mut order = vec![usize::MAX; n];
     for (i, &b) in rpo.iter().enumerate() {
@@ -128,7 +128,7 @@ pub(super) struct Loop {
     pub body: HashSet<usize>,
 }
 
-pub(super) fn find_loops(f: &IrFunc, idom: &[usize], preds: &[Vec<usize>]) -> Vec<Loop> {
+pub(super) fn find_loops(f: &IrFunc, idom: &[usize], preds: &super::simplify::Preds) -> Vec<Loop> {
     let mut loops: Vec<Loop> = Vec::new();
     for (l, b) in f.blocks.iter().enumerate() {
         if idom[l] == usize::MAX {

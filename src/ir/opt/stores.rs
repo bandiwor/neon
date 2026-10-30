@@ -56,6 +56,9 @@ fn place_of(i: &Inst, consts: &FxHashMap<VReg, u64>) -> Option<Place> {
 pub fn dead_stores(f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let mut removed = 0;
     for b in 0..f.blocks.len() {
+        if !f.blocks[b].insts.iter().any(|i| place_of(i, &FxHashMap::default()).is_some()) {
+            continue;
+        }
         // the place each store writes, with indices known to be constants in this block spelled out
         let mut consts: FxHashMap<VReg, u64> = FxHashMap::default();
         let mut places: Vec<Option<Place>> = Vec::with_capacity(f.blocks[b].insts.len());

@@ -145,7 +145,7 @@ pub fn unroll_func(f: &mut IrFunc) -> usize {
     done
 }
 
-fn try_unroll(f: &IrFunc, lp: &super::licm::Loop, preds: &[Vec<usize>], idom: &[usize]) -> Option<IrFunc> {
+fn try_unroll(f: &IrFunc, lp: &super::licm::Loop, preds: &super::simplify::Preds, idom: &[usize]) -> Option<IrFunc> {
     let outside: Vec<usize> =
         preds[lp.header].iter().copied().filter(|p| idom[*p] != usize::MAX && !lp.body.contains(p)).collect();
     if outside.is_empty() {

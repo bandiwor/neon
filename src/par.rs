@@ -9,6 +9,8 @@ use std::sync::Mutex;
 
 /// Below this many items the cost of starting threads is not worth it.
 const MIN_ITEMS: usize = 8;
+/// Stack size of a worker thread (the main thread usually has 8 MiB).
+const WORKER_STACK: usize = 16 << 20;
 /// More threads than this rarely help the compiler's workloads.
 const MAX_THREADS: usize = 8;
 
@@ -77,16 +79,20 @@ where
     std::thread::scope(|s| {
         let handles: Vec<_> = (0..workers)
             .map(|_| {
-                s.spawn(move || {
-                    let mut done = Vec::new();
-                    loop {
-                        let next = queue.lock().unwrap_or_else(|e| e.into_inner()).next();
-                        match next {
-                            Some((i, t)) => done.push((i, f(i, t))),
-                            None => break done,
+                // generous stacks: the passes recurse over expression trees
+                std::thread::Builder::new()
+                    .stack_size(WORKER_STACK)
+                    .spawn_scoped(s, move || {
+                        let mut done = Vec::new();
+                        loop {
+                            let next = queue.lock().unwrap_or_else(|e| e.into_inner()).next();
+                            match next {
+                                Some((i, t)) => done.push((i, f(i, t))),
+                                None => break done,
+                            }
                         }
-                    }
-                })
+                    })
+                    .expect("cannot start a compiler thread")
             })
             .collect();
         for h in handles {

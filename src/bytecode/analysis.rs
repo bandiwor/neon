@@ -1,7 +1,5 @@
 //! Liveness analysis over instruction lists.
 
-use crate::fx::FxHashMap as HashMap;
-
 use super::insn::*;
 use crate::gc::BitSet;
 
@@ -9,7 +7,6 @@ use crate::gc::BitSet;
 #[derive(Debug)]
 pub struct Cfg {
     pub succ: Vec<Succ>,
-    pub label_index: HashMap<Label, usize>,
 }
 
 /// At most two successors (fall-through and jump target), stored inline.
@@ -29,10 +26,15 @@ impl<'a> IntoIterator for &'a Succ {
 }
 
 pub fn build_cfg(items: &[Item]) -> Cfg {
-    let mut label_index = HashMap::default();
+    // labels are small numbers: a plain table finds them faster than a hash map
+    let mut label_index: Vec<usize> = Vec::new();
     for (i, it) in items.iter().enumerate() {
         if let Insn::Label(l) = it.insn {
-            label_index.insert(l, i);
+            let l = l.0 as usize;
+            if label_index.len() <= l {
+                label_index.resize(l + 1, usize::MAX);
+            }
+            label_index[l] = i;
         }
     }
     let succ = items
@@ -45,7 +47,7 @@ pub fn build_cfg(items: &[Item]) -> Cfg {
                 s.n += 1;
             }
             if let Some(t) = it.insn.target() {
-                if let Some(&ti) = label_index.get(&t) {
+                if let Some(&ti) = label_index.get(t.0 as usize).filter(|&&ti| ti != usize::MAX) {
                     s.idx[s.n as usize] = ti;
                     s.n += 1;
                 }
@@ -53,7 +55,7 @@ pub fn build_cfg(items: &[Item]) -> Cfg {
             s
         })
         .collect();
-    Cfg { succ, label_index }
+    Cfg { succ }
 }
 
 /// The registers live *before* `insn` given those live after it.
