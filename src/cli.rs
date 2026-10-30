@@ -28,6 +28,7 @@ Commands:
 Options:
   --no-opt            disable IR optimizations (folding, DCE, inlining)
   --no-peephole       disable the bytecode peephole optimizer
+  -j, --threads <n>   compiler threads (0 = all cores, 1 = none; default: NEON_THREADS or all cores)
   --gc-limit <size>   cap the heap (e.g. 512k, 64m); exceeding it traps
   --gc-stress         collect garbage at every safe-point (for testing)
   --max-steps <n>     stop with a panic after n instructions
@@ -113,6 +114,12 @@ fn parse_args(args: &[String]) -> Parsed {
             "-V" | "--version" => return Parsed::Exit(format!("neon {}\n", env!("CARGO_PKG_VERSION")), EXIT_OK),
             "--no-opt" => opts.opt = OptConfig::none(),
             "--no-peephole" => opts.compile.peephole = false,
+            "-j" | "--threads" => match value("--threads")
+                .and_then(|v| v.parse::<usize>().map_err(|_| format!("bad thread count `{v}`")))
+            {
+                Ok(n) => crate::par::set_threads(n),
+                Err(e) => return usage(e),
+            },
             "--gc-stress" => {
                 gc.stress = true;
                 gc.reuse_slots = false;

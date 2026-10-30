@@ -232,3 +232,32 @@ fn constant_operands_of_additions_become_immediates_wherever_the_constant_was_co
         assert_eq!(io.output, "115\n", "[{cfg}]");
     }
 }
+
+#[test]
+fn the_bytecode_does_not_depend_on_the_number_of_threads() {
+    // enough functions, strings and constants for every parallel stage to have real work
+    let mut src = String::new();
+    for i in 0..40 {
+        src += &format!(
+            "fn work{i}(x: i64) -> string {{\n    var acc = {big};\n    var k = 0;\n    while k < x {{ acc += k * {i}; k += 1; }}\n    f\"w{i}: {{acc}} {{x:>4}} \" + \"tail{i}\"\n}}\n",
+            big = 100_000 + i
+        );
+    }
+    src += "var total = 0;\n";
+    for i in 0..40 {
+        src += &format!("println(work{i}({}));\ntotal += {i};\n", i % 5);
+    }
+    src += "println(total);\n";
+    let mut texts = Vec::new();
+    for threads in [1, 2, 4, 0] {
+        neon::par::set_threads(threads);
+        let bc = bytecode(&src, &Options::default());
+        texts.push((threads, disassemble(&bc).unwrap(), bc.strings.clone(), bc.constants.clone()));
+    }
+    neon::par::set_threads(0);
+    for t in &texts[1..] {
+        assert_eq!(texts[0].1, t.1, "{} threads differ from 1", t.0);
+        assert_eq!(texts[0].2, t.2, "string tables differ for {} threads", t.0);
+        assert_eq!(texts[0].3, t.3, "constant pools differ for {} threads", t.0);
+    }
+}

@@ -55,18 +55,41 @@ impl fmt::Display for CompileError {
 impl std::error::Error for CompileError {}
 
 /// Compiles every function of `ir`. Chunk `i` is the translation of function `i`.
+///
+/// Functions are independent except for the shared constant pool, so register allocation, instruction
+/// selection and the peephole pass run in parallel with a private pool per function; the pools are
+/// merged in function order (which is the order a sequential run would have interned them in, so the
+/// result is byte-for-byte the same), then assembly runs in parallel again.
 pub fn compile_program(ir: &IrProgram, opts: &CompileOptions) -> Result<BytecodeProgram, CompileError> {
     if ir.descs.len() >= 0x7FFF {
         return Err(CompileError::new("<program>", "too many type descriptors"));
     }
-    let mut consts = func::ConstPool::default();
-    let mut chunks = Vec::with_capacity(ir.funcs.len());
-    for f in &ir.funcs {
-        chunks.push(compile_function(f, &mut consts, opts)?);
+    let emitted = crate::par::map(&ir.funcs, |_, f| emit_function(f, opts));
+
+    // the program-wide constant pool, in function order
+    let mut pool = func::ConstPool::default();
+    let mut ready: Vec<Result<Emitted, CompileError>> = Vec::with_capacity(emitted.len());
+    for e in emitted {
+        ready.push(e.map(|mut e| {
+            let map: Vec<u32> = e.consts.iter().map(|&bits| pool.intern(bits)).collect();
+            for it in &mut e.items {
+                if let Insn::LoadK { k, .. } = &mut it.insn {
+                    *k = map[*k as usize];
+                }
+            }
+            e
+        }));
     }
+
+    let jobs: Vec<(&IrFunc, &Result<Emitted, CompileError>)> = ir.funcs.iter().zip(&ready).collect();
+    let chunks = crate::par::map(&jobs, |_, (f, e)| match e {
+        Ok(e) => assemble_function(f, e),
+        Err(err) => Err(err.clone()),
+    });
+    let chunks: Result<Vec<Chunk>, CompileError> = chunks.into_iter().collect();
     Ok(BytecodeProgram {
-        chunks,
-        constants: consts.values,
+        chunks: chunks?,
+        constants: pool.values,
         strings: ir.strings.clone(),
         descs: ir.descs.clone(),
         globals: ir.globals.clone(),
@@ -74,7 +97,16 @@ pub fn compile_program(ir: &IrProgram, opts: &CompileOptions) -> Result<Bytecode
     })
 }
 
-fn compile_function(f: &IrFunc, consts: &mut func::ConstPool, opts: &CompileOptions) -> Result<Chunk, CompileError> {
+/// A function after instruction selection and the peephole pass, before stack maps and assembly.
+struct Emitted {
+    items: Vec<crate::bytecode::Item>,
+    pinned: BitSet,
+    /// The constants this function loaded, in the order it first used them (`LoadK` indexes this
+    /// until the pools are merged).
+    consts: Vec<u64>,
+}
+
+fn emit_function(f: &IrFunc, opts: &CompileOptions) -> Result<Emitted, CompileError> {
     let err = |m: &str| CompileError::new(&f.name, m);
     if f.params > 250 {
         return Err(err("more than 250 parameters"));
@@ -84,7 +116,8 @@ fn compile_function(f: &IrFunc, consts: &mut func::ConstPool, opts: &CompileOpti
     }
     let alloc = allocate(f).map_err(|_| err("needs more than 256 registers"))?;
 
-    let mut em = func::FuncEmitter::new(f, &alloc, consts);
+    let mut consts = func::ConstPool::default();
+    let mut em = func::FuncEmitter::new(f, &alloc, &mut consts);
     em.emit_function()?;
     let mut items = em.items;
 
@@ -98,15 +131,19 @@ fn compile_function(f: &IrFunc, consts: &mut func::ConstPool, opts: &CompileOpti
     if opts.peephole {
         peephole(&mut items, &pinned);
     }
+    Ok(Emitted { items, pinned, consts: consts.values })
+}
 
+fn assemble_function(f: &IrFunc, e: &Emitted) -> Result<Chunk, CompileError> {
+    let err = |m: &str| CompileError::new(&f.name, m);
     let param_refs: Vec<bool> = (0..f.params as usize).map(|i| f.regs[i].is_ref()).collect();
-    let maps = stackmap::compute(&items, &pinned, &param_refs);
-    let insns: Vec<Insn> = items.iter().map(|i| i.insn.clone()).collect();
+    let maps = stackmap::compute(&e.items, &e.pinned, &param_refs);
+    let insns: Vec<Insn> = e.items.iter().map(|i| i.insn.clone()).collect();
     let asm = assemble(&insns).map_err(|e| err(&format!("assembly failed: {e}")))?;
     let stack_maps =
         maps.into_iter().map(|(i, roots)| crate::gc::StackMap { pc: asm.pcs[i], live_roots: roots }).collect();
 
-    let frame_size = frame_size(&items, f.params);
+    let frame_size = frame_size(&e.items, f.params);
     Ok(Chunk {
         name: f.name.clone(),
         code: asm.code,

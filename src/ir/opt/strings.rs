@@ -17,12 +17,87 @@ use crate::ir::types::*;
 
 use super::simplify::def_counts;
 
-fn intern(strings: &mut Vec<String>, s: String) -> u32 {
-    match strings.iter().position(|x| *x == s) {
-        Some(i) => i as u32,
-        None => {
-            strings.push(s);
-            strings.len() as u32 - 1
+/// The program's string constants as one function's optimizer sees them: the shared table (read
+/// only, so functions can be optimized in parallel) plus the strings this function added. Added
+/// strings get provisional numbers after the shared ones; [`merge_added`] gives them their final
+/// place, in function order, so the result does not depend on how the work was scheduled.
+#[derive(Debug)]
+pub struct StringPool<'a> {
+    base: &'a [String],
+    base_index: &'a HashMap<&'a str, u32>,
+    added: Vec<String>,
+    added_index: HashMap<String, u32>,
+}
+
+impl<'a> StringPool<'a> {
+    pub fn new(base: &'a [String], base_index: &'a HashMap<&'a str, u32>) -> StringPool<'a> {
+        StringPool { base, base_index, added: Vec::new(), added_index: HashMap::default() }
+    }
+
+    pub fn get(&self, i: u32) -> &str {
+        match (i as usize).checked_sub(self.base.len()) {
+            None => &self.base[i as usize],
+            Some(k) => &self.added[k],
+        }
+    }
+
+    pub fn intern(&mut self, s: String) -> u32 {
+        if let Some(&i) = self.base_index.get(s.as_str()) {
+            return i;
+        }
+        if let Some(&i) = self.added_index.get(&s) {
+            return i;
+        }
+        let i = (self.base.len() + self.added.len()) as u32;
+        self.added_index.insert(s.clone(), i);
+        self.added.push(s);
+        i
+    }
+
+    pub fn into_added(self) -> Vec<String> {
+        self.added
+    }
+}
+
+/// An index of the shared table by content (the first occurrence wins, as a linear search would).
+pub fn index_strings(strings: &[String]) -> HashMap<&str, u32> {
+    let mut index = HashMap::default();
+    index.reserve(strings.len());
+    for (i, s) in strings.iter().enumerate() {
+        index.entry(s.as_str()).or_insert(i as u32);
+    }
+    index
+}
+
+/// Appends the strings functions added to `table` (in function order, skipping ones already there)
+/// and renumbers their constants.
+pub fn merge_added(table: &mut Vec<String>, base_len: usize, funcs: &mut [IrFunc], added: Vec<Vec<String>>) {
+    let mut index: HashMap<String, u32> = HashMap::default();
+    for (f, strings) in funcs.iter_mut().zip(added) {
+        if strings.is_empty() {
+            continue;
+        }
+        let map: Vec<u32> = strings
+            .into_iter()
+            .map(|s| {
+                if let Some(&i) = index.get(&s) {
+                    return i;
+                }
+                // a string the table already had cannot be here: functions look in it first
+                let i = table.len() as u32;
+                index.insert(s.clone(), i);
+                table.push(s);
+                i
+            })
+            .collect();
+        for b in &mut f.blocks {
+            for inst in &mut b.insts {
+                if let Inst::Const { val: Const::Str(i), .. } = inst {
+                    if let Some(k) = (*i as usize).checked_sub(base_len) {
+                        *i = map[k];
+                    }
+                }
+            }
         }
     }
 }
@@ -40,11 +115,11 @@ fn use_counts(f: &IrFunc) -> Vec<u32> {
 
 /// The printing builtin of `inst` if it has one constant string argument: the builtin, the text
 /// it would write and the register holding the argument.
-fn const_print(inst: &Inst, consts: &HashMap<VReg, u32>, strings: &[String]) -> Option<(Builtin, String)> {
+fn const_print(inst: &Inst, consts: &HashMap<VReg, u32>, strings: &StringPool<'_>) -> Option<(Builtin, String)> {
     match inst {
         Inst::Intrinsic { b: b @ (Builtin::Print | Builtin::Println), args, .. } => match args.as_slice() {
             &[a] => consts.get(&a).map(|&i| {
-                let mut text = strings[i as usize].clone();
+                let mut text = strings.get(i).to_string();
                 if *b == Builtin::Println {
                     text.push('\n');
                 }
@@ -91,7 +166,7 @@ fn print_without_to_string(
 fn fold_conversion(
     inst: &Inst,
     descs: &[TypeDesc],
-    strings: &[String],
+    strings: &StringPool<'_>,
     texts: &HashMap<VReg, u32>,
     nums: &HashMap<VReg, u64>,
 ) -> Option<String> {
@@ -105,12 +180,12 @@ fn fold_conversion(
         (Builtin::ToString, TypeDesc::Num(n)) => nums.get(&value).map(|&v| fmt::format_num(*n, v)),
         (Builtin::ToString, TypeDesc::Bool) => nums.get(&value).map(|&v| fmt::format_bool(v).to_string()),
         (Builtin::ToString, TypeDesc::Char) => nums.get(&value).map(|&v| fmt::format_char(v)),
-        (Builtin::ToString, TypeDesc::Str) => texts.get(&value).map(|&i| strings[i as usize].clone()),
+        (Builtin::ToString, TypeDesc::Str) => texts.get(&value).map(|&i| strings.get(i).to_string()),
         (Builtin::Format, _) => {
-            let spec = &strings[*texts.get(args.get(1)?)? as usize];
+            let spec = strings.get(*texts.get(args.get(1)?)?);
             let kind = fmtspec::kind_of(desc)?;
             let (bits, text) = if kind == fmtspec::Kind::Str {
-                (0, Some(strings[*texts.get(&value)? as usize].as_str()))
+                (0, Some(strings.get(*texts.get(&value)?)))
             } else {
                 (*nums.get(&value)?, None)
             };
@@ -120,7 +195,7 @@ fn fold_conversion(
     }
 }
 
-pub fn fold_strings(strings: &mut Vec<String>, descs: &[TypeDesc], f: &mut IrFunc, fx: &FuncEffects) -> usize {
+pub fn fold_strings(strings: &mut StringPool<'_>, descs: &[TypeDesc], f: &mut IrFunc, fx: &FuncEffects) -> usize {
     let defs = def_counts(f);
     let mut uses = use_counts(f);
     let mut consts: HashMap<VReg, u32> = HashMap::default();
@@ -156,7 +231,7 @@ pub fn fold_strings(strings: &mut Vec<String>, descs: &[TypeDesc], f: &mut IrFun
                 (f.blocks[bi].insts[ii].def(), fold_conversion(&f.blocks[bi].insts[ii], descs, strings, &consts, &nums))
             {
                 if !f.pinned[dst.index()] {
-                    let idx = intern(strings, text);
+                    let idx = strings.intern(text);
                     f.blocks[bi].insts[ii] = Inst::Const { dst, val: Const::Str(idx) };
                     if defs[dst.index()] == 1 {
                         consts.insert(dst, idx);
@@ -169,8 +244,8 @@ pub fn fold_strings(strings: &mut Vec<String>, descs: &[TypeDesc], f: &mut IrFun
                 Inst::Intrinsic { dst, b: Builtin::StrConcat, args, .. } if !f.pinned[dst.index()] => {
                     if let &[a, b] = args.as_slice() {
                         if let (Some(&x), Some(&y)) = (consts.get(&a), consts.get(&b)) {
-                            let joined = format!("{}{}", strings[x as usize], strings[y as usize]);
-                            let idx = intern(strings, joined);
+                            let joined = format!("{}{}", strings.get(x), strings.get(y));
+                            let idx = strings.intern(joined);
                             f.blocks[bi].insts[ii] = Inst::Const { dst, val: Const::Str(idx) };
                             if defs[dst.index()] == 1 {
                                 consts.insert(dst, idx);
@@ -229,7 +304,7 @@ pub fn fold_strings(strings: &mut Vec<String>, descs: &[TypeDesc], f: &mut IrFun
                     if kind == Builtin::Println {
                         text.pop(); // Println adds the newline itself
                     }
-                    let idx = intern(strings, text);
+                    let idx = strings.intern(text);
                     let arg = f.new_reg(IrTy::Ref);
                     uses.resize(f.regs.len(), 0);
                     let merged = Inst::Intrinsic { dst: *next_dst, b: kind, desc: *desc, args: vec![arg] };

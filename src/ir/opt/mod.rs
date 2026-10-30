@@ -108,78 +108,119 @@ pub struct OptStats {
     pub removed_funcs: usize,
 }
 
+impl OptStats {
+    fn absorb(&mut self, o: &OptStats) {
+        self.folded += o.folded;
+        self.simplified += o.simplified;
+        self.hoisted += o.hoisted;
+        self.unrolled += o.unrolled;
+        self.rotated += o.rotated;
+        self.devirtualized += o.devirtualized;
+        self.inlined_calls += o.inlined_calls;
+        self.removed_insts += o.removed_insts;
+        self.removed_blocks += o.removed_blocks;
+        self.removed_funcs += o.removed_funcs;
+    }
+}
+
+/// Runs the per-function passes on `f` until nothing changes. It only reads the rest of the program
+/// (`fx`, the string table, the type descriptors), which is what lets functions run in parallel.
+fn optimize_function(
+    f: &mut IrFunc,
+    cfg: &OptConfig,
+    fx: &crate::ir::effects::FuncEffects,
+    pool: &mut strings::StringPool<'_>,
+    descs: &[TypeDesc],
+) -> OptStats {
+    let mut stats = OptStats::default();
+    // loop-invariant motion comes last: it moves work out of the places the other passes
+    // pattern-match on (a hoisted `len` hides the loop condition), then a cleanup round follows
+    // constant propagation is the costly pass and reaches its own fixed point: it runs on
+    // entry and after the passes that reshape loops, not after every small rewrite
+    let mut sccp_stale = true;
+    for _round in 0..3 {
+        for _ in 0..8 {
+            let mut changed = false;
+            if cfg.fold {
+                let n = fold::fold_func(f);
+                stats.folded += n;
+                changed |= n > 0;
+            }
+            if cfg.fold && sccp_stale {
+                let n = sccp::sccp_func(f);
+                stats.folded += n;
+                changed |= n > 0;
+                sccp_stale = false;
+            }
+            if cfg.simplify {
+                let n = simplify::simplify_func(f, fx) + strings::fold_strings(pool, descs, f, fx);
+                stats.simplified += n;
+                changed |= n > 0;
+            }
+            if cfg.dce {
+                let n = stores::dead_stores(f, fx);
+                stats.removed_insts += n;
+                changed |= n > 0;
+                let (insts, blocks) = dce::dce_func(f, fx);
+                stats.removed_insts += insts;
+                stats.removed_blocks += blocks;
+                changed |= insts + blocks > 0;
+            }
+            if !changed {
+                break;
+            }
+        }
+        let r = if cfg.rotate { rotate::rotate_loops(f, fx) } else { 0 };
+        stats.rotated += r;
+        let n = if cfg.licm { licm::licm_func(f, fx) } else { 0 } + r;
+        stats.hoisted += n;
+        let merged = if cfg.fold { consts::dedupe_consts(f) } else { 0 };
+        stats.folded += merged;
+        sccp_stale |= n + merged > 0;
+        if n + merged == 0 {
+            break;
+        }
+    }
+    if cfg.dce {
+        let (insts, blocks) = dce::dce_func(f, fx);
+        stats.removed_insts += insts;
+        stats.removed_blocks += blocks;
+    }
+    stats
+}
+
 /// Optimizes every function of `prog` in place.
+///
+/// The passes of one function never look at another function's code, only at the summaries of what
+/// functions can do, so the functions are optimized in parallel. The only thing they share that they
+/// can change is the string table; each adds its strings privately and the additions are merged in
+/// function order afterwards, so the result is the same whatever the number of threads.
 pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
     let mut stats = OptStats::default();
     let simplify = |prog: &mut IrProgram, stats: &mut OptStats| {
         // what each function can do; the passes below only remove or move code, which can only
         // shrink the real effects, so the summaries stay sound while they run
         let fx = crate::ir::effects::analyze(prog);
-        let strings = &mut prog.strings;
-        let descs = &prog.descs;
-        for f in &mut prog.funcs {
-            // loop-invariant motion comes last: it moves work out of the places the other passes
-            // pattern-match on (a hoisted `len` hides the loop condition), then a cleanup round follows
-            // constant propagation is the costly pass and reaches its own fixed point: it runs on
-            // entry and after the passes that reshape loops, not after every small rewrite
-            let mut sccp_stale = true;
-            for _round in 0..3 {
-                for _ in 0..8 {
-                    let mut changed = false;
-                    if cfg.fold {
-                        let n = fold::fold_func(f);
-                        stats.folded += n;
-                        changed |= n > 0;
-                    }
-                    if cfg.fold && sccp_stale {
-                        let n = sccp::sccp_func(f);
-                        stats.folded += n;
-                        changed |= n > 0;
-                        sccp_stale = false;
-                    }
-                    if cfg.simplify {
-                        let n = simplify::simplify_func(f, &fx) + strings::fold_strings(strings, descs, f, &fx);
-                        stats.simplified += n;
-                        changed |= n > 0;
-                    }
-                    if cfg.dce {
-                        let n = stores::dead_stores(f, &fx);
-                        stats.removed_insts += n;
-                        changed |= n > 0;
-                        let (insts, blocks) = dce::dce_func(f, &fx);
-                        stats.removed_insts += insts;
-                        stats.removed_blocks += blocks;
-                        changed |= insts + blocks > 0;
-                    }
-                    if !changed {
-                        break;
-                    }
-                }
-                let r = if cfg.rotate { rotate::rotate_loops(f, &fx) } else { 0 };
-                stats.rotated += r;
-                let n = if cfg.licm { licm::licm_func(f, &fx) } else { 0 } + r;
-                stats.hoisted += n;
-                let merged = if cfg.fold { consts::dedupe_consts(f) } else { 0 };
-                stats.folded += merged;
-                sccp_stale |= n + merged > 0;
-                if n + merged == 0 {
-                    break;
-                }
-            }
-            if cfg.dce {
-                let (insts, blocks) = dce::dce_func(f, &fx);
-                stats.removed_insts += insts;
-                stats.removed_blocks += blocks;
-            }
+        let IrProgram { funcs, strings, descs, .. } = prog;
+        let base_len = strings.len();
+        let table: &[String] = strings;
+        let index = strings::index_strings(table);
+        let results = crate::par::map_mut(funcs, |_, f| {
+            let mut pool = strings::StringPool::new(table, &index);
+            let st = optimize_function(f, cfg, &fx, &mut pool, descs);
+            (st, pool.into_added())
+        });
+        let mut added = Vec::with_capacity(results.len());
+        for (st, a) in results {
+            stats.absorb(&st);
+            added.push(a);
         }
+        strings::merge_added(strings, base_len, funcs, added);
     };
     simplify(prog, &mut stats);
     if cfg.simplify {
         // after the first round the call, its result move and the return are next to each other
-        let mut any = 0;
-        for (i, f) in prog.funcs.iter_mut().enumerate() {
-            any += tail::self_tail(f, FuncId(i as u32));
-        }
+        let any: usize = crate::par::map_mut(&mut prog.funcs, |i, f| tail::self_tail(f, FuncId(i as u32))).iter().sum();
         stats.simplified += any;
         if any > 0 {
             simplify(prog, &mut stats);
@@ -198,7 +239,7 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         }
     }
     if cfg.unroll && cfg.fold {
-        let n: usize = prog.funcs.iter_mut().map(unroll::unroll_func).sum();
+        let n: usize = crate::par::map_mut(&mut prog.funcs, |_, f| unroll::unroll_func(f)).iter().sum();
         stats.unrolled += n;
         if n > 0 {
             simplify(prog, &mut stats);

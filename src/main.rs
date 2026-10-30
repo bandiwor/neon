@@ -8,6 +8,9 @@ use std::process::ExitCode;
 use neon::vfs::OsVfs;
 
 fn main() -> ExitCode {
+    if let Some(n) = std::env::var("NEON_THREADS").ok().and_then(|v| v.trim().parse::<usize>().ok()) {
+        neon::par::set_threads(n);
+    }
     let args: Vec<String> = std::env::args().skip(1).collect();
     let stdin = io::stdin();
     let interactive = stdin.is_terminal();
