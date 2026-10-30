@@ -412,6 +412,20 @@ compares 1, 2, 4 and all cores). Phase times for 400 generated functions, from
 | register allocation, code generation, peephole | 10 ms | 4 ms |
 | **total** | **90 ms** (was 142 ms) | **37 ms** |
 
+Source → bytecode for several program shapes, before this work (revision `a005fb2`) and after, on a
+4-core machine; the bytecode is identical in every row (`scripts/compare_compile.sh <revision>` rebuilds
+the old revision and prints this table, with a fingerprint of the output):
+
+| program | before | after, 1 thread | after, 4 threads | speed-up |
+|---|---|---|---|---|
+| hello (prelude only) | 0.35 ms | 0.34 ms | 0.35 ms | 1.0x |
+| 10 functions | 4.7 ms | 3.5 ms | 3.6 ms | 1.3x |
+| 100 functions | 35 ms | 23 ms | 12.5 ms | 2.8x |
+| 400 functions | 145 ms | 96 ms | 38.6 ms | 3.7x |
+| one `main` of 250 statements | 336 ms | 24 ms | 24 ms | 14x |
+| one `main` of 1000 statements | 4933 ms | 219 ms | 209 ms | 24x |
+| 400 small loops in one `main` | 414 ms | 38 ms | 38 ms | 11x |
+
 On one thread the work went down by a third without changing a byte of the output: a worklist
 liveness analysis, dense per-register tables instead of hash maps, no per-block allocations in the hot
 passes, an unroller that rules out loops before copying them, and constant propagation that only runs
