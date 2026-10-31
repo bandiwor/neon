@@ -210,6 +210,13 @@ println([5, 3, 8].fold(0, |a, x| => a + x));
 a long chain is a few times slower than one hand-written loop; ranges are not values yet, so
 `(0..n).map(..)` is not available (use `for`).
 
+### Examples
+
+* `examples/scene.neon` — a small software renderer (compact enums, tuples, ranges, fused iterator chains).
+* `examples/paint.neon` — an interactive terminal paint program: `w a s d` move the brush, `t` changes the
+  tool, `+ -` the size, `c` the color, space stamps, `u` undoes, `q` quits (type keys and press Enter; several
+  per line work). `neon run examples/paint.neon`, or `neon c examples/paint.neon -o paint.c` for a native build.
+
 ### Format strings
 
 `f"..."` strings embed expressions in `{}` with Python's format mini-language

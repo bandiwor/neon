@@ -254,3 +254,25 @@ fn output_is_deterministic_and_can_go_to_a_file() {
     assert!(st.success());
     assert_eq!(std::fs::read_to_string(out).unwrap(), a);
 }
+
+#[test]
+fn the_interactive_paint_example_reacts_to_keys_the_same_in_c_and_the_vm() {
+    let Some(cc) = c_compiler() else { return };
+    let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/paint.neon")).unwrap();
+    // move, change tool and size, stamp, change color, stamp, undo, quit
+    let keys = "dd t\n++ \nssss\nc \nwwwa  \nt\nu\nq\n";
+    let (native, vm) = both(&cc, "paint", &source, keys);
+    assert_eq!((native.code, vm.code), (0, 0), "{} {}", native.err, vm.err);
+    assert_eq!(native.out, vm.out);
+    // a frame before every line, then the goodbye
+    assert_eq!(vm.out.matches("keys: w a s d move").count(), 8, "{}", vm.out);
+    assert!(
+        vm.out.contains("pos (26, 9)  tool dot  size 4  color rgb 250,240,200  brush covers 1  stamps 1"),
+        "{}",
+        vm.out
+    );
+    assert!(vm.out.contains("pos (25, 10)  tool line  size 6  color eraser  brush covers 12  stamps 5"), "{}", vm.out);
+    // the last frame comes after the undo
+    assert!(vm.out.contains("brush covers 12  stamps 4"), "{}", vm.out);
+    assert!(vm.out.ends_with("> bye\n"), "{}", vm.out);
+}

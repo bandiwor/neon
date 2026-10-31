@@ -1,0 +1,211 @@
+// An interactive terminal paint program.
+//
+// Type keys and press Enter - several keys per line work, and the picture is redrawn after each line:
+//
+//   w a s d   move the brush            t   next tool (dot / line / box / disc)
+//   + -       change the brush size     c   next color
+//   space     stamp the brush           u   undo the last stamp
+//   x         clear the canvas          q   quit
+//
+// `neon run examples/paint.neon` (add `-- --plain` to scroll instead of clearing the screen).
+// The same program translates to C with `neon c examples/paint.neon`.
+//
+// What it shows: compact enums (`Color`, `Shape`: one word each, no allocation), tuples (the brush
+// position, `(dx, dy)`, `(x, y)` pairs), ranges as values and fused lazy iterator chains.
+
+enum Color { Black, Gray(u8), Rgb(u8, u8, u8) }
+
+enum Shape {
+    Dot(u8, u8),
+    HLine(u8, u8, u8),
+    Rect(u8, u8, u8, u8),
+    Circle(u8, u8, u8),
+}
+
+enum Op { Draw(Shape, Color), Clear }
+
+const W: i64 = 48;
+const H: i64 = 18;
+const PALETTE_SIZE: i64 = 5;
+
+fn palette(i: i64) -> Color {
+    match i % PALETTE_SIZE {
+        0 => Color::Gray(70),
+        1 => Color::Gray(130),
+        2 => Color::Rgb(200, 150, 60),
+        3 => Color::Rgb(250, 240, 200),
+        _ => Color::Black,
+    }
+}
+
+impl Color {
+    fn brightness(self) -> i64 {
+        match self {
+            Color::Black => 0,
+            Color::Gray(v) => v as i64,
+            Color::Rgb(r, g, b) => (2 * (r as i64) + 5 * (g as i64) + (b as i64)) / 8,
+        }
+    }
+
+    fn glyph(self) -> char {
+        let b = self.brightness();
+        if b == 0 { ' ' } elif b < 100 { '.' } elif b < 160 { ':' } elif b < 220 { 'o' } else { '#' }
+    }
+}
+
+impl Display for Color {
+    fn to_string(self) -> string {
+        match self {
+            Color::Black => "eraser",
+            Color::Gray(v) => f"gray {v}",
+            Color::Rgb(r, g, b) => f"rgb {r},{g},{b}",
+        }
+    }
+}
+
+// Does the shape cover the point p?
+fn covers(s: Shape, p: (i64, i64)) -> bool {
+    let (x, y) = p;
+    match s {
+        Shape::Dot(dx, dy) => x == dx as i64 && y == dy as i64,
+        Shape::HLine(lx, ly, len) => y == ly as i64 && x >= lx as i64 && x < (lx as i64) + (len as i64),
+        Shape::Rect(rx, ry, w, h) => {
+            let xs = (rx as i64)..((rx as i64) + (w as i64));
+            let ys = (ry as i64)..((ry as i64) + (h as i64));
+            xs.contains(x) && ys.contains(y)
+        }
+        Shape::Circle(cx, cy, r) => {
+            let dx = x - cx as i64;
+            let dy = (y - cy as i64) * 2; // a character cell is about twice as tall as wide
+            dx * dx + dy * dy <= (r as i64) * (r as i64)
+        }
+    }
+}
+
+fn clamp(v: i64, lo: i64, hi: i64) -> i64 {
+    if v < lo { lo } elif v > hi { hi } else { v }
+}
+
+struct Editor {
+    pos: (i64, i64),
+    tool: i64,
+    size: i64,
+    color: i64,
+    ops: [Op],
+    running: bool,
+}
+
+impl Editor {
+    fn new() -> Editor {
+        Editor { pos: (W / 2, H / 2), tool: 3, size: 4, color: 3, ops: [], running: true }
+    }
+
+    // the shape the brush would stamp right now
+    fn brush(self) -> Shape {
+        let (x, y) = self.pos;
+        let s = self.size as u8;
+        match self.tool % 4 {
+            0 => Shape::Dot(x as u8, y as u8),
+            1 => Shape::HLine(x as u8, y as u8, s * 2),
+            2 => Shape::Rect(x as u8, y as u8, s * 2, s),
+            _ => Shape::Circle(x as u8, y as u8, s),
+        }
+    }
+
+    fn tool_name(self) -> string {
+        match self.tool % 4 {
+            0 => "dot",
+            1 => "line",
+            2 => "box",
+            _ => "disc",
+        }
+    }
+
+    fn press(var self, key: char) {
+        let (x, y) = self.pos;
+        let (dx, dy) = match key {
+            'a' => (-1, 0),
+            'd' => (1, 0),
+            'w' => (0, -1),
+            's' => (0, 1),
+            _ => (0, 0),
+        };
+        self.pos = (clamp(x + dx, 0, W - 1), clamp(y + dy, 0, H - 1));
+        match key {
+            't' => self.tool += 1,
+            'c' => self.color += 1,
+            '+' => self.size = clamp(self.size + 1, 1, 12),
+            '-' => self.size = clamp(self.size - 1, 1, 12),
+            ' ' => self.ops.push(Op::Draw(self.brush(), palette(self.color))),
+            'u' => {
+                if self.ops.len() > 0 { self.ops.pop(); }
+            }
+            'x' => self.ops.push(Op::Clear),
+            'q' => self.running = false,
+            _ => {}
+        }
+    }
+
+    // the stamped picture, row by row
+    fn canvas(self) -> [[char]] {
+        var rows: [[char]] = [];
+        for _ in 0..H {
+            var row: [char] = [];
+            for _ in 0..W { row.push(' '); }
+            rows.push(row);
+        }
+        for op in self.ops {
+            match op {
+                Op::Clear => {
+                    for y in 0..H { for x in 0..W { rows[y][x] = ' '; } }
+                }
+                Op::Draw(shape, color) => {
+                    for y in 0..H {
+                        for x in 0..W {
+                            if covers(shape, (x, y)) { rows[y][x] = color.glyph(); }
+                        }
+                    }
+                }
+            }
+        }
+        rows
+    }
+
+    fn draw(self, plain: bool) {
+        if !plain { print("\x1b[2J\x1b[H"); }
+        var rows = self.canvas();
+        // the brush outline is drawn over the picture, the brush center as an `@`
+        let b = self.brush();
+        for y in 0..H {
+            for x in 0..W {
+                if covers(b, (x, y)) && rows[y][x] == ' ' { rows[y][x] = '+'; }
+            }
+        }
+        let (px, py) = self.pos;
+        rows[py][px] = '@';
+        println("+" + (0..W).map(|i| => "-").join("") + "+");
+        for row in rows { println("|" + row.iter().map(|c| => f"{c}").join("") + "|"); }
+        println("+" + (0..W).map(|i| => "-").join("") + "+");
+        let covered = (0..H).map(|y| => (0..W).filter(|x| => covers(b, (x, y))).count()).sum();
+        println(f"pos ({px}, {py})  tool {self.tool_name()}  size {self.size}  color {palette(self.color)}  brush covers {covered}  stamps {self.ops.len()}");
+        println("keys: w a s d move | t tool | + - size | c color | space stamp | u undo | x clear | q quit");
+    }
+}
+
+fn main() {
+    let plain = sys.args.iter().any(|a| => a == "--plain");
+    var ed = Editor::new();
+    while ed.running {
+        ed.draw(plain);
+        print("> ");
+        match read_line() {
+            Option::None => break,
+            Option::Some(line) => {
+                for key in line.chars() {
+                    ed.press(key);
+                }
+            }
+        }
+    }
+    println("bye");
+}
