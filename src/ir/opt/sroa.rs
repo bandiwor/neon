@@ -131,7 +131,7 @@ pub fn sroa_func(f: &mut IrFunc, classes: &Classes) -> usize {
                     let tag = cands[&obj].tag.expect("enum") as u64;
                     out.push(Inst::Const { dst, val: Const::Bits(tag) });
                 }
-                Inst::EnumField { dst, obj, idx } if cands.contains_key(&obj) => {
+                Inst::EnumField { dst, obj, idx, .. } if cands.contains_key(&obj) => {
                     out.push(Inst::Move { dst, src: cands[&obj].fr[idx as usize] });
                 }
                 other => out.push(other),
@@ -169,7 +169,7 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
     let mut members: BTreeMap<usize, Vec<VReg>> = BTreeMap::new();
     for r in 0..f.regs.len() {
         let r = VReg(r as u32);
-        if f.reg_ty(r) == IrTy::Ref {
+        if f.reg_ty(r).is_obj() {
             members.entry(classes.class_id(r)).or_default().push(r);
         }
     }
@@ -202,7 +202,7 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
                     }
                     slots.truncate(n);
                     let min = have.min.min(types.len());
-                    good &= slots[min..].iter().all(|t| *t != IrTy::Ref);
+                    good &= slots[min..].iter().all(|t| !t.is_obj());
                     good.then_some(Shape { is_enum, slots, min })
                 }
                 _ => None,
@@ -330,7 +330,7 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
                         }
                     }
                 }
-                Inst::GetField { dst, obj, idx } | Inst::EnumField { dst, obj, idx } if fr.contains_key(&obj) => {
+                Inst::GetField { dst, obj, idx } | Inst::EnumField { dst, obj, idx, .. } if fr.contains_key(&obj) => {
                     out.push(Inst::Move { dst, src: fr[&obj][idx as usize] });
                 }
                 Inst::EnumTag { dst, obj } if tag_of.contains_key(&obj) => {

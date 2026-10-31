@@ -38,11 +38,23 @@ pub enum IrTy {
     /// A handle to a garbage-collected object.
     Ref,
     Unit,
+    /// An enum that fits one word (see [`PackedEnum`]). While the optimizer runs it is treated like an
+    /// object (it is built by `NewEnum`, so private ones are scalarized and tag tests on known variants
+    /// disappear); the final `legalize` pass turns its operations into arithmetic and the type into
+    /// `Num(U64)`, so the backends never see it.
+    Packed,
 }
 
 impl IrTy {
+    /// A handle to a heap object (the only type the garbage collector looks at).
     pub fn is_ref(self) -> bool {
         self == IrTy::Ref
+    }
+
+    /// An object as far as the optimizer is concerned: a heap object or a packed enum, both built by
+    /// `New*` instructions and inspected by tag / field instructions.
+    pub fn is_obj(self) -> bool {
+        matches!(self, IrTy::Ref | IrTy::Packed)
     }
 
     /// The numeric type used to compare or combine values of this type.
@@ -153,11 +165,13 @@ pub enum Inst {
         dst: VReg,
         obj: VReg,
     },
-    /// Payload slot `idx` of an enum value (the variant is known statically).
+    /// Payload slot `idx` of variant `tag` of an enum value of type `desc` (the variant is known statically).
     EnumField {
         dst: VReg,
         obj: VReg,
         idx: u32,
+        desc: DescId,
+        tag: u32,
     },
     NewArray {
         dst: VReg,
@@ -489,7 +503,7 @@ impl IrProgram {
             TypeDesc::Num(n) => IrTy::Num(*n),
             TypeDesc::Bool => IrTy::Bool,
             TypeDesc::Char => IrTy::Char,
-            _ if packed_enum(&self.descs, id).is_some() => IrTy::Num(NumTy::U64),
+            _ if packed_enum(&self.descs, id).is_some() => IrTy::Packed,
             _ => IrTy::Ref,
         }
     }

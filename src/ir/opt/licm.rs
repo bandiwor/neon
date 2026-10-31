@@ -275,7 +275,7 @@ fn hoist_one_loop(f: &mut IrFunc, fx: &FuncEffects) -> usize {
             }
         }
         let unwritten =
-            |o: VReg| f.reg_ty(o) == IrTy::Ref && classes.is_private(o) && !written.contains(&classes.class_id(o));
+            |o: VReg| f.reg_ty(o).is_obj() && classes.is_private(o) && !written.contains(&classes.class_id(o));
         // registers defined in the loop
         let mut defined_in_loop = vec![false; f.regs.len()];
         for &b in &body {

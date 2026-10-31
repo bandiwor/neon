@@ -304,7 +304,7 @@ impl<'a> FuncEmitter<'a> {
                 self.push_def(Insn::NewEnum { dst: self.s(*dst), base, n, desc, tag }, *dst);
             }
             I::EnumTag { dst, obj } => self.push_def(Insn::EnumTag { dst: self.s(*dst), obj: self.s(*obj) }, *dst),
-            I::EnumField { dst, obj, idx } => {
+            I::EnumField { dst, obj, idx, .. } => {
                 let idx = self.u8_of(*idx, "variant field index")?;
                 self.push_def(Insn::EnumField { dst: self.s(*dst), obj: self.s(*obj), idx }, *dst);
             }

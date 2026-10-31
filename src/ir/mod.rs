@@ -8,6 +8,7 @@
 pub mod effects;
 pub mod escape;
 pub mod interp;
+pub mod legalize;
 pub mod lower;
 pub mod opt;
 pub mod print;
@@ -15,6 +16,7 @@ pub mod types;
 pub mod verify;
 
 pub use effects::{analyze as analyze_effects, FuncEffects};
+pub use legalize::legalize;
 pub use lower::lower_program;
 pub use opt::{optimize, OptConfig, OptStats};
 pub use types::*;

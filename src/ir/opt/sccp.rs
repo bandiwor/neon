@@ -123,13 +123,14 @@ pub fn sccp_func(f: &mut IrFunc) -> usize {
             defs[d.index()] += 1;
         }
     }
-    let multi = (0..regs).any(|r| defs[r] >= 2 && !matches!(f.regs[r], IrTy::Ref | IrTy::Unit));
+    let multi = (0..regs).any(|r| defs[r] >= 2 && !matches!(f.regs[r], IrTy::Ref | IrTy::Packed | IrTy::Unit));
     if !multi {
         return 0;
     }
     let mut input: Vec<Option<Vec<Lat>>> = vec![None; n];
     // references and unit never hold a number: they stay `Bottom` and are not part of any merge
-    let tracked: Vec<usize> = (0..regs).filter(|&r| !matches!(f.regs[r], IrTy::Ref | IrTy::Unit)).collect();
+    let tracked: Vec<usize> =
+        (0..regs).filter(|&r| !matches!(f.regs[r], IrTy::Ref | IrTy::Packed | IrTy::Unit)).collect();
     let mut entry = vec![Lat::Bottom; regs];
     for &r in &tracked {
         if !(r < f.params as usize || f.pinned[r]) {

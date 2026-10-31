@@ -128,6 +128,7 @@ fn cty(t: IrTy) -> &'static str {
         IrTy::Char => "uint32_t",
         IrTy::Ref => "Obj *",
         IrTy::Unit => "unit_t",
+        IrTy::Packed => unreachable!("packed enums are legalized before code generation"),
     }
 }
 
@@ -209,6 +210,7 @@ fn lit(t: IrTy, bits: u64) -> String {
         IrTy::Bool => ((bits != 0) as u8).to_string(),
         IrTy::Char => format!("{}u", bits as u32),
         IrTy::Ref | IrTy::Unit => "0".into(),
+        IrTy::Packed => unreachable!("packed enums are legalized before code generation"),
     }
 }
 
@@ -391,6 +393,7 @@ impl<'p> Gen<'p> {
                 format!("O2W({e})")
             }
             IrTy::Unit => "0".into(),
+            IrTy::Packed => unreachable!("packed enums are legalized before code generation"),
         }
     }
 
@@ -413,6 +416,7 @@ impl<'p> Gen<'p> {
                 format!("W2O({e})")
             }
             IrTy::Unit => "0".into(),
+            IrTy::Packed => unreachable!("packed enums are legalized before code generation"),
         }
     }
 
@@ -1449,7 +1453,7 @@ impl FnEmit<'_, '_> {
             Inst::NewEnum { dst, tag, fields, .. } => {
                 self.alloc_agg(*dst, *tag, fields)?;
             }
-            Inst::GetField { dst, obj, idx } | Inst::EnumField { dst, obj, idx } => {
+            Inst::GetField { dst, obj, idx } | Inst::EnumField { dst, obj, idx, .. } => {
                 self.g.need("objects");
                 let o = self.rd(*obj);
                 self.set_word(*dst, &format!("AGG({o})->f[{idx}]"));

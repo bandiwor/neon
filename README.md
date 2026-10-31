@@ -151,10 +151,14 @@ What changes is the cost. Building one is a couple of shifts and ors, a `match` 
 field is a shift and a cast, the allocator and the garbage collector never see them, and in the generated C
 they are plain `uint64_t` locals the C compiler keeps in registers.
 
-The layout is a pure function of the type descriptor (`ir::packed_enum`), which the lowering, the
-printers, the collector's object layouts and the C translation all ask, so the two representations cannot
-drift apart. Builtins that return an `Option` (`arr.get`, `checked_add`, ...) still build their result on
-the heap; lowering reads a packed result out of it immediately.
+The layout is a pure function of the type descriptor (`ir::packed_enum`), which the final `legalize` pass,
+the printers, the collector's object layouts and the C translation all ask, so the two representations cannot
+drift apart. In the IR a compact enum is built and taken apart by the same `NewEnum` / `EnumTag` /
+`EnumField` / `BranchTag` as any enum, in a register of type `packed`: until the very last pass the
+optimizer treats it as the object it is, so private ones are scalarized and a `match` on a known variant is
+decided at compile time, exactly as for heap enums. Only the words that really are passed, returned,
+stored or merged are turned into arithmetic. Builtins that return an `Option` (`arr.get`, `checked_add`,
+...) still build their result on the heap; lowering reads a packed result out of it immediately.
 
 ### Ranges and lazy iterators
 
@@ -382,6 +386,7 @@ non-escaping class is *private*: nothing outside the function can tell what happ
 | `globals` | stores to globals nobody reads, unused global slots |
 | `devirt` | calls of closures whose code is known become direct calls: a closure built just before the call, a global assigned once from a capture-less closure, the result of a function that always returns `closure f [its parameters]` (curried `\|x\| => \|y\| => ...`). Closures with captures are called through a lifted copy that takes the captured values as extra parameters; this is skipped when anything assigns the captured variables |
 | `inline`, `prune` | inlining of small functions, removal of unreachable functions |
+| `legalize` | last, always: compact enums (see [Compact enums](#compact-enums)), which every pass above treats as the objects they semantically are, become shifts, masks and compares on `u64`; the registers' type `packed` becomes `u64`, so no backend ever sees them. A cleanup round follows when anything was rewritten |
 
 ### Execution model
 

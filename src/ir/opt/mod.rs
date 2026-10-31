@@ -251,5 +251,10 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         }
         stats.removed_funcs += dce::prune_functions(prog);
     }
+    // whatever the settings: the backends know nothing of packed enums
+    if crate::ir::legalize(prog) && cfg.simplify {
+        // the arithmetic that replaced them is ordinary code: share the masks, shifts and constants
+        simplify(prog, &mut stats);
+    }
     stats
 }

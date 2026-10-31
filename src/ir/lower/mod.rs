@@ -216,7 +216,7 @@ impl Lowerer<'_> {
     /// Machine type of a concrete semantic type.
     pub fn ir_ty(&mut self, ty: Ty) -> IrTy {
         if matches!(self.prog.types.kind(ty), TyKind::Adt(..)) && self.packed(ty).is_some() {
-            return IrTy::Num(NumTy::U64);
+            return IrTy::Packed;
         }
         match self.prog.types.kind(ty) {
             TyKind::Prim(Prim::Bool) => IrTy::Bool,

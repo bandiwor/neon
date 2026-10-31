@@ -151,7 +151,7 @@ pub fn classify(f: &IrFunc, pe: &ParamEscapes) -> Classes {
     for b in &f.blocks {
         for i in &b.insts {
             if let Inst::Move { dst, src } = i {
-                if f.reg_ty(*dst) == IrTy::Ref {
+                if f.reg_ty(*dst).is_obj() {
                     let (a, b) = (find(&mut parent, dst.0), find(&mut parent, src.0));
                     if a != b {
                         parent[a as usize] = b;
@@ -170,7 +170,7 @@ pub fn classify(f: &IrFunc, pe: &ParamEscapes) -> Classes {
     let mut escapes = vec![false; n];
     let mut returned = vec![false; n];
     for r in 0..n {
-        if r < f.params as usize || f.pinned[r] || f.reg_ty(VReg(r as u32)) != IrTy::Ref {
+        if r < f.params as usize || f.pinned[r] || !f.reg_ty(VReg(r as u32)).is_obj() {
             fresh[root[r] as usize] = false;
         }
     }
@@ -214,7 +214,7 @@ pub fn param_escapes(prog: &IrProgram) -> ParamEscapes {
             }
             let classes = classify(f, &pe);
             for (p, escapes) in pe[fi].iter_mut().enumerate() {
-                if f.reg_ty(VReg(p as u32)) == IrTy::Ref && !*escapes && classes.leaves(VReg(p as u32)) {
+                if f.reg_ty(VReg(p as u32)).is_obj() && !*escapes && classes.leaves(VReg(p as u32)) {
                     *escapes = true;
                     changed = true;
                 }

@@ -210,10 +210,10 @@ impl FnLower<'_, '_> {
         if b.returns_adt() {
             // the builtin builds a heap object; a packed result is read out of it right away
             let ret_desc = desc.expect("result descriptor");
-            if let Some(pk) = self.cx.packed_desc(ret_desc) {
+            if self.cx.packed_desc(ret_desc).is_some() {
                 let obj = self.new_reg(IrTy::Ref);
                 self.emit(Inst::Intrinsic { dst: obj, b, desc, args: regs });
-                return self.pack_from_heap(&pk, ret_desc, obj);
+                return self.pack_from_heap(ret_desc, obj);
             }
         }
         let ir = self.ir_ty_of_node(node);

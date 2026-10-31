@@ -14,6 +14,7 @@ fn ty_name(t: IrTy) -> String {
         IrTy::Bool => "bool".into(),
         IrTy::Char => "char".into(),
         IrTy::Ref => "ref".into(),
+        IrTy::Packed => "packed".into(),
         IrTy::Unit => "unit".into(),
     }
 }
@@ -55,7 +56,7 @@ impl fmt::Display for Inst {
                 write!(f, "v{} = new_enum d{} #{tag} [{}]", dst.0, desc.0, regs(fields))
             }
             EnumTag { dst, obj } => write!(f, "v{} = tag v{}", dst.0, obj.0),
-            EnumField { dst, obj, idx } => write!(f, "v{} = v{}.payload{idx}", dst.0, obj.0),
+            EnumField { dst, obj, idx, .. } => write!(f, "v{} = v{}.payload{idx}", dst.0, obj.0),
             NewArray { dst, desc, elems } => write!(f, "v{} = new_array d{} [{}]", dst.0, desc.0, regs(elems)),
             ArrayGet { dst, arr, idx, idx_ty } => write!(f, "v{} = v{}[v{}:{}]", dst.0, arr.0, idx.0, idx_ty.name()),
             ArraySet { arr, idx, idx_ty, src } => write!(f, "v{}[v{}:{}] = v{}", arr.0, idx.0, idx_ty.name(), src.0),

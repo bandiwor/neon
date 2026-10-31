@@ -419,7 +419,7 @@ fn rewrite(
             Some(Agg::Enum { tag, .. }) => Some(Inst::Const { dst: *dst, val: Const::Bits(*tag as u64) }),
             _ => None,
         },
-        Inst::EnumField { dst, obj, idx } => match avail.aggs.get(obj) {
+        Inst::EnumField { dst, obj, idx, .. } => match avail.aggs.get(obj) {
             Some(Agg::Enum { fields, .. }) => fields.get(*idx as usize).map(|&s| Inst::Move { dst: *dst, src: s }),
             _ => None,
         },

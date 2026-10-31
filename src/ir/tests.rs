@@ -1678,3 +1678,22 @@ fn packed_and_heap_enums_behave_alike() {
         }";
     assert_eq!(run(src), "A 200 -300\nB true q\nC\nA 1 -2\nB s\nC\nSmall::A(1, 2)\nBig::A(1, 2)\n");
 }
+
+#[test]
+fn private_small_enums_vanish_before_they_become_words() {
+    // the optimizer sees `Option<u8>` as the object it is: a private one is scalarized and the match
+    // decided at compile time, so no shifts or masks are left once it is lowered to words
+    let src = "fn f(a: i64) -> i64 { let o = Option::Some(a as u8); match o { Option::Some(x) => x as i64 + 1, Option::None => 0 } }\n\
+        fn g(a: i64) -> i64 { let o: Option<u8> = if a > 0 { Option::Some(a as u8) } else { Option::None }; match o { Option::Some(x) => x as i64, Option::None => -1 } }\n\
+        fn main() { println(f(4)); println(g(3)); println(g(-3)); }";
+    let (ir, _) = optimized(src, only_simplify());
+    for name in ["f", "g"] {
+        let bit_ops = count_in(
+            &ir,
+            name,
+            |i| matches!(i, Inst::Arith { op, .. } if matches!(op, crate::runtime::numeric::ArithOp::Shl | crate::runtime::numeric::ArithOp::Shr | crate::runtime::numeric::ArithOp::And | crate::runtime::numeric::ArithOp::Or)),
+        );
+        assert_eq!(bit_ops, 0, "{name}: {ir}");
+    }
+    assert_eq!(run(src), "5\n3\n-1\n");
+}

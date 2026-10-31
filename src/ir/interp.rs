@@ -311,7 +311,7 @@ impl Interp<'_> {
                 if self.steps > self.max_steps {
                     return Err(Trap::Panic("step limit exceeded".into()));
                 }
-                self.exec(inst, fi, upvals)?;
+                self.exec(inst, fi, upvals, &f.regs)?;
             }
             match &b.term {
                 Term::Jump(t) => block = t.index(),
@@ -319,7 +319,8 @@ impl Interp<'_> {
                     block = if self.frames[fi][cond.index()] != 0 { then.index() } else { els.index() };
                 }
                 Term::BranchTag { obj, tag, then, els } => {
-                    let (t, _) = self.enum_parts(self.frames[fi][obj.index()]);
+                    let v = self.frames[fi][obj.index()];
+                    let t = if f.regs[obj.index()] == IrTy::Packed { PackedEnum::tag(v) } else { self.enum_parts(v).0 };
                     block = if t == *tag { then.index() } else { els.index() };
                 }
                 Term::Return(r) => return Ok(self.frames[fi][r.index()]),
@@ -328,7 +329,7 @@ impl Interp<'_> {
         }
     }
 
-    fn exec(&mut self, inst: &Inst, fi: usize, upvals: &[usize]) -> Result<(), Trap> {
+    fn exec(&mut self, inst: &Inst, fi: usize, upvals: &[usize], regs: &[IrTy]) -> Result<(), Trap> {
         macro_rules! r {
             ($v:expr) => {
                 self.frames[fi][$v.index()]
@@ -382,12 +383,24 @@ impl Interp<'_> {
                     other => panic!("SetField on {other:?}"),
                 }
             }
+            Inst::NewEnum { dst, desc, tag, fields } if regs[dst.index()] == IrTy::Packed => {
+                let f: Vec<u64> = fields.iter().map(|&x| r!(x)).collect();
+                let pk = packed_enum(&self.prog.descs, *desc).expect("a packed register holds a packed enum");
+                r!(dst) = pk.pack(*tag, &f);
+            }
             Inst::NewEnum { dst, tag, fields, .. } => {
                 let f = fields.iter().map(|&x| r!(x)).collect();
                 r!(dst) = self.alloc(Obj::Enum(*tag, f));
             }
+            Inst::EnumTag { dst, obj } if regs[obj.index()] == IrTy::Packed => {
+                r!(dst) = PackedEnum::tag(r!(obj)) as u64
+            }
             Inst::EnumTag { dst, obj } => r!(dst) = self.enum_parts(r!(obj)).0 as u64,
-            Inst::EnumField { dst, obj, idx } => r!(dst) = self.enum_parts(r!(obj)).1[*idx as usize],
+            Inst::EnumField { dst, obj, idx, desc, tag } if regs[obj.index()] == IrTy::Packed => {
+                let pk = packed_enum(&self.prog.descs, *desc).expect("a packed register holds a packed enum");
+                r!(dst) = pk.field(r!(obj), *tag, *idx as usize);
+            }
+            Inst::EnumField { dst, obj, idx, .. } => r!(dst) = self.enum_parts(r!(obj)).1[*idx as usize],
             Inst::NewArray { dst, elems, .. } => {
                 let v = elems.iter().map(|&x| r!(x)).collect();
                 r!(dst) = self.alloc(Obj::Array(v));
