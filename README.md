@@ -122,6 +122,23 @@ match "12x".try_parse_i64() {
 let safe = 250u8.checked_add(10u8).unwrap_or(255u8);  // 255
 ```
 
+### Tuples
+
+`(a, b)` builds a tuple, `(A, B)` is its type, `t.0` reads an element, and tuples are taken apart in `let`,
+`for` and `match` patterns:
+
+```
+fn minmax(a: i64, b: i64) -> (i64, i64) { if a < b { (a, b) } else { (b, a) } }
+let (lo, hi) = minmax(9, 4);
+for (n, name) in [(1, "a"), (2, "b")] { println(f"{n}{name}"); }
+println((1, "x"));                      // (1, "x")
+```
+
+Tuples have 2 to 8 elements and are immutable. A tuple is an ordinary one-variant enum of the prelude
+(`Tuple2::T(a, b)`), so exhaustiveness, printing, the garbage collector and the C translation need nothing of
+their own; the optimizer replaces tuples that do not escape (also ones built in two branches and merged
+afterwards) by plain registers. Top-level `let` still binds a single name, so destructure inside a function.
+
 ### Array combinators
 
 Arrays have the usual functional methods, written in Neon itself (in the prelude) and taking closures,

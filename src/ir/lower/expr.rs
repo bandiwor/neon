@@ -107,6 +107,15 @@ impl FnLower<'_, '_> {
                 self.emit(Inst::Intrinsic { dst, b: Builtin::Args, desc: None, args: vec![] });
                 dst
             }
+            NodeKind::Field { base, .. }
+                if self.cx.prog.modules[self.module.index()].info.tuple_fields.contains_key(&id) =>
+            {
+                let obj = self.expr_fast(base);
+                let idx = self.cx.prog.modules[self.module.index()].info.tuple_fields[&id];
+                let dst = self.new_reg_for(id);
+                self.emit(Inst::EnumField { dst, obj, idx });
+                dst
+            }
             NodeKind::Field { base, .. } => {
                 let obj = self.expr_fast(base);
                 let idx = self.cx.prog.modules[self.module.index()].info.field_indices[&id];

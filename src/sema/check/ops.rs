@@ -262,6 +262,15 @@ impl Checker<'_> {
                     None => {}
                 }
             }
+            NodeKind::Field { .. } if self.info().tuple_fields.contains_key(&node) => {
+                let span = ast.span(node);
+                self.err(
+                    span,
+                    "E0220",
+                    "cannot assign to an element of a tuple",
+                    "tuples are immutable; build a new one",
+                );
+            }
             NodeKind::Field { .. } if self.info().sys_args.contains(&node) => {
                 let span = ast.span(node);
                 self.err(

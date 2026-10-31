@@ -10,8 +10,15 @@ impl FnLower<'_, '_> {
     /// Binds a pattern's variables to `val` without testing anything
     /// (sema guarantees `let`/`for`/parameter patterns are irrefutable).
     pub(super) fn bind_irrefutable(&mut self, pat: NodeId, val: VReg) {
-        if let NodeKind::PatBinding { .. } = *self.ast.kind(pat) {
-            self.bind(pat, val);
+        match *self.ast.kind(pat) {
+            NodeKind::PatBinding { .. } => self.bind(pat, val),
+            NodeKind::PatWild => {}
+            // a tuple (or any one-variant enum) takes its value apart; nothing can fail, so the
+            // failure block is never entered
+            _ => {
+                let never = self.new_block();
+                self.lower_pat(pat, val, never);
+            }
         }
     }
 

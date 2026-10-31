@@ -376,6 +376,23 @@ impl Checker<'_> {
         let bt = self.expr(base, None);
         let n = self.name(name).to_string();
         match self.kind(bt) {
+            TyKind::Adt(adt, args) if self.prog.is_tuple(self.interner, adt) => {
+                let fields = self.prog.adts[adt.index()].variants()[0].fields.clone();
+                let index = n.strip_prefix('_').and_then(|i| i.parse::<usize>().ok()).filter(|&i| i < fields.len());
+                match index {
+                    Some(i) => {
+                        self.info().tuple_fields.insert(id, i as u32);
+                        self.prog.types.subst(fields[i], &args)
+                    }
+                    None => {
+                        let shown = self.show(bt);
+                        let message =
+                            format!("`{shown}` has {} elements, there is no element `{}`", fields.len(), &n[1..]);
+                        self.err(span, "E0217", message, "no such element");
+                        self.error_ty()
+                    }
+                }
+            }
             TyKind::Adt(adt, args) if !self.prog.adts[adt.index()].is_enum() => {
                 match self.prog.adts[adt.index()].fields().iter().position(|f| f.name == name) {
                     Some(i) => {

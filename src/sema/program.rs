@@ -267,6 +267,8 @@ pub struct ModuleInfo {
     pub field_indices: HashMap<NodeId, u32>,
     /// `sys.args` expressions (`Field` nodes whose base is the built-in `sys`).
     pub sys_args: crate::fx::FxHashSet<NodeId>,
+    /// `t.0` expressions: the `Field` node to the element index of the tuple.
+    pub tuple_fields: HashMap<NodeId, u32>,
     /// `PatVariant` node to its variant.
     pub pat_variants: HashMap<NodeId, (AdtId, u32)>,
     pub closures: HashMap<NodeId, ClosureInfo>,
@@ -496,6 +498,15 @@ impl Program {
             },
             &|v| format!("?{}", v.0),
         )
+    }
+
+    /// Whether `adt` is one of the prelude's tuple types (`Tuple2` .. `Tuple8`).
+    pub fn is_tuple(&self, interner: &Interner, adt: AdtId) -> bool {
+        let a = &self.adts[adt.index()];
+        a.module.index() == 0
+            && a.is_enum()
+            && a.variants().len() == 1
+            && crate::syntax::sym::tuple_arity(interner.resolve(a.name)).is_some()
     }
 
     pub fn find_item(&self, module: ModuleId, name: Symbol) -> Option<Item> {

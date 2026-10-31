@@ -29,6 +29,11 @@ pub fn option_payload_num(descs: &[TypeDesc], d: DescId) -> crate::runtime::nume
     }
 }
 
+/// Whether an enum descriptor is a tuple type (`Tuple2` .. `Tuple8`, one variant `T`), printed `(a, b)`.
+pub fn is_tuple_enum(name: &str, variants: &[(String, Vec<DescId>)]) -> bool {
+    crate::syntax::sym::tuple_arity(name).is_some() && variants.len() == 1 && variants[0].0 == "T"
+}
+
 /// Read-only access to heap objects by handle.
 pub trait HeapView {
     fn str_of(&self, h: u64) -> &str;
@@ -112,6 +117,17 @@ pub fn format_value(view: &dyn HeapView, descs: &[TypeDesc], d: DescId, bits: u6
         TypeDesc::Enum { name, variants } => {
             let (tag, payload) = view.enum_parts(bits);
             let (vname, ftys) = &variants[tag as usize];
+            if is_tuple_enum(name, variants) {
+                out.push('(');
+                for (i, (&fd, &v)) in ftys.iter().zip(payload).enumerate() {
+                    if i > 0 {
+                        out.push_str(", ");
+                    }
+                    format_value(view, descs, fd, v, true, out);
+                }
+                out.push(')');
+                return;
+            }
             let _ = write!(out, "{name}::{vname}");
             if !ftys.is_empty() {
                 out.push('(');

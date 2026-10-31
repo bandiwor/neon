@@ -34,6 +34,21 @@ export trait Display {
     fn to_string(self) -> string;
 }
 
+
+// ---- tuples -------------------------------------------------------------------------
+//
+// `(a, b)` is `Tuple2::T(a, b)`, the type `(A, B)` is `Tuple2<A, B>`, `(x, y)` in a pattern is
+// `Tuple2::T(x, y)` and `t.0` reads the first element. A tuple is an ordinary one-variant enum, so it is
+// matched, printed, optimized and compiled like any other value.
+
+export enum Tuple2<A, B> { T(A, B) }
+export enum Tuple3<A, B, C> { T(A, B, C) }
+export enum Tuple4<A, B, C, D> { T(A, B, C, D) }
+export enum Tuple5<A, B, C, D, E> { T(A, B, C, D, E) }
+export enum Tuple6<A, B, C, D, E, F> { T(A, B, C, D, E, F) }
+export enum Tuple7<A, B, C, D, E, F, G> { T(A, B, C, D, E, F, G) }
+export enum Tuple8<A, B, C, D, E, F, G, H> { T(A, B, C, D, E, F, G, H) }
+
 // ---- Option and Result --------------------------------------------------------------
 //
 // The built-in fallible operations (`checked_add`, `get`, `try_pop`,

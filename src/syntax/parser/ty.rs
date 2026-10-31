@@ -48,8 +48,28 @@ impl Parser<'_> {
             }
             TokenKind::LParen => {
                 self.bump();
+                if self.eat(TokenKind::RParen) {
+                    return Ok(self.node(NodeKind::TyUnit, lo));
+                }
+                // a tuple type `(A, B)` is the type `Tuple2<A, B>`
+                let mut items = vec![self.parse_type()?];
+                while self.eat(TokenKind::Comma) {
+                    if self.at(TokenKind::RParen) {
+                        break;
+                    }
+                    items.push(self.parse_type()?);
+                }
                 self.expect(TokenKind::RParen)?;
-                Ok(self.node(NodeKind::TyUnit, lo))
+                if items.len() < 2 || items.len() > sym::MAX_TUPLE {
+                    let span = self.span_from(lo);
+                    let msg = format!("a tuple type has 2 to {} elements", sym::MAX_TUPLE);
+                    return Err(self.error_at(span, "E0103", msg, "here".into()));
+                }
+                let args = self.list(&items);
+                let here = crate::diag::Span::new(self.file, lo, lo + 1);
+                let seg = self.ast.push(NodeKind::PathSegment { name: sym::tuple(items.len()), args }, here);
+                let segments = self.list(&[seg]);
+                Ok(self.node(NodeKind::TyPath { segments }, lo))
             }
             TokenKind::Kw(Keyword::Fn) => {
                 self.bump();

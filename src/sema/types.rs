@@ -358,11 +358,15 @@ impl TypeTable {
                 }
             }
             TyKind::Adt(id, args) => {
+                let name = adt_name(*id);
+                let a: Vec<_> = args.iter().map(|&p| go(p)).collect();
                 if args.is_empty() {
-                    adt_name(*id)
+                    name
+                } else if crate::syntax::sym::tuple_arity(&name) == Some(args.len()) {
+                    // `Tuple2<A, B>` is how the prelude spells the tuple `(A, B)`
+                    format!("({})", a.join(", "))
                 } else {
-                    let a: Vec<_> = args.iter().map(|&p| go(p)).collect();
-                    format!("{}<{}>", adt_name(*id), a.join(", "))
+                    format!("{name}<{}>", a.join(", "))
                 }
             }
             TyKind::Param(i) => param_name(*i),

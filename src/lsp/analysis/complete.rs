@@ -483,6 +483,10 @@ impl Analysis {
                 .map(|(s, &i)| (self.interner.resolve(*s).to_string(), i))
                 .collect();
             for (name, item) in prelude {
+                // the tuple types are spelled `(A, B)`, their names are an implementation detail
+                if crate::syntax::sym::tuple_arity(&name).is_some() {
+                    continue;
+                }
                 if seen.insert(name.clone()) {
                     let e = self.item_entry(&name, item);
                     out.push(('2', e));

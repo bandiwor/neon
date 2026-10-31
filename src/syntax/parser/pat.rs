@@ -44,6 +44,34 @@ impl Parser<'_> {
                 let unit = self.node(NodeKind::UnitLit, lo);
                 Ok(self.node(NodeKind::PatLit { expr: unit }, lo))
             }
+            TokenKind::LParen => {
+                // a tuple pattern `(p, q)` is the pattern `Tuple2::T(p, q)`
+                self.bump();
+                let mut items = Vec::new();
+                loop {
+                    if self.eat(TokenKind::RParen) {
+                        break;
+                    }
+                    items.push(self.parse_pattern()?);
+                    if self.eat(TokenKind::Comma) {
+                        continue;
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    break;
+                }
+                if items.len() < 2 {
+                    let span = self.span_from(lo);
+                    return Err(self.error_at(
+                        span,
+                        "E0104",
+                        "a tuple pattern needs at least two elements".into(),
+                        "here".into(),
+                    ));
+                }
+                let path = self.tuple_path(items.len(), lo)?;
+                let fields = self.list(&items);
+                Ok(self.node(NodeKind::PatVariant { path, fields, parens: true }, lo))
+            }
             TokenKind::Ident(_) | TokenKind::Kw(Keyword::SelfType) => self.parse_path_pattern(),
             _ => Err(self.unexpected("E0104", "pattern")),
         }

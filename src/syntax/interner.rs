@@ -17,7 +17,10 @@ pub mod sym {
     use super::Symbol;
     use crate::syntax::token::Keyword;
 
-    pub(super) const PREDEFINED: &[&str] = &["from", "set"];
+    pub(super) const PREDEFINED: &[&str] = &[
+        "from", "set", "Tuple2", "Tuple3", "Tuple4", "Tuple5", "Tuple6", "Tuple7", "Tuple8", "T", "_0", "_1", "_2",
+        "_3", "_4", "_5", "_6", "_7",
+    ];
 
     const BASE: u32 = Keyword::ALL.len() as u32;
 
@@ -25,6 +28,30 @@ pub mod sym {
     pub const FROM: Symbol = Symbol(BASE);
     /// `set` in `set { 1, 2 }` and `set<T>`; still usable as a method name.
     pub const SET: Symbol = Symbol(BASE + 1);
+
+    /// The largest tuple (`(a, b, ..)`): tuples are the prelude's one-variant enums `Tuple2` .. `Tuple8`.
+    pub const MAX_TUPLE: usize = 8;
+
+    /// `Tuple2` .. `Tuple8`, the type of a tuple with `arity` elements.
+    pub fn tuple(arity: usize) -> Symbol {
+        assert!((2..=MAX_TUPLE).contains(&arity));
+        Symbol(BASE + 2 + (arity as u32 - 2))
+    }
+
+    /// `T`, the only variant of a tuple type.
+    pub const TUPLE_VARIANT: Symbol = Symbol(BASE + 9);
+
+    /// `_0` .. `_7`, what `t.0` .. `t.7` are called inside the compiler.
+    pub fn tuple_field(index: usize) -> Symbol {
+        assert!(index < MAX_TUPLE);
+        Symbol(BASE + 10 + index as u32)
+    }
+
+    /// The arity of the tuple type named `name` (`Tuple3` is 3), if it is one.
+    pub fn tuple_arity(name: &str) -> Option<usize> {
+        let n: usize = name.strip_prefix("Tuple")?.parse().ok()?;
+        (2..=MAX_TUPLE).contains(&n).then_some(n)
+    }
 }
 
 /// Deduplicating string table.

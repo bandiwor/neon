@@ -558,7 +558,9 @@ fn let_and_pattern_errors() {
     fails("let x;", "E0229", "must be initialized");
     fails("enum E { A, B }\nfn f() { let E::A = E::A; }", "E0230", "refutable pattern");
     fails("let (a) = 1; let 5 = 5;", "E0230", "must bind a single name");
-    fails("let (a, b) = 1;", "E0104", "");
+    fails("let (a, b) = 1;", "E0230", "must bind a single name");
+    fails("fn f() { let (a, b) = 1; }", "E0211", "");
+    fails("fn f() { let (a,) = (1, 2); }", "E0104", "at least two");
     fails("enum E { A(i32) }\nfn f(e: E) { match e { E::A => {} } }", "E0233", "");
     fails("fn f(x: i32) { match x { 1 | y => {} _ => {} } }", "E0234", "");
     fails("let v = [];", "E0212", "type annotations needed");

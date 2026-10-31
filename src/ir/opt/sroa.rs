@@ -147,13 +147,25 @@ pub fn sroa_func(f: &mut IrFunc, classes: &Classes) -> usize {
     cands.len()
 }
 
-/// Scalar replacement of structs that are rebuilt or copied around (a loop-carried `p = V { .. }`):
-/// when every register that may hold the object is only ever assigned a new struct of one shape or a
-/// copy of another such register, and the struct is only *read* (no field is ever assigned, so a
-/// copy is as good as a shared reference), each register gets one register per field.
+/// What the objects of one alias class look like: a struct (`tag` unused) or an enum, and the types of
+/// the field slots (for an enum the longest variant; the slots of different variants share registers).
+#[derive(Clone, PartialEq)]
+struct Shape {
+    is_enum: bool,
+    slots: Vec<IrTy>,
+    /// The fewest slots any allocation fills; the others are set to zero where a shorter variant is built
+    /// (so they cannot hold references).
+    min: usize,
+}
+
+/// Scalar replacement of structs and enums that are rebuilt, copied around or *merged* at a join
+/// (`let p = if c { (a, b) } else { (b, a) }`, a loop-carried `p = V { .. }`): when every register that
+/// may hold the object is only ever assigned a new object of one shape or a copy of another such
+/// register, and the object is only *read* (no field is ever assigned, so a copy is as good as a shared
+/// reference), each register gets one register per field slot and, for enums, one for the variant.
 pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
     use std::collections::BTreeMap;
-    // members of each class that has a struct allocation
+    // members of each class that has an allocation
     let mut members: BTreeMap<usize, Vec<VReg>> = BTreeMap::new();
     for r in 0..f.regs.len() {
         let r = VReg(r as u32);
@@ -161,24 +173,41 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
             members.entry(classes.class_id(r)).or_default().push(r);
         }
     }
-    // the shape (field types) of each class, or None when it cannot be replaced
-    let mut shape: BTreeMap<usize, Option<Vec<IrTy>>> = BTreeMap::new();
+    // the shape of each class, or None when it cannot be replaced
+    let mut shape: BTreeMap<usize, Option<Shape>> = BTreeMap::new();
     let mut allocs: BTreeMap<usize, usize> = BTreeMap::new();
     for b in &f.blocks {
         for i in &b.insts {
-            let Inst::NewStruct { dst, fields, .. } = i else { continue };
-            let c = classes.class_id(*dst);
+            let (dst, is_enum, fields) = match i {
+                Inst::NewStruct { dst, fields, .. } => (*dst, false, fields),
+                Inst::NewEnum { dst, fields, .. } => (*dst, true, fields),
+                _ => continue,
+            };
+            let c = classes.class_id(dst);
             let types: Vec<IrTy> = fields.iter().map(|&r| f.reg_ty(r)).collect();
             *allocs.entry(c).or_insert(0) += 1;
-            match shape.get(&c) {
-                None => {
-                    shape.insert(c, Some(types));
+            let merged = match shape.get(&c) {
+                None => Some(Shape { is_enum, min: types.len(), slots: types }),
+                Some(Some(have)) if have.is_enum == is_enum => {
+                    // structs must agree exactly; enum variants share the slots they have in common
+                    let n = if is_enum { have.slots.len().max(types.len()) } else { have.slots.len() };
+                    let mut slots = have.slots.clone();
+                    let mut good = is_enum || have.slots == types;
+                    for (k, t) in types.iter().enumerate() {
+                        match slots.get(k) {
+                            Some(have_t) if have_t != t => good = false,
+                            Some(_) => {}
+                            None => slots.push(*t),
+                        }
+                    }
+                    slots.truncate(n);
+                    let min = have.min.min(types.len());
+                    good &= slots[min..].iter().all(|t| *t != IrTy::Ref);
+                    good.then_some(Shape { is_enum, slots, min })
                 }
-                Some(Some(have)) if *have == types => {}
-                _ => {
-                    shape.insert(c, None);
-                }
-            }
+                _ => None,
+            };
+            shape.insert(c, merged);
         }
     }
     let mut ok: BTreeMap<usize, bool> = BTreeMap::new();
@@ -189,11 +218,12 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
         ok.insert(c, good);
     }
     let in_class = |r: VReg, ok: &BTreeMap<usize, bool>| ok.get(&classes.class_id(r)).copied().unwrap_or(false);
+    let class_is_enum = |r: VReg| shape.get(&classes.class_id(r)).and_then(|s| s.as_ref()).is_some_and(|s| s.is_enum);
     // definitions and uses must keep to the allowed shapes
     for b in &f.blocks {
         for i in &b.insts {
             let def_ok = match i {
-                Inst::NewStruct { .. } => true,
+                Inst::NewStruct { .. } | Inst::NewEnum { .. } => true,
                 Inst::Move { dst, src } => {
                     !in_class(*dst, &ok) || in_class(*src, &ok) && classes.class_id(*dst) == classes.class_id(*src)
                 }
@@ -209,8 +239,16 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
                 if !in_class(u, &ok) {
                     return;
                 }
+                // a field no allocation has (code that only runs for a variant this function never builds)
+                let slots = shape.get(&classes.class_id(u)).and_then(|s| s.as_ref()).map_or(0, |s| s.slots.len());
                 let allowed = match i {
-                    Inst::GetField { obj, .. } => *obj == u && occurrences(i, u) == 1,
+                    Inst::GetField { obj, idx, .. } => {
+                        *obj == u && occurrences(i, u) == 1 && !class_is_enum(u) && (*idx as usize) < slots
+                    }
+                    Inst::EnumField { obj, idx, .. } => {
+                        *obj == u && occurrences(i, u) == 1 && class_is_enum(u) && (*idx as usize) < slots
+                    }
+                    Inst::EnumTag { obj, .. } => *obj == u && occurrences(i, u) == 1 && class_is_enum(u),
                     Inst::Move { src, dst } => *src == u && in_class(*dst, &ok),
                     _ => false,
                 };
@@ -223,7 +261,12 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
             }
         }
         let mut bad: Vec<VReg> = Vec::new();
-        b.term.for_each_use(|u| bad.push(u));
+        b.term.for_each_use(|u| {
+            let is_tag_test = matches!(b.term, Term::BranchTag { obj, .. } if obj == u) && class_is_enum(u);
+            if !is_tag_test {
+                bad.push(u);
+            }
+        });
         for u in bad {
             ok.insert(classes.class_id(u), false);
         }
@@ -243,13 +286,17 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
     if chosen.is_empty() {
         return 0;
     }
-    // one register per field of every member
+    // one register per field slot of every member, and one for the variant of an enum
     let mut fr: StdMap<VReg, Vec<VReg>> = StdMap::new();
+    let mut tag_of: StdMap<VReg, VReg> = StdMap::new();
     for &c in &chosen {
-        let types = shape[&c].clone().expect("a shape");
+        let sh = shape[&c].clone().expect("a shape");
         for &m in &members[&c] {
-            let regs: Vec<VReg> = types.iter().map(|&t| f.new_reg(t)).collect();
+            let regs: Vec<VReg> = sh.slots.iter().map(|&t| f.new_reg(t)).collect();
             fr.insert(m, regs);
+            if sh.is_enum {
+                tag_of.insert(m, f.new_reg(IrTy::Num(crate::runtime::NumTy::U32)));
+            }
         }
     }
     for bi in 0..f.blocks.len() {
@@ -262,20 +309,60 @@ pub fn sroa_classes(f: &mut IrFunc, classes: &Classes) -> usize {
                         out.push(Inst::Move { dst: *to, src: *from });
                     }
                 }
+                Inst::NewEnum { dst, tag, fields, .. } if fr.contains_key(&dst) => {
+                    out.push(Inst::Const { dst: tag_of[&dst], val: Const::Bits(tag as u64) });
+                    for (to, from) in fr[&dst].iter().zip(&fields) {
+                        out.push(Inst::Move { dst: *to, src: *from });
+                    }
+                    // slots of longer variants stay defined (and are never read)
+                    for to in fr[&dst].iter().skip(fields.len()) {
+                        let val = if f.reg_ty(*to) == IrTy::Unit { Const::Unit } else { Const::Bits(0) };
+                        out.push(Inst::Const { dst: *to, val });
+                    }
+                }
                 Inst::Move { dst, src } if fr.contains_key(&dst) => {
                     if dst != src {
                         for (to, from) in fr[&dst].iter().zip(&fr[&src]) {
                             out.push(Inst::Move { dst: *to, src: *from });
                         }
+                        if let (Some(&t), Some(&u)) = (tag_of.get(&dst), tag_of.get(&src)) {
+                            out.push(Inst::Move { dst: t, src: u });
+                        }
                     }
                 }
-                Inst::GetField { dst, obj, idx } if fr.contains_key(&obj) => {
+                Inst::GetField { dst, obj, idx } | Inst::EnumField { dst, obj, idx } if fr.contains_key(&obj) => {
                     out.push(Inst::Move { dst, src: fr[&obj][idx as usize] });
+                }
+                Inst::EnumTag { dst, obj } if tag_of.contains_key(&obj) => {
+                    out.push(Inst::Cast {
+                        dst,
+                        from: crate::runtime::NumTy::U32,
+                        to: match f.reg_ty(dst) {
+                            IrTy::Num(n) => n,
+                            _ => crate::runtime::NumTy::U32,
+                        },
+                        src: tag_of[&obj],
+                    });
                 }
                 other => out.push(other),
             }
         }
         f.blocks[bi].insts = out;
+        if let Term::BranchTag { obj, tag, then, els } = f.blocks[bi].term {
+            if let Some(&t) = tag_of.get(&obj) {
+                let k = f.new_reg(IrTy::Num(crate::runtime::NumTy::U32));
+                let cond = f.new_reg(IrTy::Bool);
+                f.blocks[bi].insts.push(Inst::Const { dst: k, val: Const::Bits(tag as u64) });
+                f.blocks[bi].insts.push(Inst::Cmp {
+                    dst: cond,
+                    op: crate::runtime::CmpOp::Eq,
+                    ty: CmpTy::Num(crate::runtime::NumTy::U32),
+                    lhs: t,
+                    rhs: k,
+                });
+                f.blocks[bi].term = Term::Branch { cond, then, els };
+            }
+        }
     }
     chosen.len()
 }

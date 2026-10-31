@@ -1,0 +1,57 @@
+// Tuples: construction, destructuring in `let`, `for` and `match`, element access, nesting, printing.
+fn swap(p: (i64, string)) -> (string, i64) {
+    let (a, b) = p;
+    (b, a)
+}
+
+fn minmax(a: i64, b: i64) -> (i64, i64) {
+    if a < b { (a, b) } else { (b, a) }
+}
+
+fn divmod(a: i64, b: i64) -> (i64, i64) {
+    (a / b, a % b)
+}
+
+fn main() {
+    let t = (1, "one");
+    println(t);
+    println(swap(t));
+    println(t.0 + 1);
+    println(t.1);
+    let triple = (1, 2.5, 'c');
+    let (x, y, z) = triple;
+    println(f"{x} {y} {z}");
+    match t {
+        (1, s) => println(f"one is {s}"),
+        (_, s) => println(s),
+    }
+    let pairs = [(1, "a"), (2, "b"), (3, "c")];
+    for (n, s) in pairs {
+        println(f"{n}{s}");
+    }
+    let nested = ((1, 2), (3, 4));
+    let ((a, b), (c, d)) = nested;
+    println(a + b + c + d);
+    println(nested.0.1);
+    println(nested);
+    let small: (u8, bool) = (200, true);
+    println(small);
+    let (lo, hi) = minmax(9, 4);
+    println(f"{lo} {hi}");
+    let (q, r) = divmod(17, 5);
+    println(q * 10 + r);
+    var best = (0, "");
+    for p in pairs {
+        if p.0 > best.0 {
+            best = p;
+        }
+    }
+    println(best);
+    let wide = (1, 2, 3, 4, 5, 6, 7, 8);
+    println(wide.7);
+    let opt = Option::Some((1, 2));
+    match opt {
+        Option::Some((p, q)) => println(p + q),
+        Option::None => println("none"),
+    }
+}

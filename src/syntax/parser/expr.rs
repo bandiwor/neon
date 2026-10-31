@@ -5,7 +5,7 @@
 //! `as`, unary `- ! ~`, postfix (call, index, field, method call).
 
 use super::{PResult, Parser, Recover};
-use crate::diag::Diagnostic;
+use crate::diag::{Diagnostic, Span};
 use crate::syntax::ast::{BinOp, NodeId, NodeKind, OptionNodeId, UnOp};
 use crate::syntax::interner::{sym, Symbol};
 use crate::syntax::literal::StrId;
@@ -204,6 +204,33 @@ impl Parser<'_> {
                     self.bump();
                     e = self.node(NodeKind::Try { expr: e }, lo);
                 }
+                TokenKind::Dot if matches!(self.peek_at(1), TokenKind::Int(_)) => {
+                    // `t.0`: a field of a tuple
+                    self.bump();
+                    let TokenKind::Int(id) = self.peek() else { unreachable!() };
+                    let index = self.ast.lits.int(id).value;
+                    let name_span = self.tok().span;
+                    self.bump();
+                    let Some(name) = usize::try_from(index).ok().filter(|&i| i < sym::MAX_TUPLE).map(sym::tuple_field)
+                    else {
+                        let msg = format!("a tuple has at most {} elements", sym::MAX_TUPLE);
+                        return Err(self.error_at(name_span, "E0105", msg, "no such element".into()));
+                    };
+                    e = self.node_n(name_span, NodeKind::Field { base: e, name }, lo);
+                }
+                TokenKind::Dot if matches!(self.peek_at(1), TokenKind::Float(_)) && self.tuple_index_pair() => {
+                    // `t.0.1` lexes as `t` `.` `0.1`: two element accesses
+                    self.bump();
+                    let tok = self.bump();
+                    let text = &self.src[tok.span.range()];
+                    let (a, b) = text.split_once('.').expect("checked by tuple_index_pair");
+                    let mid = tok.span.lo + a.len() as u32;
+                    let first = Span::new(self.file, tok.span.lo, mid);
+                    let second = Span::new(self.file, mid + 1, tok.span.hi);
+                    let (a, b) = (a.parse::<usize>().unwrap(), b.parse::<usize>().unwrap());
+                    e = self.node_n(first, NodeKind::Field { base: e, name: sym::tuple_field(a) }, lo);
+                    e = self.node_n(second, NodeKind::Field { base: e, name: sym::tuple_field(b) }, lo);
+                }
                 TokenKind::Dot => {
                     self.bump();
                     let (name, name_span) = self.expect_ident()?;
@@ -223,6 +250,41 @@ impl Parser<'_> {
             }
         }
         Ok(e)
+    }
+
+    /// Whether the float token after the current `.` is two small tuple indices (`0.1`).
+    fn tuple_index_pair(&self) -> bool {
+        let tok = self.tokens[(self.pos + 1).min(self.tokens.len() - 1)];
+        let text = &self.src[tok.span.range()];
+        match text.split_once('.') {
+            Some((a, b)) => {
+                let ok = |t: &str| {
+                    !t.is_empty()
+                        && t.len() == 1
+                        && t.bytes().all(|c| c.is_ascii_digit())
+                        && (t.as_bytes()[0] - b'0') < sym::MAX_TUPLE as u8
+                };
+                ok(a) && ok(b)
+            }
+            None => false,
+        }
+    }
+
+    /// The path `TupleN::T` (the constructor of a tuple of `arity` elements) as a synthetic node
+    /// spanning the whole tuple, so that tuples need no support of their own downstream.
+    pub(super) fn tuple_path(&mut self, arity: usize, lo: u32) -> PResult<NodeId> {
+        if arity > sym::MAX_TUPLE {
+            let span = self.span_from(lo);
+            let msg = format!("a tuple has at most {} elements", sym::MAX_TUPLE);
+            return Err(self.error_at(span, "E0105", msg, format!("{arity} elements")));
+        }
+        // the nodes cover only the opening parenthesis: names inside the tuple keep their own spans
+        let here = Span::new(self.file, lo, lo + 1);
+        let empty = self.list(&[]);
+        let ty = self.ast.push(NodeKind::PathSegment { name: sym::tuple(arity), args: empty }, here);
+        let variant = self.ast.push(NodeKind::PathSegment { name: sym::TUPLE_VARIANT, args: empty }, here);
+        let segments = self.list(&[ty, variant]);
+        Ok(self.ast.push(NodeKind::Path { segments }, here))
     }
 
     /// Comma-separated expressions up to and including `close`.
@@ -372,6 +434,20 @@ impl Parser<'_> {
                     return Ok(self.node(NodeKind::UnitLit, lo));
                 }
                 let inner = self.parse_expr_free()?;
+                if self.at(TokenKind::Comma) {
+                    // a tuple: `(a, b)` is `Tuple2::T(a, b)`
+                    let mut items = vec![inner];
+                    while self.eat(TokenKind::Comma) {
+                        if self.at(TokenKind::RParen) {
+                            break;
+                        }
+                        items.push(self.parse_expr_free()?);
+                    }
+                    self.expect(TokenKind::RParen)?;
+                    let callee = self.tuple_path(items.len(), lo)?;
+                    let args = self.list(&items);
+                    return Ok(self.node(NodeKind::Call { callee, args }, lo));
+                }
                 self.expect(TokenKind::RParen)?;
                 Ok(inner)
             }

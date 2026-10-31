@@ -751,6 +751,27 @@ impl<'p> Gen<'p> {
                     let _ = writeln!(body, "    {}", self.put_str(" }"));
                 }
             }
+            TypeDesc::Enum { variants, .. }
+                if crate::runtime::value::is_tuple_enum(
+                    match prog.desc(DescId(d as u32)) {
+                        TypeDesc::Enum { name, .. } => name,
+                        _ => unreachable!(),
+                    },
+                    variants,
+                ) =>
+            {
+                // a tuple prints as `(a, b)`
+                let _ = writeln!(body, "    const Agg *g = AGG(o);");
+                let _ = writeln!(body, "    {}", self.put_str("("));
+                for (i, fd) in variants[0].1.iter().enumerate() {
+                    if i > 0 {
+                        let _ = writeln!(body, "    {}", self.put_str(", "));
+                    }
+                    let w = format!("g->f[{i}]");
+                    let _ = writeln!(body, "    {}", self.put_word(*fd, &w, true));
+                }
+                let _ = writeln!(body, "    {}", self.put_str(")"));
+            }
             TypeDesc::Enum { name: ename, variants } => {
                 let _ = writeln!(body, "    const Agg *g = AGG(o);\n    switch (g->h.flags) {{");
                 for (t, (vname, fds)) in variants.iter().enumerate() {
