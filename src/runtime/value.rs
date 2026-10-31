@@ -115,7 +115,16 @@ pub fn format_value(view: &dyn HeapView, descs: &[TypeDesc], d: DescId, bits: u6
             out.push_str(" }");
         }
         TypeDesc::Enum { name, variants } => {
-            let (tag, payload) = view.enum_parts(bits);
+            let packed = crate::ir::packed_enum(descs, d);
+            let unpacked: Vec<u64>;
+            let (tag, payload): (u32, &[u64]) = match &packed {
+                Some(pk) => {
+                    let tag = crate::ir::PackedEnum::tag(bits);
+                    unpacked = (0..pk.variants[tag as usize].len()).map(|i| pk.field(bits, tag, i)).collect();
+                    (tag, &unpacked)
+                }
+                None => view.enum_parts(bits),
+            };
             let (vname, ftys) = &variants[tag as usize];
             if is_tuple_enum(name, variants) {
                 out.push('(');

@@ -27,6 +27,21 @@ pub enum NumTy {
 }
 
 impl NumTy {
+    /// The integer type with this width in bits and signedness.
+    pub fn int(bits: u32, signed: bool) -> NumTy {
+        match (bits, signed) {
+            (8, true) => NumTy::I8,
+            (16, true) => NumTy::I16,
+            (32, true) => NumTy::I32,
+            (64, true) => NumTy::I64,
+            (8, false) => NumTy::U8,
+            (16, false) => NumTy::U16,
+            (32, false) => NumTy::U32,
+            (64, false) => NumTy::U64,
+            _ => panic!("no integer type of {bits} bits"),
+        }
+    }
+
     pub const ALL: [NumTy; 10] = [
         NumTy::I8,
         NumTy::I16,

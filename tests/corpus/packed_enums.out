@@ -1,0 +1,48 @@
+Shape::Dot area 0
+Shape::Circle(1) area 3
+Shape::Rect(1, 2) area 2
+Shape::Tall(300, -98) area -29400
+Shape::Tall(65535, -128)
+65025
+0
+75
+42
+5
+Big::Rect(1, 2)
+.#ox(-4)12
+[Cell::Empty, Cell::Wall(true), Cell::Wall(false), Cell::Mark('x'), Cell::Num(-4), Cell::Num(12)]
+Option::Some(2)
+Option::None
+Option::None
+Option::Some(0)
+Result::Ok(50)
+Result::Err(false)
+Result::Err(true)
+120
+-1
+5
+99
+Option::Some('z')
+Option::Some(true)
+Pair { shape: Shape::Rect(3, 4), mood: Mood::Happy }
+happy
+12 happy
+[Mood::Angry, Mood::Calm]
+243
+Option::Some(Shape::Dot)
+Option::None
+Shape::Dot
+Shape::Rect(2, 3)
+96
+[0, 12, 10]
+(7, -2)
+5
+3
+Option::Some(Option::Some(3))
+4
+[Option::Some(1), Option::None, Option::Some(255)]
+Option::Some(Option::Some(255))
+Option::Some('a')
+Option::Some(Option::None)
+253
+List::Cons(4, List::Nil)

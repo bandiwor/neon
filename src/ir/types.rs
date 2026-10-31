@@ -362,6 +362,118 @@ pub struct IrProgram {
     pub entry: FuncId,
 }
 
+/// How one field sits inside the word of a [packed enum](PackedEnum).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct PackedField {
+    /// Bit position of the field's lowest bit.
+    pub shift: u32,
+    pub bits: u32,
+    pub kind: PackedKind,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum PackedKind {
+    Int { signed: bool },
+    Bool,
+    Char,
+    Unit,
+}
+
+/// An enum small enough to live in one 64-bit word instead of a heap object: the variant number in the
+/// lowest byte, the payload of the variant in the other seven bytes, each field at an offset that is a
+/// multiple of its size. Enums are immutable, so a copy of the word is exactly as good as a shared
+/// object; it is created, matched, passed, stored and printed like any enum, it just never allocates and
+/// the garbage collector never has to look at it. (`Option<u8>`, `(u8, u16)`, `Result<char, bool>`, an
+/// enum without payloads, ...)
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PackedEnum {
+    /// Per variant, where its fields are.
+    pub variants: Vec<Vec<PackedField>>,
+}
+
+/// The packed layout of the enum described by `d`, if all its payloads fit (see [`PackedEnum`]).
+pub fn packed_enum(descs: &[TypeDesc], d: DescId) -> Option<PackedEnum> {
+    let TypeDesc::Enum { variants, .. } = &descs[d.index()] else { return None };
+    if variants.is_empty() || variants.len() > 256 {
+        return None;
+    }
+    let mut out = Vec::with_capacity(variants.len());
+    for (_, fields) in variants {
+        // size of each field in bytes, and what it is
+        let mut items: Vec<(usize, u32, PackedKind)> = Vec::new();
+        for (i, f) in fields.iter().enumerate() {
+            let (bytes, kind) = match &descs[f.index()] {
+                TypeDesc::Bool => (1, PackedKind::Bool),
+                TypeDesc::Char => (4, PackedKind::Char),
+                TypeDesc::Unit => (0, PackedKind::Unit),
+                TypeDesc::Num(n) if n.is_int() && n.bits() <= 32 => {
+                    (n.bits() / 8, PackedKind::Int { signed: n.is_signed() })
+                }
+                _ => return None,
+            };
+            items.push((i, bytes, kind));
+        }
+        // first fit, biggest fields first, in the bytes after the tag; a field sits at a multiple of its size
+        let mut order: Vec<usize> = (0..items.len()).collect();
+        order.sort_by_key(|&i| std::cmp::Reverse(items[i].1));
+        let mut taken = [false; 8];
+        taken[0] = true;
+        let mut placed: Vec<Option<PackedField>> = vec![None; items.len()];
+        for i in order {
+            let (_, bytes, kind) = items[i];
+            if bytes == 0 {
+                placed[i] = Some(PackedField { shift: 0, bits: 0, kind });
+                continue;
+            }
+            let bytes = bytes as usize;
+            let slot = (1..=8 - bytes).find(|&at| at % bytes == 0 && taken[at..at + bytes].iter().all(|t| !t))?;
+            taken[slot..slot + bytes].iter_mut().for_each(|t| *t = true);
+            placed[i] = Some(PackedField { shift: slot as u32 * 8, bits: bytes as u32 * 8, kind });
+        }
+        out.push(placed.into_iter().map(|p| p.expect("every field placed")).collect());
+    }
+    Some(PackedEnum { variants: out })
+}
+
+/// Whether values of the type described by `d` are references (packed enums are plain words).
+pub fn desc_is_ref(descs: &[TypeDesc], d: DescId) -> bool {
+    descs[d.index()].is_ref() && packed_enum(descs, d).is_none()
+}
+
+impl PackedEnum {
+    /// The word for variant `tag` with the given fields (canonical register values).
+    pub fn pack(&self, tag: u32, fields: &[u64]) -> u64 {
+        let mut w = tag as u64;
+        for (f, &v) in self.variants[tag as usize].iter().zip(fields) {
+            if f.bits > 0 {
+                let mask = if f.bits == 64 { u64::MAX } else { (1u64 << f.bits) - 1 };
+                w |= (v & mask) << f.shift;
+            }
+        }
+        w
+    }
+
+    pub fn tag(word: u64) -> u32 {
+        (word & 0xFF) as u32
+    }
+
+    /// Field `idx` of a word of variant `tag`, as a canonical register value.
+    pub fn field(&self, word: u64, tag: u32, idx: usize) -> u64 {
+        let f = self.variants[tag as usize][idx];
+        if f.bits == 0 {
+            return 0;
+        }
+        let raw = (word >> f.shift) & ((1u64 << f.bits) - 1);
+        match f.kind {
+            PackedKind::Int { signed: true } => {
+                let sh = 64 - f.bits;
+                (((raw << sh) as i64) >> sh) as u64
+            }
+            _ => raw,
+        }
+    }
+}
+
 impl IrProgram {
     pub fn func(&self, id: FuncId) -> &IrFunc {
         &self.funcs[id.index()]
@@ -377,8 +489,14 @@ impl IrProgram {
             TypeDesc::Num(n) => IrTy::Num(*n),
             TypeDesc::Bool => IrTy::Bool,
             TypeDesc::Char => IrTy::Char,
+            _ if packed_enum(&self.descs, id).is_some() => IrTy::Num(NumTy::U64),
             _ => IrTy::Ref,
         }
+    }
+
+    /// The packed layout of the enum `id`, if it has one.
+    pub fn packed(&self, id: DescId) -> Option<PackedEnum> {
+        packed_enum(&self.descs, id)
     }
 }
 
@@ -601,5 +719,95 @@ impl Term {
             Term::Branch { then, els, .. } | Term::BranchTag { then, els, .. } => vec![then, els],
             Term::Return(_) | Term::Unreachable => vec![],
         }
+    }
+}
+
+#[cfg(test)]
+mod packed_tests {
+    use super::*;
+
+    fn enum_desc(variants: Vec<(&str, Vec<TypeDesc>)>) -> (Vec<TypeDesc>, DescId) {
+        let mut descs = Vec::new();
+        let mut vs = Vec::new();
+        for (name, fields) in variants {
+            let mut ids = Vec::new();
+            for f in fields {
+                descs.push(f);
+                ids.push(DescId(descs.len() as u32 - 1));
+            }
+            vs.push((name.to_string(), ids));
+        }
+        descs.push(TypeDesc::Enum { name: "E".into(), variants: vs });
+        let id = DescId(descs.len() as u32 - 1);
+        (descs, id)
+    }
+
+    fn num(n: NumTy) -> TypeDesc {
+        TypeDesc::Num(n)
+    }
+
+    #[test]
+    fn fields_are_aligned_and_never_overlap_the_tag() {
+        let (d, id) = enum_desc(vec![
+            ("A", vec![num(NumTy::U8), num(NumTy::I16)]),
+            ("B", vec![num(NumTy::U32), num(NumTy::U16), num(NumTy::U8)]),
+            ("C", vec![TypeDesc::Bool, TypeDesc::Char]),
+            ("D", vec![]),
+        ]);
+        let pk = packed_enum(&d, id).expect("fits");
+        for fields in &pk.variants {
+            let mut used = 0u64;
+            for f in fields.iter().filter(|f| f.bits > 0) {
+                let bytes = f.bits / 8;
+                assert_eq!(f.shift / 8 % bytes, 0, "{f:?} is aligned to its size");
+                assert!(f.shift >= 8 && f.shift + f.bits <= 64, "{f:?} fits next to the tag");
+                let mask = ((1u64 << f.bits) - 1) << f.shift;
+                assert_eq!(used & mask, 0, "{f:?} overlaps");
+                used |= mask;
+            }
+        }
+    }
+
+    #[test]
+    fn values_round_trip() {
+        let (d, id) = enum_desc(vec![
+            ("A", vec![num(NumTy::I8), num(NumTy::I16), num(NumTy::I32)]),
+            ("B", vec![TypeDesc::Bool, TypeDesc::Char]),
+            ("C", vec![num(NumTy::U32), num(NumTy::U16), num(NumTy::U8)]),
+        ]);
+        let pk = packed_enum(&d, id).expect("fits");
+        let ints = [-128i64, -1, 0, 1, 127];
+        for &a in &ints {
+            for &b in &[-32768i64, -2, 0, 5, 32767] {
+                for &c in &[i32::MIN as i64, -1, 0, 1, i32::MAX as i64] {
+                    let w = pk.pack(0, &[a as u64, b as u64, c as u64]);
+                    assert_eq!(PackedEnum::tag(w), 0);
+                    assert_eq!(pk.field(w, 0, 0) as i64, a);
+                    assert_eq!(pk.field(w, 0, 1) as i64, b);
+                    assert_eq!(pk.field(w, 0, 2) as i64, c);
+                }
+            }
+        }
+        let w = pk.pack(1, &[1, 0x10FFFF]);
+        assert_eq!((PackedEnum::tag(w), pk.field(w, 1, 0), pk.field(w, 1, 1)), (1, 1, 0x10FFFF));
+        let w = pk.pack(2, &[u32::MAX as u64, u16::MAX as u64, 255]);
+        assert_eq!((pk.field(w, 2, 0), pk.field(w, 2, 1), pk.field(w, 2, 2)), (u32::MAX as u64, u16::MAX as u64, 255));
+    }
+
+    #[test]
+    fn what_does_not_fit_stays_an_object() {
+        // 64-bit numbers, floats, strings and nested enums are not packed
+        for field in [num(NumTy::I64), num(NumTy::F32), num(NumTy::F64), TypeDesc::Str, TypeDesc::Fn] {
+            let (d, id) = enum_desc(vec![("A", vec![field])]);
+            assert!(packed_enum(&d, id).is_none());
+            assert!(desc_is_ref(&d, id));
+        }
+        // 4 + 4 bytes do not fit in 7
+        let (d, id) = enum_desc(vec![("A", vec![num(NumTy::U32), num(NumTy::U32)])]);
+        assert!(packed_enum(&d, id).is_none());
+        // 4 + 2 + 1 do
+        let (d, id) = enum_desc(vec![("A", vec![num(NumTy::U32), num(NumTy::U16), num(NumTy::U8)])]);
+        assert!(packed_enum(&d, id).is_some());
+        assert!(!desc_is_ref(&d, id));
     }
 }

@@ -65,7 +65,7 @@ impl FnLower<'_, '_> {
                 let (adt, idx) = self.cx.prog.modules[self.module.index()].info.pat_variants[&pat];
                 if self.cx.prog.adts[adt.index()].variants().len() > 1 {
                     let ok = self.new_block();
-                    self.terminate(Term::BranchTag { obj: val, tag: idx, then: ok, els: fail });
+                    self.enum_branch_tag(val, idx, ok, fail);
                     self.switch_to(ok);
                 }
                 for (i, &sub) in ast.list(fields).iter().enumerate() {
@@ -73,8 +73,11 @@ impl FnLower<'_, '_> {
                         continue;
                     }
                     let ty = self.ir_ty_of_node(sub);
-                    let fv = self.new_reg(ty);
-                    self.emit(Inst::EnumField { dst: fv, obj: val, idx: i as u32 });
+                    let desc = {
+                        let t = self.node_ty(pat);
+                        self.cx.desc(t)
+                    };
+                    let fv = self.enum_get(desc, val, idx, i as u32, ty);
                     self.lower_pat(sub, fv, fail);
                 }
             }

@@ -144,9 +144,12 @@ impl FnLower<'_, '_> {
             {
                 let obj = self.expr_fast(base);
                 let idx = self.cx.prog.modules[self.module.index()].info.tuple_fields[&id];
-                let dst = self.new_reg_for(id);
-                self.emit(Inst::EnumField { dst, obj, idx });
-                dst
+                let ty = self.ir_ty_of_node(id);
+                let desc = {
+                    let t = self.node_ty(base);
+                    self.cx.desc(t)
+                };
+                self.enum_get(desc, obj, 0, idx, ty)
             }
             NodeKind::Field { base, .. } => {
                 let obj = self.expr_fast(base);
@@ -315,9 +318,7 @@ impl FnLower<'_, '_> {
                 let ty = self.node_ty(id);
                 let desc = self.cx.desc(ty);
                 let _ = adt;
-                let dst = self.new_reg(IrTy::Ref);
-                self.emit(Inst::NewEnum { dst, desc, tag: idx, fields: vec![] });
-                dst
+                self.enum_new(desc, idx, vec![])
             }
             Some(Res::Callee(c)) => self.callee_as_value(c),
             None => {
@@ -648,7 +649,7 @@ impl FnLower<'_, '_> {
 
         let cont = self.new_block();
         let early = self.new_block();
-        self.terminate(Term::BranchTag { obj: v, tag: ok_tag, then: cont, els: early });
+        self.enum_branch_tag(v, ok_tag, cont, early);
 
         // the failure path: build `None` / `Err(e)` of the function's return type and return it
         self.switch_to(early);
@@ -656,15 +657,14 @@ impl FnLower<'_, '_> {
             let t = self.ret_ty;
             self.cx.desc(t)
         };
-        let failure = self.new_reg(IrTy::Ref);
-        if is_option {
-            self.emit(Inst::NewEnum { dst: failure, desc: ret_desc, tag: NONE_TAG, fields: vec![] });
+        let operand_desc = self.cx.desc(operand_ty);
+        let failure = if is_option {
+            self.enum_new(ret_desc, NONE_TAG, vec![])
         } else {
             let err_ir = self.cx.ir_ty(args[1]);
-            let e = self.new_reg(err_ir);
-            self.emit(Inst::EnumField { dst: e, obj: v, idx: 0 });
-            self.emit(Inst::NewEnum { dst: failure, desc: ret_desc, tag: ERR_TAG, fields: vec![e] });
-        }
+            let e = self.enum_get(operand_desc, v, ERR_TAG, 0, err_ir);
+            self.enum_new(ret_desc, ERR_TAG, vec![e])
+        };
         if !self.inline_return(failure) {
             self.terminate(Term::Return(failure));
         }
@@ -672,8 +672,6 @@ impl FnLower<'_, '_> {
         // the success path continues here with the payload
         self.switch_to(cont);
         let payload_ir = self.cx.ir_ty(args[0]);
-        let payload = self.new_reg(payload_ir);
-        self.emit(Inst::EnumField { dst: payload, obj: v, idx: 0 });
-        payload
+        self.enum_get(operand_desc, v, ok_tag, 0, payload_ir)
     }
 }

@@ -695,9 +695,13 @@ impl<'p, 'io> Vm<'p, 'io> {
         &self.prog.descs[d as usize]
     }
 
+    fn desc_is_ref(&self, d: u32) -> bool {
+        crate::ir::desc_is_ref(&self.prog.descs, crate::ir::DescId(d))
+    }
+
     fn array_elems_are_refs(&self, d: u32) -> bool {
         match self.desc(d) {
-            TypeDesc::Array(e) => self.desc(e.0).is_ref(),
+            TypeDesc::Array(e) => self.desc_is_ref(e.0),
             other => panic!("expected an array descriptor, got {other:?}"),
         }
     }
@@ -705,7 +709,7 @@ impl<'p, 'io> Vm<'p, 'io> {
     /// `(keys are strings, keys are references)` of a set type.
     fn set_shape(&self, d: u32) -> (bool, bool) {
         match self.desc(d) {
-            TypeDesc::Set(e) => (matches!(self.desc(e.0), TypeDesc::Str), self.desc(e.0).is_ref()),
+            TypeDesc::Set(e) => (matches!(self.desc(e.0), TypeDesc::Str), self.desc_is_ref(e.0)),
             other => panic!("expected a set descriptor, got {other:?}"),
         }
     }
@@ -714,7 +718,7 @@ impl<'p, 'io> Vm<'p, 'io> {
     fn map_shape(&self, d: u32) -> (bool, bool, bool) {
         match self.desc(d) {
             TypeDesc::Map(k, v) => {
-                (matches!(self.desc(k.0), TypeDesc::Str), self.desc(k.0).is_ref(), self.desc(v.0).is_ref())
+                (matches!(self.desc(k.0), TypeDesc::Str), self.desc_is_ref(k.0), self.desc_is_ref(v.0))
             }
             other => panic!("expected a map descriptor, got {other:?}"),
         }

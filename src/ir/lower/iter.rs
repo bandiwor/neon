@@ -727,14 +727,14 @@ impl<'l, 'a> FnLower<'l, 'a> {
             Stage::FilterMap { f, opt: opt_ty } => {
                 let opt = self.call_fun(f, &[v], *opt_ty);
                 let some = self.new_block();
-                self.terminate(Term::BranchTag { obj: opt, tag: SOME_TAG, then: some, els: cx.cont });
+                self.enum_branch_tag(opt, SOME_TAG, some, cx.cont);
                 self.switch_to(some);
                 let payload_ty = match self.cx.prog.types.kind(*opt_ty).clone() {
                     TyKind::Adt(_, args) if !args.is_empty() => self.cx.ir_ty(args[0]),
                     _ => IrTy::Unit,
                 };
-                let w = self.new_reg(payload_ty);
-                self.emit(Inst::EnumField { dst: w, obj: opt, idx: 0 });
+                let opt_desc = self.cx.desc(*opt_ty);
+                let w = self.enum_get(opt_desc, opt, SOME_TAG, 0, payload_ty);
                 self.apply(rest, cx, w, sink);
             }
             Stage::FlatMap { f, arr: arr_ty } => {
@@ -824,14 +824,12 @@ impl<'l, 'a> FnLower<'l, 'a> {
                 self.emit(Inst::Move { dst: i, src: *count });
                 let one = self.const_i64(1);
                 self.emit(Inst::Arith { dst: *count, op: ArithOp::Add, ty: NumTy::I64, lhs: *count, rhs: one });
-                let t = self.new_reg(IrTy::Ref);
-                self.emit(Inst::NewEnum { dst: t, desc: *pair, tag: 0, fields: vec![i, v] });
+                let t = self.enum_new(*pair, 0, vec![i, v]);
                 self.apply(rest, cx, t, sink);
             }
             Stage::Zip { right, pair } => {
                 let Some(w) = self.pull(right, cx.done) else { return };
-                let t = self.new_reg(IrTy::Ref);
-                self.emit(Inst::NewEnum { dst: t, desc: *pair, tag: 0, fields: vec![v, w] });
+                let t = self.enum_new(*pair, 0, vec![v, w]);
                 self.apply(rest, cx, t, sink);
             }
         }
@@ -1109,16 +1107,17 @@ impl<'l, 'a> FnLower<'l, 'a> {
     /// `Some(value)` if `has`, else `None`, of the `Option` type `opt_ty`.
     fn option_from(&mut self, opt_ty: Ty, has: VReg, value: VReg) -> VReg {
         let desc = self.cx.desc(opt_ty);
-        let res = self.new_reg(IrTy::Ref);
+        let res_ty = self.cx.ir_ty(opt_ty);
+        let res = self.new_reg(res_ty);
         let some = self.new_block();
         let none = self.new_block();
         let end = self.new_block();
         self.terminate(Term::Branch { cond: has, then: some, els: none });
         self.switch_to(some);
-        self.emit(Inst::NewEnum { dst: res, desc, tag: SOME_TAG, fields: vec![value] });
+        self.enum_new_into(res, desc, SOME_TAG, vec![value]);
         self.jump(end);
         self.switch_to(none);
-        self.emit(Inst::NewEnum { dst: res, desc, tag: crate::runtime::value::NONE_TAG, fields: vec![] });
+        self.enum_new_into(res, desc, crate::runtime::value::NONE_TAG, vec![]);
         self.jump(end);
         self.switch_to(end);
         res
@@ -1127,8 +1126,9 @@ impl<'l, 'a> FnLower<'l, 'a> {
     /// `find`, `position`, `first`, `nth`, `last`: ends the loop early when the answer is known.
     fn lazy_search(&mut self, _id: NodeId, name: &str, p: &Pipeline, args: &[NodeId], out_ty: Ty) -> VReg {
         let desc = self.cx.desc(out_ty);
-        let res = self.new_reg(IrTy::Ref);
-        self.emit(Inst::NewEnum { dst: res, desc, tag: crate::runtime::value::NONE_TAG, fields: vec![] });
+        let res_ty = self.cx.ir_ty(out_ty);
+        let res = self.new_reg(res_ty);
+        self.enum_new_into(res, desc, crate::runtime::value::NONE_TAG, vec![]);
         let f = if name == "find" || name == "position" { Some(self.fun_arg(args[0])) } else { None };
         let n = if name == "nth" { Some(self.expr(args[0])) } else { None };
         let idx = self.counter();
@@ -1155,7 +1155,7 @@ impl<'l, 'a> FnLower<'l, 'a> {
             }
             me.switch_to(hit);
             let payload = if by_position { idx } else { v };
-            me.emit(Inst::NewEnum { dst: res, desc, tag: SOME_TAG, fields: vec![payload] });
+            me.enum_new_into(res, desc, SOME_TAG, vec![payload]);
             if last {
                 me.jump(miss);
             } else {

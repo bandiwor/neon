@@ -139,6 +139,23 @@ Tuples have 2 to 8 elements and are immutable. A tuple is an ordinary one-varian
 their own; the optimizer replaces tuples that do not escape (also ones built in two branches and merged
 afterwards) by plain registers. Top-level `let` still binds a single name, so destructure inside a function.
 
+### Compact enums
+
+An enum whose payloads are all `bool`, `char` or integers of at most 32 bits, and fit into the 7 bytes after
+the tag, is **not an object at all**: it is one 64-bit word, the variant number in the lowest byte and the
+fields in the other seven, each at an offset that is a multiple of its own size (so `Rgb(u8, u8, u8)`,
+`Option<char>`, `(u8, i16)` and `Result<u8, bool>` all fit; `Option<i64>`, `Option<string>` or `(u32, u32)`
+do not and stay heap objects). Nothing in the language changes: such enums are built, matched, compared in
+patterns, passed, stored in structs, arrays and maps, printed and used with `?` exactly like the others.
+What changes is the cost. Building one is a couple of shifts and ors, a `match` is a mask and a compare, a
+field is a shift and a cast, the allocator and the garbage collector never see them, and in the generated C
+they are plain `uint64_t` locals the C compiler keeps in registers.
+
+The layout is a pure function of the type descriptor (`ir::packed_enum`), which the lowering, the
+printers, the collector's object layouts and the C translation all ask, so the two representations cannot
+drift apart. Builtins that return an `Option` (`arr.get`, `checked_add`, ...) still build their result on
+the heap; lowering reads a packed result out of it immediately.
+
 ### Ranges and lazy iterators
 
 `a..b`, `a..=b` and `a..` are values (`Range<T>`, `RangeInclusive<T>`: fields `start` / `end`, methods `contains`,

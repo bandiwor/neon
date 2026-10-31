@@ -1,0 +1,185 @@
+// Enums whose payloads fit next to the tag byte live in one word; they must behave exactly like
+// enums that are heap objects (the `Big` ones here).
+enum Shape { Dot, Circle(u8), Rect(u8, u8), Tall(u16, i8) }
+enum Big { Dot, Circle(i64), Rect(i64, i64), Label(string) }
+enum Mood { Calm, Happy, Angry }
+enum List { Nil, Cons(u8, List) }
+enum Cell { Empty, Wall(bool), Mark(char), Num(i32) }
+
+struct Pair { shape: Shape, mood: Mood }
+
+impl Shape {
+    fn area(self) -> i64 {
+        match self {
+            Shape::Dot => 0,
+            Shape::Circle(r) => 3 * (r as i64) * (r as i64),
+            Shape::Rect(w, h) => (w as i64) * (h as i64),
+            Shape::Tall(a, b) => (a as i64) * (b as i64),
+        }
+    }
+    fn grow(self) -> Shape {
+        match self {
+            Shape::Dot => Shape::Circle(1),
+            Shape::Circle(r) => Shape::Rect(r, r + 1),
+            Shape::Rect(w, h) => Shape::Tall(w as u16 * 300, h as i8 - 100),
+            Shape::Tall(a, b) => Shape::Tall(a, b),
+        }
+    }
+}
+
+impl Display for Mood {
+    fn to_string(self) -> string {
+        match self {
+            Mood::Calm => "calm",
+            Mood::Happy => "happy",
+            Mood::Angry => "angry",
+        }
+    }
+}
+
+fn big_area(b: Big) -> i64 {
+    match b {
+        Big::Dot => 0,
+        Big::Circle(r) => 3 * r * r,
+        Big::Rect(w, h) => w * h,
+        Big::Label(s) => s.len(),
+    }
+}
+
+fn describe(c: Cell) -> string {
+    match c {
+        Cell::Empty => ".",
+        Cell::Wall(true) => "#",
+        Cell::Wall(false) => "o",
+        Cell::Mark(ch) => f"{ch}",
+        Cell::Num(n) if n < 0 => f"({n})",
+        Cell::Num(n) => f"{n}",
+    }
+}
+
+fn halve(n: u8) -> Option<u8> {
+    if n % 2 == 0 { Option::Some(n / 2) } else { Option::None }
+}
+
+fn quarter(n: u8) -> Option<u8> {
+    let h = halve(n)?;
+    let q = halve(h)?;
+    Option::Some(q)
+}
+
+fn parse(n: i32) -> Result<u8, bool> {
+    if n < 0 { Result::Err(false) } elif n > 255 { Result::Err(true) } else { Result::Ok(n as u8) }
+}
+
+fn twice(n: i32) -> Result<u8, bool> {
+    let v = parse(n)?;
+    Result::Ok(v / 2)
+}
+
+fn sum(l: List) -> i64 {
+    match l {
+        List::Nil => 0,
+        List::Cons(h, t) => (h as i64) + sum(t),
+    }
+}
+
+fn fact(n: Option<u8>) -> i64 {
+    match n {
+        Option::Some(0) => 1,
+        Option::Some(k) => (k as i64) * fact(Option::Some(k - 1)),
+        Option::None => -1,
+    }
+}
+
+let ORIGIN = Shape::Dot;
+var CURRENT: Shape = Shape::Circle(2);
+
+fn main() {
+    // construction, matching, methods
+    var s = Shape::Dot;
+    for _ in 0..4 {
+        println(f"{s} area {s.area()}");
+        s = s.grow();
+    }
+    println(Shape::Tall(65535, -128));
+    println(Shape::Rect(255, 255).area());
+
+    // the same program shape with a heap enum
+    println(big_area(Big::Dot));
+    println(big_area(Big::Circle(5)));
+    println(big_area(Big::Rect(6, 7)));
+    println(big_area(Big::Label("hello")));
+    println(Big::Rect(1, 2));
+
+    // payload patterns, guards, nested literals
+    let cells = [Cell::Empty, Cell::Wall(true), Cell::Wall(false), Cell::Mark('x'), Cell::Num(-4), Cell::Num(12)];
+    var line = "";
+    for c in cells { line = line + describe(c); }
+    println(line);
+    println(cells);
+
+    // Option and Result of small types
+    for n in [8u8, 6, 7, 0] { println(quarter(n)); }
+    println(twice(100));
+    println(twice(-3));
+    println(twice(300));
+    println(fact(Option::Some(5)));
+    println(fact(Option::None));
+    println(halve(10).unwrap_or(99));
+    println(halve(11).unwrap_or(99));
+    let o: Option<char> = Option::Some('z');
+    println(o);
+    println(o.map(|c| => c == 'z'));
+
+    // inside other values
+    let p = Pair { shape: Shape::Rect(3, 4), mood: Mood::Happy };
+    println(p);
+    println(p.mood.to_string());
+    println(f"{p.shape.area()} {p.mood}");
+    var ms: [Mood] = [];
+    ms.push(Mood::Angry);
+    ms.push(Mood::Calm);
+    println(ms);
+    var by_name: {string: Shape} = {};
+    by_name["a"] = Shape::Circle(9);
+    by_name["b"] = Shape::Dot;
+    println(by_name["a"].area());
+    println(by_name.get("b"));
+    println(by_name.get("zz"));
+
+    // globals and closures
+    println(ORIGIN);
+    CURRENT = CURRENT.grow();
+    println(CURRENT);
+    let k = Shape::Circle(4);
+    let f = |m: i64| => k.area() * m;
+    println(f(2));
+    let gs = [Shape::Dot, Shape::Circle(2), Shape::Rect(2, 5)];
+    println(gs.map(|g| => g.area()));
+
+    // tuples of small numbers are packed too
+    let t = (7u8, -2i8);
+    println(t);
+    let (a, b) = t;
+    println(a as i32 + b as i32);
+    println((1u8, 2u8, 3u8).2);
+
+    // nesting: an enum around a packed one is an object that holds the word
+    let nested: Option<Option<u8>> = Option::Some(Option::Some(3));
+    println(nested);
+    match nested {
+        Option::Some(Option::Some(v)) => println(v + 1),
+        Option::Some(Option::None) => println("inner none"),
+        Option::None => println("none"),
+    }
+    let opts: [Option<u8>] = [Option::Some(1), Option::None, Option::Some(255)];
+    println(opts);
+    println(opts.get(2));
+    var cs: {string: Option<char>} = {};
+    cs["x"] = Option::Some('a');
+    cs["y"] = Option::None;
+    println(cs["x"]);
+    println(cs.get("y"));
+    println(sum(List::Cons(1, List::Cons(2, List::Cons(250, List::Nil)))));
+    println(List::Cons(4, List::Nil));
+}

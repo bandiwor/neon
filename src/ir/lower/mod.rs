@@ -11,6 +11,7 @@ mod ctrl;
 mod expr;
 mod func;
 mod iter;
+mod packed;
 mod pat;
 mod place;
 mod stmt;
@@ -42,6 +43,7 @@ pub(super) struct Lowerer<'a> {
     funcs_by_key: HashMap<FuncKey, FuncId>,
     queue: VecDeque<(FuncId, FuncKey)>,
     descs: HashMap<Ty, DescId>,
+    packed_cache: HashMap<DescId, Option<std::rc::Rc<PackedEnum>>>,
     strings: HashMap<String, u32>,
     globals: HashMap<GlobalId, GlobalSlot>,
     /// Evaluated `const`s (`None` once evaluation failed, so the error is reported once).
@@ -73,6 +75,7 @@ pub fn lower_program(prog: &mut Program, interner: &Interner, diags: &mut DiagBa
         funcs_by_key: HashMap::default(),
         queue: VecDeque::new(),
         descs: HashMap::default(),
+        packed_cache: HashMap::default(),
         strings: HashMap::default(),
         globals: HashMap::default(),
         consts: HashMap::default(),
@@ -211,7 +214,10 @@ impl Lowerer<'_> {
     // ---- types ---------------------------------------------------------------------------------
 
     /// Machine type of a concrete semantic type.
-    pub fn ir_ty(&self, ty: Ty) -> IrTy {
+    pub fn ir_ty(&mut self, ty: Ty) -> IrTy {
+        if matches!(self.prog.types.kind(ty), TyKind::Adt(..)) && self.packed(ty).is_some() {
+            return IrTy::Num(NumTy::U64);
+        }
         match self.prog.types.kind(ty) {
             TyKind::Prim(Prim::Bool) => IrTy::Bool,
             TyKind::Prim(Prim::Char) => IrTy::Char,
@@ -221,6 +227,24 @@ impl Lowerer<'_> {
             TyKind::Array(_) | TyKind::Set(_) | TyKind::Map(..) | TyKind::Fn(..) | TyKind::Adt(..) => IrTy::Ref,
             TyKind::Param(_) | TyKind::Infer(_) => IrTy::Unit,
         }
+    }
+
+    /// The one-word layout of `ty` if it is an enum small enough to be [packed](PackedEnum).
+    pub fn packed(&mut self, ty: Ty) -> Option<std::rc::Rc<PackedEnum>> {
+        if !matches!(self.prog.types.kind(ty), TyKind::Adt(a, _) if self.prog.adts[a.index()].is_enum()) {
+            return None;
+        }
+        let d = self.desc(ty);
+        self.packed_desc(d)
+    }
+
+    pub fn packed_desc(&mut self, d: DescId) -> Option<std::rc::Rc<PackedEnum>> {
+        if let Some(p) = self.packed_cache.get(&d) {
+            return p.clone();
+        }
+        let p = packed_enum(&self.out.descs, d).map(std::rc::Rc::new);
+        self.packed_cache.insert(d, p.clone());
+        p
     }
 
     /// Run-time descriptor of a concrete type (created on first use; recursive

@@ -1637,3 +1637,44 @@ fn sys_args_reaches_the_program_with_and_without_optimization() {
     assert_eq!(interp::run_with_args(&opt, &[], &["x", "y z"]).output, "x\ny z\n2\n");
     assert_eq!(interp::run(&opt, &[]).output, "0\n");
 }
+
+#[test]
+fn small_enums_are_plain_words() {
+    // `Pixel` fits in one word (tag byte + three bytes), so building and matching it never allocates
+    let src = "enum Pixel { Rgb(u8, u8, u8), Gray(u8), Clear }\n\
+        fn lum(p: Pixel) -> i64 { match p { Pixel::Rgb(r, g, b) => (r as i64 + g as i64 + b as i64) / 3, Pixel::Gray(v) => v as i64, Pixel::Clear => 0 } }\n\
+        fn main() { println(lum(Pixel::Rgb(30, 60, 90))); println(lum(Pixel::Gray(7))); println(lum(Pixel::Clear)); }";
+    // even unoptimized, building and matching is arithmetic
+    let ir = optimized(src, OptConfig::none()).0;
+    let allocs = |f: &str| {
+        count_in(&ir, f, |i| matches!(i, Inst::NewEnum { .. } | Inst::EnumTag { .. } | Inst::EnumField { .. }))
+    };
+    for f in ["lum", "main"] {
+        assert_eq!(allocs(f), 0, "{ir}");
+    }
+    assert!(fn_named(&ir, "lum").regs[0] == super::IrTy::Num(crate::runtime::NumTy::U64), "{ir}");
+    assert_eq!(run(src), "60\n7\n0\n");
+}
+
+#[test]
+fn wide_payloads_stay_heap_enums() {
+    // an i64 does not fit next to the tag: the enum is an object, with identical behavior
+    let src = "enum Wide { A(i64), B }\nfn main() { let w = Wide::A(5); match w { Wide::A(x) => println(x), Wide::B => println(0) } println(Wide::B); }";
+    let ir = optimized(src, OptConfig::none()).0;
+    assert_eq!(count_in(&ir, "main", |i| matches!(i, Inst::NewEnum { .. })), 2, "{ir}");
+    assert_eq!(run(src), "5\nWide::B\n");
+}
+
+#[test]
+fn packed_and_heap_enums_behave_alike() {
+    let src = "enum Small { A(u8, i16), B(bool, char), C }\n\
+        enum Big { A(i64, i64), B(string), C }\n\
+        fn small(s: Small) -> string { match s { Small::A(x, y) => f\"A {x} {y}\", Small::B(b, c) => f\"B {b} {c}\", Small::C => \"C\" } }\n\
+        fn big(s: Big) -> string { match s { Big::A(x, y) => f\"A {x} {y}\", Big::B(t) => f\"B {t}\", Big::C => \"C\" } }\n\
+        fn main() {\n\
+            println(small(Small::A(200, -300))); println(small(Small::B(true, 'q'))); println(small(Small::C));\n\
+            println(big(Big::A(1, -2))); println(big(Big::B(\"s\"))); println(big(Big::C));\n\
+            println(Small::A(1, 2)); println(Big::A(1, 2));\n\
+        }";
+    assert_eq!(run(src), "A 200 -300\nB true q\nC\nA 1 -2\nB s\nC\nSmall::A(1, 2)\nBig::A(1, 2)\n");
+}

@@ -21,9 +21,7 @@ impl FnLower<'_, '_> {
                 let regs = self.operands(args);
                 let ty = self.node_ty(id);
                 let desc = self.cx.desc(ty);
-                let dst = self.new_reg(IrTy::Ref);
-                self.emit(Inst::NewEnum { dst, desc, tag: idx, fields: regs });
-                dst
+                self.enum_new(desc, idx, regs)
             }
             _ => {
                 let mut all = vec![callee];
@@ -209,6 +207,15 @@ impl FnLower<'_, '_> {
             desc = Some(self.cx.desc(ret));
         }
 
+        if b.returns_adt() {
+            // the builtin builds a heap object; a packed result is read out of it right away
+            let ret_desc = desc.expect("result descriptor");
+            if let Some(pk) = self.cx.packed_desc(ret_desc) {
+                let obj = self.new_reg(IrTy::Ref);
+                self.emit(Inst::Intrinsic { dst: obj, b, desc, args: regs });
+                return self.pack_from_heap(&pk, ret_desc, obj);
+            }
+        }
         let ir = self.ir_ty_of_node(node);
         let dst = self.new_reg(ir);
         self.emit(Inst::Intrinsic { dst, b, desc, args: regs });

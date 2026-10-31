@@ -237,10 +237,13 @@ impl Heap {
             .iter()
             .map(|d| match d {
                 TypeDesc::Struct { fields, .. } => {
-                    Layout::Struct(fields.iter().map(|(_, f)| descs[f.index()].is_ref()).collect())
+                    Layout::Struct(fields.iter().map(|(_, f)| crate::ir::desc_is_ref(descs, *f)).collect())
                 }
                 TypeDesc::Enum { variants, .. } => Layout::Enum(
-                    variants.iter().map(|(_, fs)| fs.iter().map(|f| descs[f.index()].is_ref()).collect()).collect(),
+                    variants
+                        .iter()
+                        .map(|(_, fs)| fs.iter().map(|f| crate::ir::desc_is_ref(descs, *f)).collect())
+                        .collect(),
                 ),
                 _ => Layout::None,
             })

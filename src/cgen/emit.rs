@@ -691,6 +691,7 @@ impl<'p> Gen<'p> {
                 self.needs_all(&["sb_put", "objects"]);
                 format!("sb_put(&rt_sb, STR(W2O({w}))->s, STR(W2O({w}))->len);")
             }
+            _ if crate::ir::packed_enum(&prog.descs, d).is_some() => format!("{}({w});", self.printer(d)),
             _ => {
                 self.need("objects");
                 format!("{}(W2O({w}));", self.printer(d))
@@ -707,6 +708,10 @@ impl<'p> Gen<'p> {
         let prog = self.prog;
         let name = format!("pr_{d}");
         let mut body = String::new();
+        if let Some(pk) = crate::ir::packed_enum(&prog.descs, DescId(d as u32)) {
+            self.gen_packed_printer(d, &pk);
+            return;
+        }
         match prog.desc(DescId(d as u32)) {
             TypeDesc::Array(e) | TypeDesc::Set(e) => {
                 let set = matches!(prog.desc(DescId(d as u32)), TypeDesc::Set(_));
@@ -798,6 +803,48 @@ impl<'p> Gen<'p> {
             other => unreachable!("no printer function for {other:?}"),
         }
         let header = format!("static void {name}(Obj *o)");
+        self.printers.insert(d, (format!("{header};"), format!("{header} {{\n{body}}}")));
+    }
+
+    /// The printer of a packed enum: it takes the word itself, not an object.
+    fn gen_packed_printer(&mut self, d: usize, pk: &crate::ir::PackedEnum) {
+        use crate::ir::PackedKind;
+        let prog = self.prog;
+        let TypeDesc::Enum { name: ename, variants } = prog.desc(DescId(d as u32)) else { unreachable!() };
+        let tuple = crate::runtime::value::is_tuple_enum(ename, variants);
+        let mut body = String::from("    switch (w & 0xff) {\n");
+        for (t, (vname, fds)) in variants.iter().enumerate() {
+            let _ = writeln!(body, "    case {t}:");
+            if tuple {
+                let _ = writeln!(body, "        {}", self.put_str("("));
+            } else {
+                let _ = writeln!(body, "        {}", self.put_str(&format!("{ename}::{vname}")));
+                if !fds.is_empty() {
+                    let _ = writeln!(body, "        {}", self.put_str("("));
+                }
+            }
+            for (i, fd) in fds.iter().enumerate() {
+                if i > 0 {
+                    let _ = writeln!(body, "        {}", self.put_str(", "));
+                }
+                let f = pk.variants[t][i];
+                let at = if f.shift == 0 { "w".to_string() } else { format!("(w >> {})", f.shift) };
+                let expr = match f.kind {
+                    PackedKind::Unit => "0".to_string(),
+                    PackedKind::Bool => format!("(W)(uint8_t){at}"),
+                    PackedKind::Char => format!("(W)(uint32_t){at}"),
+                    PackedKind::Int { signed: true } => format!("(W)(int64_t)(int{}_t){at}", f.bits),
+                    PackedKind::Int { signed: false } => format!("(W)(uint{}_t){at}", f.bits),
+                };
+                let _ = writeln!(body, "        {}", self.put_word(*fd, &expr, true));
+            }
+            if tuple || !fds.is_empty() {
+                let _ = writeln!(body, "        {}", self.put_str(")"));
+            }
+            let _ = writeln!(body, "        break;");
+        }
+        let _ = writeln!(body, "    default:\n        break;\n    }}");
+        let header = format!("static void pr_{d}(W w)");
         self.printers.insert(d, (format!("{header};"), format!("{header} {{\n{body}}}")));
     }
 
@@ -1424,7 +1471,7 @@ impl FnEmit<'_, '_> {
                 let TypeDesc::Array(e) = prog.desc(*desc) else {
                     return Err("NewArray with a non-array descriptor".into());
                 };
-                let is_ref = prog.desc(*e).is_ref() as u8;
+                let is_ref = crate::ir::desc_is_ref(&prog.descs, *e) as u8;
                 self.g.need("arr_new");
                 let ws: Vec<String> = elems.iter().map(|&r| self.w(r)).collect();
                 self.with_obj(*dst, &format!("arr_new({}, {is_ref})", elems.len()), |me, v| {
@@ -1996,7 +2043,7 @@ impl FnEmit<'_, '_> {
 
 fn map_flags(prog: &IrProgram, k: DescId, v: Option<DescId>) -> String {
     let mut flags: Vec<&str> = Vec::new();
-    if prog.desc(k).is_ref() {
+    if crate::ir::desc_is_ref(&prog.descs, k) {
         flags.push("MF_KREF");
     }
     if matches!(prog.desc(k), TypeDesc::Str) {
@@ -2004,7 +2051,7 @@ fn map_flags(prog: &IrProgram, k: DescId, v: Option<DescId>) -> String {
     }
     match v {
         Some(v) => {
-            if prog.desc(v).is_ref() {
+            if crate::ir::desc_is_ref(&prog.descs, v) {
                 flags.push("MF_VREF");
             }
         }
