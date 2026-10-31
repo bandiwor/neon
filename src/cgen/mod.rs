@@ -52,6 +52,10 @@ pub fn emit_c(prog: &IrProgram) -> Result<String, String> {
     s.push_str(
         " * Build: cc -O2 program.c -o program -lm      (-DNDEBUG: release, no arithmetic traps or recursion guard; -DNEON_MAX_DEPTH=n) */\n\n",
     );
+    // constant bounds make some comparisons always true (an inclusive range up to `255u8`)
+    s.push_str(
+        "#if defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic ignored \"-Wtype-limits\"\n#endif\n\n",
+    );
     // include order: the usual one, not alphabetical
     for h in ["stddef.h", "stdint.h", "stdarg.h", "stdio.h", "stdlib.h", "string.h", "math.h"] {
         if hdrs.remove(h) {

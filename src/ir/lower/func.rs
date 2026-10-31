@@ -42,6 +42,10 @@ pub(super) struct FnLower<'l, 'a> {
     pub captures: Vec<LocalId>,
     /// The (instantiated) return type of the function, which `?` builds early returns of.
     pub ret_ty: Ty,
+    /// Iterator chains bound to variables (`let it = xs.iter().map(..)`), expanded where they are used.
+    pub iter_locals: HashMap<LocalId, super::iter::Pipeline>,
+    /// The inline closures being lowered, innermost last (a `return` leaves the closure).
+    pub inline_rets: Vec<super::iter::InlineRet>,
 }
 
 /// An `IrFunc` with its signature but no body, for call sites to refer to.
@@ -112,6 +116,8 @@ pub(super) fn lower_const_init(cx: &mut Lowerer<'_>, module: ModuleId, init: Nod
         unit: None,
         captures: Vec::new(),
         ret_ty: crate::sema::Ty(0),
+        iter_locals: HashMap::default(),
+        inline_rets: Vec::new(),
     };
     let ty = fl.node_ty(init);
     fl.ret_ty = ty;
@@ -159,6 +165,8 @@ pub(super) fn lower_instance(cx: &mut Lowerer<'_>, id: FuncId, key: FuncKey) {
         unit: None,
         captures: Vec::new(),
         ret_ty,
+        iter_locals: HashMap::default(),
+        inline_rets: Vec::new(),
     };
     let entry = fl.f.new_block();
     fl.cur = entry;

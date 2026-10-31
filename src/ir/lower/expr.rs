@@ -58,7 +58,39 @@ impl FnLower<'_, '_> {
 
     fn expr_with(&mut self, id: NodeId, fast: bool) -> VReg {
         let ast = self.ast.clone();
+        // a lazy iterator is not a value: it is consumed by the call that ends its chain
+        let raw = self.cx.prog.modules[self.module.index()].info.node_types[id.0 as usize];
+        if self.cx.prog.lang_adts.iter.is_some() && self.is_iter_type(raw) {
+            let span = ast.span(id);
+            self.cx.error_labeled(
+                span,
+                "E0270",
+                "an iterator is a lazy view that exists only inside one chain of calls; end the chain with \
+                 `collect()`, `sum()`, `for_each()`, ... or use it in a `for` loop",
+                "iterator",
+            );
+            return self.unit();
+        }
         match *ast.kind(id) {
+            NodeKind::Range { start, end, .. } => {
+                // a range used as a value: `Range { start, end }`
+                let ty = self.node_ty(id);
+                let desc = self.cx.desc(ty);
+                let mut regs = vec![self.expr(start.get().expect("sema requires a start"))];
+                regs.push(match end.get() {
+                    Some(e) => self.expr(e),
+                    None => {
+                        let ir = self.f.reg_ty(regs[0]);
+                        match ir {
+                            IrTy::Num(n) => self.const_bits(ir, const_int(n, n.max_value())),
+                            _ => regs[0],
+                        }
+                    }
+                });
+                let dst = self.new_reg(IrTy::Ref);
+                self.emit(Inst::NewStruct { dst, desc, fields: regs });
+                dst
+            }
             NodeKind::IntLit(lit) => {
                 let ir = self.ir_ty_of_node(id);
                 let v = ast.lits.int(lit).value;
@@ -202,7 +234,9 @@ impl FnLower<'_, '_> {
                     Some(v) => self.expr(v),
                     None => self.unit(),
                 };
-                if self.f.reg_ty(v) == self.f.ret {
+                if self.inline_return(v) {
+                    // left an inline closure
+                } else if self.f.reg_ty(v) == self.f.ret {
                     self.terminate(Term::Return(v));
                 } else {
                     self.terminate(Term::Unreachable);
@@ -631,7 +665,9 @@ impl FnLower<'_, '_> {
             self.emit(Inst::EnumField { dst: e, obj: v, idx: 0 });
             self.emit(Inst::NewEnum { dst: failure, desc: ret_desc, tag: ERR_TAG, fields: vec![e] });
         }
-        self.terminate(Term::Return(failure));
+        if !self.inline_return(failure) {
+            self.terminate(Term::Return(failure));
+        }
 
         // the success path continues here with the payload
         self.switch_to(cont);

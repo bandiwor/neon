@@ -19,7 +19,7 @@ pub mod sym {
 
     pub(super) const PREDEFINED: &[&str] = &[
         "from", "set", "Tuple2", "Tuple3", "Tuple4", "Tuple5", "Tuple6", "Tuple7", "Tuple8", "T", "_0", "_1", "_2",
-        "_3", "_4", "_5", "_6", "_7",
+        "_3", "_4", "_5", "_6", "_7", "_p0", "_p1", "_p2", "_p3", "_p4", "_p5", "_p6", "_p7",
     ];
 
     const BASE: u32 = Keyword::ALL.len() as u32;
@@ -45,6 +45,12 @@ pub mod sym {
     pub fn tuple_field(index: usize) -> Symbol {
         assert!(index < MAX_TUPLE);
         Symbol(BASE + 10 + index as u32)
+    }
+
+    /// `_p0` .. `_p7`: the hidden parameter that stands for a destructured closure parameter `|(a, b)|`.
+    pub fn closure_arg(index: usize) -> Symbol {
+        assert!(index < MAX_TUPLE);
+        Symbol(BASE + 18 + index as u32)
     }
 
     /// The arity of the tuple type named `name` (`Tuple3` is 3), if it is one.

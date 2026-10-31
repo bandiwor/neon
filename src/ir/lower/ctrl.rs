@@ -91,6 +91,7 @@ impl FnLower<'_, '_> {
         let kind = self.cx.prog.modules[self.module.index()].info.iter_kinds[&id];
         match kind {
             IterKind::Range => self.for_range(pat, iter, body),
+            IterKind::Lazy => self.for_lazy(pat, iter, body),
             IterKind::Array => {
                 let arr = self.expr(iter);
                 let ty = self.node_ty(iter);

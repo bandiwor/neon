@@ -37,6 +37,10 @@ impl FnLower<'_, '_> {
     }
 
     pub fn method_call_expr(&mut self, id: NodeId, receiver: NodeId, args: &[NodeId]) -> VReg {
+        // the methods of the prelude's lazy iterators are fused into loops, never called
+        if let Some(name) = self.lazy_method(id) {
+            return self.lazy_terminal(id, &name, receiver, args);
+        }
         let Some(callee) = self.cx.prog.modules[self.module.index()].info.callees.get(&id).cloned() else {
             self.cx.error("internal error: method call without a resolved callee");
             return self.unit();

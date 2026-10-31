@@ -576,8 +576,11 @@ fn nested_declarations_and_imports_in_blocks() {
 #[test]
 fn iteration_and_ranges() {
     fails("for c in \"abc\" { }", "E0231", "cannot iterate over");
-    fails("let r = 0..5;", "E0218", "ranges can only be used");
-    fails("for i in 5.. { }", "E0218", "");
+    // a range is a value now; an open start is still an error, a `for` over `a..` is not
+    ok("let r = 0..5; let q = 1..=3; let open = 5..; for i in r { } for j in open.take(2).collect() { }");
+    fails("let r = ..5;", "E0218", "needs a start");
+    fails("let r = 1.5..;", "E0218", "needs integers");
+    fails("for i in ..5 { }", "E0218", "");
     ok("for c in \"abc\".chars() { } for i in 0..=3 { } let n = 5i64; for i in 0..n { }");
 }
 

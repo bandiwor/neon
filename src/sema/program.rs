@@ -5,6 +5,7 @@ use crate::fx::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use super::ids::*;
+use super::types::TyKind;
 use super::types::{Ty, TypeTable};
 use crate::builtin::Builtin;
 use crate::diag::{FileId, Span};
@@ -251,6 +252,8 @@ pub enum IterKind {
     Array,
     Set,
     MapKeys,
+    /// A lazy `Iter<T>` or a `Range` value: the loop is fused with the pipeline that produces it.
+    Lazy,
 }
 
 /// Per-module typing results, indexed by that module's `NodeId`s.
@@ -269,6 +272,9 @@ pub struct ModuleInfo {
     pub sys_args: crate::fx::FxHashSet<NodeId>,
     /// `t.0` expressions: the `Field` node to the element index of the tuple.
     pub tuple_fields: HashMap<NodeId, u32>,
+    /// Closure literals that are arguments of lazy iterator methods: their bodies are inlined into the
+    /// loop, so they have no function and capture nothing.
+    pub inline_closures: crate::fx::FxHashSet<NodeId>,
     /// `PatVariant` node to its variant.
     pub pat_variants: HashMap<NodeId, (AdtId, u32)>,
     pub closures: HashMap<NodeId, ClosureInfo>,
@@ -425,6 +431,20 @@ impl LangItems {
 pub struct LangAdts {
     pub option: Option<AdtId>,
     pub result: Option<AdtId>,
+    /// `Range<T>` (`a..b`), `RangeInclusive<T>` (`a..=b`) and the lazy `Iter<T>` of the prelude.
+    pub range: Option<AdtId>,
+    pub range_inclusive: Option<AdtId>,
+    pub iter: Option<AdtId>,
+}
+
+/// What a prelude method with a lazy meaning belongs to (see the iterator fusion in the lowering).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum LazyOwner {
+    Iter,
+    Range,
+    RangeInclusive,
+    /// `[T]::iter`, the one lazy method of arrays (the others are eager and return arrays).
+    Array,
 }
 
 // ---- the program ----------------------------------------------------------------------
@@ -507,6 +527,31 @@ impl Program {
             && a.is_enum()
             && a.variants().len() == 1
             && crate::syntax::sym::tuple_arity(interner.resolve(a.name)).is_some()
+    }
+
+    /// The lazy iterator type a prelude method is declared on, if it is one.
+    pub fn lazy_owner(&self, interner: &Interner, f: FnId) -> Option<LazyOwner> {
+        let FnOwner::Impl(i) = self.fns[f.index()].owner else { return None };
+        let imp = &self.impls[i.index()];
+        if imp.module.index() != 0 {
+            return None;
+        }
+        if matches!(self.types.kind(imp.self_ty), TyKind::Array(_)) {
+            return (interner.resolve(self.fns[f.index()].name) == "iter").then_some(LazyOwner::Array);
+        }
+        let TyKind::Adt(a, _) = self.types.kind(imp.self_ty) else { return None };
+        let la = self.lang_adts;
+        // the ranges' other methods (`contains`, ...) are ordinary code
+        let is_iter_method = interner.resolve(self.fns[f.index()].name) == "iter";
+        if Some(*a) == la.iter {
+            Some(LazyOwner::Iter)
+        } else if Some(*a) == la.range && is_iter_method {
+            Some(LazyOwner::Range)
+        } else if Some(*a) == la.range_inclusive && is_iter_method {
+            Some(LazyOwner::RangeInclusive)
+        } else {
+            None
+        }
     }
 
     pub fn find_item(&self, module: ModuleId, name: Symbol) -> Option<Item> {

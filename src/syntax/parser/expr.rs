@@ -686,6 +686,8 @@ impl Parser<'_> {
     fn parse_closure(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
         let mut params = Vec::new();
+        // `|(a, b)| body` is `|_p0| { let (a, b) = _p0; body }`
+        let mut taken_apart: Vec<(NodeId, crate::syntax::Symbol, Span)> = Vec::new();
         if !self.eat(TokenKind::PipePipe) {
             self.expect(TokenKind::Pipe)?;
             loop {
@@ -693,6 +695,30 @@ impl Parser<'_> {
                     break;
                 }
                 let p_lo = self.cur_lo();
+                if self.at(TokenKind::LParen) {
+                    // an atom: a top-level `|` would be the closing bar of the parameter list
+                    let pat = self.parse_pattern_atom()?;
+                    let span = Span::new(self.file, p_lo, self.prev_hi());
+                    let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
+                    if taken_apart.len() >= sym::MAX_TUPLE {
+                        return Err(self.error_at(
+                            span,
+                            "E0104",
+                            "too many destructured parameters".into(),
+                            "here".into(),
+                        ));
+                    }
+                    let name = sym::closure_arg(taken_apart.len());
+                    let id = self.ast.push(NodeKind::Param { name, mutable: false, ty: self.opt(ty) }, span);
+                    self.ast.set_name_span(id, span);
+                    params.push(id);
+                    taken_apart.push((pat, name, span));
+                    if self.eat(TokenKind::Comma) {
+                        continue;
+                    }
+                    self.expect(TokenKind::Pipe)?;
+                    break;
+                }
                 let mutable = self.eat_kw(Keyword::Var);
                 let (name, name_span) = self.expect_ident()?;
                 let ty = if self.eat(TokenKind::Colon) { Some(self.parse_type()?) } else { None };
@@ -706,7 +732,19 @@ impl Parser<'_> {
         }
         let ret = if self.eat(TokenKind::Arrow) { Some(self.parse_type()?) } else { None };
         self.expect(TokenKind::FatArrow)?;
-        let body = self.parse_arm_body()?;
+        let mut body = self.parse_arm_body()?;
+        if !taken_apart.is_empty() {
+            let body_span = self.ast.span(body);
+            let mut stmts = Vec::new();
+            for (pat, name, span) in &taken_apart {
+                let init = self.ast.push(NodeKind::Ident(*name), *span);
+                stmts.push(
+                    self.ast.push(NodeKind::Let { pat: *pat, ty: self.opt(None), init: self.opt(Some(init)) }, *span),
+                );
+            }
+            let stmts = self.list(&stmts);
+            body = self.ast.push(NodeKind::Block { stmts, tail: self.opt(Some(body)) }, body_span);
+        }
         let params = self.list(&params);
         Ok(self.node(NodeKind::Closure { params, ret: self.opt(ret), body }, lo))
     }

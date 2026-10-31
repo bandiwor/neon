@@ -1,0 +1,50 @@
+// Ranges are values; chains over them and over arrays are fused into loops.
+struct Reading {
+    sensor: string,
+    value: f64,
+}
+
+fn parse(line: string) -> Option<Reading> {
+    let parts = line.split(":");
+    if parts.len() != 2 {
+        return Option::None;
+    }
+    match parts[1].try_parse_f64() {
+        Result::Ok(v) => Option::Some(Reading { sensor: parts[0], value: v }),
+        Result::Err(_) => Option::None,
+    }
+}
+
+fn is_prime(n: i64) -> bool {
+    n > 1 && (2..n).take_while(|d| => d * d <= n).all(|d| => n % d != 0)
+}
+
+fn main() {
+    let raw = ["a:1.5", "b:oops", "a:2.5", "c:10", "b:4"];
+    let readings = raw.iter().filter_map(|l| => parse(l)).collect();
+    println(readings.iter().map(|r| => r.value).sum());
+    println(readings.iter().filter(|r| => r.sensor == "a").map(|r| => r.value).max());
+    println(readings.iter().map(|r| => r.sensor).join("+"));
+    let primes = (1..50).filter(|n| => is_prime(n)).collect();
+    println(primes);
+    println(primes.iter().rev().take(3).collect());
+    println((1..=20).filter(|n| => n % 2 == 0).map(|n| => n * n).take(4).sum());
+    let squares = (1..6).map(|n| => n * n);
+    println(squares.sum());
+    println(squares.collect());
+    println(squares.zip(primes.iter()).map(|p| => p.0 * p.1).collect());
+    var evens = 0;
+    for n in (0..100).step_by(7) {
+        if n % 2 == 0 {
+            evens += 1;
+        }
+    }
+    println(evens);
+    let words = "the quick brown fox".split(" ");
+    println(words.iter().enumerate().map(|p| => f"{p.0}={p.1}").join(", "));
+    println(words.iter().map(|w| => w.len()).max());
+    let r = 10..14;
+    println(r.is_empty());
+    println((5..5).is_empty());
+    println(r.iter().rev().collect());
+}

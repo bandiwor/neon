@@ -20,7 +20,7 @@ impl Parser<'_> {
         Ok(self.node(NodeKind::PatOr { alts }, lo))
     }
 
-    fn parse_pattern_atom(&mut self) -> PResult<NodeId> {
+    pub(super) fn parse_pattern_atom(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
         match self.peek() {
             TokenKind::Underscore => {

@@ -204,6 +204,14 @@ fn declare_item(
                 kind: AdtKind::Struct { fields: field_defs },
                 exported,
             });
+            if module.0 == 0 {
+                match interner.resolve(name) {
+                    "Range" => prog.lang_adts.range = Some(id),
+                    "RangeInclusive" => prog.lang_adts.range_inclusive = Some(id),
+                    "Iter" => prog.lang_adts.iter = Some(id),
+                    _ => {}
+                }
+            }
             insert_item(prog, interner, diags, module, name, Item::Adt(id), name_span, exported);
         }
         NodeKind::EnumDecl { name, generics, variants } => {

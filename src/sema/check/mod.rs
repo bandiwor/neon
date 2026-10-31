@@ -87,6 +87,8 @@ pub(super) struct Checker<'a> {
     pub requires: Vec<(Require, Ty, Span, &'static str)>,
     pub matches: Vec<(NodeId, Ty)>,
     pub closure_nodes: Vec<NodeId>,
+    /// Closure literals passed to lazy iterator methods (checked as part of the enclosing function).
+    pub inline_closure_args: crate::fx::FxHashSet<NodeId>,
     pub reported_unresolved: bool,
 }
 
@@ -128,6 +130,7 @@ impl<'a> Checker<'a> {
             requires: Vec::new(),
             matches: Vec::new(),
             closure_nodes: Vec::new(),
+            inline_closure_args: Default::default(),
             reported_unresolved: false,
         }
     }
@@ -300,7 +303,7 @@ impl<'a> Checker<'a> {
     pub fn lookup_local(&mut self, name: Symbol) -> Option<LocalId> {
         let found = self.scopes.iter().rev().find_map(|s| s.iter().rev().find(|(n, _)| *n == name).map(|&(_, l)| l))?;
         let owner = self.prog.locals[found.index()].owner;
-        if let Some(pos) = self.frames.iter().position(|f| f.owner == owner) {
+        if let Some(pos) = self.frames.iter().rposition(|f| f.owner == owner) {
             if pos + 1 < self.frames.len() {
                 self.prog.locals[found.index()].captured = true;
                 for f in &mut self.frames[pos + 1..] {

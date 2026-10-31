@@ -1168,7 +1168,14 @@ impl FnEmit<'_, '_> {
         }
         if !self.used[dst.index()] || self.ty(dst) == IrTy::Unit {
             // nothing reads the result: keep the call, drop plain expressions
-            return if expr.contains('(') { format!("(void){};", paren(expr)) } else { String::new() };
+            // (a plain variable is still "used": its own assignment would otherwise warn)
+            let plain_variable = expr.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
+                && expr.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
+            return if expr.contains('(') || plain_variable {
+                format!("(void){};", paren(expr))
+            } else {
+                String::new()
+            };
         }
         format!("v{} = {expr};", dst.index())
     }

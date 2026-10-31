@@ -414,3 +414,132 @@ impl [f32] {
         total
     }
 }
+
+// ---- ranges and lazy iterators ----------------------------------------------------
+//
+// `a..b` and `a..=b` are values (`Range<T>`, `RangeInclusive<T>`); `.iter()` on them and on arrays gives an
+// `Iter<T>`, and `(0..n).map(..)` reads `(0..n).iter().map(..)`. An `Iter` is *lazy and exists only at
+// compile time*: the compiler fuses the whole chain, from the source to the method that ends it
+// (`for_each`, `collect`, `sum`, a `for` loop, ...), into one loop with the closures inlined: nothing is
+// allocated between the steps and no closure object is made. So the bodies below are never run - they only
+// give the compiler the types - and an `Iter` cannot be stored in a variable of a struct, passed to a
+// function or returned: end the chain first (`.collect()` makes an array).
+
+export struct Range<T> { start: T, end: T }
+export struct RangeInclusive<T> { start: T, end: T }
+export struct Iter<T> { lazy: () }
+
+impl<T: Ord> Range<T> {
+    fn contains(self, x: T) -> bool { x >= self.start && x < self.end }
+    fn is_empty(self) -> bool { self.start >= self.end }
+}
+
+impl<T: Ord> RangeInclusive<T> {
+    fn contains(self, x: T) -> bool { x >= self.start && x <= self.end }
+    fn is_empty(self) -> bool { self.start > self.end }
+}
+
+impl<T> Range<T> {
+    fn iter(self) -> Iter<T> { panic("lazy") }
+}
+
+impl<T> RangeInclusive<T> {
+    fn iter(self) -> Iter<T> { panic("lazy") }
+}
+
+impl<T> [T] {
+    fn iter(self) -> Iter<T> { panic("lazy") }
+}
+
+impl<T> Iter<T> {
+    // -- steps that give another iterator
+    fn map<U>(self, f: fn(T) -> U) -> Iter<U> { panic("lazy") }
+    fn filter(self, keep: fn(T) -> bool) -> Iter<T> { panic("lazy") }
+    fn filter_map<U>(self, f: fn(T) -> Option<U>) -> Iter<U> { panic("lazy") }
+    fn flat_map<U>(self, f: fn(T) -> [U]) -> Iter<U> { panic("lazy") }
+    fn take(self, n: i64) -> Iter<T> { panic("lazy") }
+    fn skip(self, n: i64) -> Iter<T> { panic("lazy") }
+    fn take_while(self, keep: fn(T) -> bool) -> Iter<T> { panic("lazy") }
+    fn skip_while(self, skip: fn(T) -> bool) -> Iter<T> { panic("lazy") }
+    fn step_by(self, n: i64) -> Iter<T> { panic("lazy") }
+    fn enumerate(self) -> Iter<(i64, T)> { panic("lazy") }
+    fn zip<U>(self, other: Iter<U>) -> Iter<(T, U)> { panic("lazy") }
+    fn chain(self, other: Iter<T>) -> Iter<T> { panic("lazy") }
+    fn rev(self) -> Iter<T> { panic("lazy") }
+    fn inspect(self, f: fn(T)) -> Iter<T> { panic("lazy") }
+
+    // -- steps that end the chain
+    fn for_each(self, f: fn(T)) { panic("lazy") }
+    fn fold<A>(self, init: A, f: fn(A, T) -> A) -> A { panic("lazy") }
+    fn reduce(self, f: fn(T, T) -> T) -> Option<T> { panic("lazy") }
+    fn collect(self) -> [T] { panic("lazy") }
+    fn count(self) -> i64 { panic("lazy") }
+    fn any(self, test: fn(T) -> bool) -> bool { panic("lazy") }
+    fn all(self, test: fn(T) -> bool) -> bool { panic("lazy") }
+    fn find(self, test: fn(T) -> bool) -> Option<T> { panic("lazy") }
+    fn position(self, test: fn(T) -> bool) -> Option<i64> { panic("lazy") }
+    fn first(self) -> Option<T> { panic("lazy") }
+    fn last(self) -> Option<T> { panic("lazy") }
+    fn nth(self, n: i64) -> Option<T> { panic("lazy") }
+    fn max_by_key<K: Ord>(self, key: fn(T) -> K) -> Option<T> { panic("lazy") }
+    fn min_by_key<K: Ord>(self, key: fn(T) -> K) -> Option<T> { panic("lazy") }
+}
+
+impl<T: Ord> Iter<T> {
+    fn max(self) -> Option<T> { panic("lazy") }
+    fn min(self) -> Option<T> { panic("lazy") }
+}
+
+impl Iter<string> {
+    fn join(self, separator: string) -> string { panic("lazy") }
+}
+
+impl Iter<i64> {
+    fn sum(self) -> i64 { panic("lazy") }
+    fn product(self) -> i64 { panic("lazy") }
+}
+
+impl Iter<i32> {
+    fn sum(self) -> i32 { panic("lazy") }
+    fn product(self) -> i32 { panic("lazy") }
+}
+
+impl Iter<i16> {
+    fn sum(self) -> i16 { panic("lazy") }
+    fn product(self) -> i16 { panic("lazy") }
+}
+
+impl Iter<i8> {
+    fn sum(self) -> i8 { panic("lazy") }
+    fn product(self) -> i8 { panic("lazy") }
+}
+
+impl Iter<u64> {
+    fn sum(self) -> u64 { panic("lazy") }
+    fn product(self) -> u64 { panic("lazy") }
+}
+
+impl Iter<u32> {
+    fn sum(self) -> u32 { panic("lazy") }
+    fn product(self) -> u32 { panic("lazy") }
+}
+
+impl Iter<u16> {
+    fn sum(self) -> u16 { panic("lazy") }
+    fn product(self) -> u16 { panic("lazy") }
+}
+
+impl Iter<u8> {
+    fn sum(self) -> u8 { panic("lazy") }
+    fn product(self) -> u8 { panic("lazy") }
+}
+
+impl Iter<f64> {
+    fn sum(self) -> f64 { panic("lazy") }
+    fn product(self) -> f64 { panic("lazy") }
+}
+
+impl Iter<f32> {
+    fn sum(self) -> f32 { panic("lazy") }
+    fn product(self) -> f32 { panic("lazy") }
+}

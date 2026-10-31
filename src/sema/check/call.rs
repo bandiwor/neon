@@ -187,11 +187,30 @@ impl Checker<'_> {
 
         let explicit: Vec<Ty> = ast.list(generics).to_vec().iter().map(|&g| self.resolve_type(g)).collect();
         let generics_env = self.generics.clone();
-        let lookup = lookup_method(self.prog, &mut self.infer, &generics_env, recv_ty, name);
+        let mut lookup = lookup_method(self.prog, &mut self.infer, &generics_env, recv_ty, name);
+        // a range is iterated through the `Iter` methods: `(0..n).map(..)` reads `(0..n).iter().map(..)`
+        let mut lookup_ty = recv_ty;
+        if matches!(lookup, MethodLookup::NotFound) {
+            if let Some(view) = self.range_as_iter(recv_ty) {
+                let again = lookup_method(self.prog, &mut self.infer, &generics_env, view, name);
+                if !matches!(again, MethodLookup::NotFound) {
+                    lookup = again;
+                    lookup_ty = view;
+                }
+            }
+        }
         match lookup {
             MethodLookup::Inherent { impl_id, method } => {
-                let impl_args = instantiate_inherent(self.prog, &mut self.infer, &generics_env, impl_id, recv_ty);
+                let impl_args = instantiate_inherent(self.prog, &mut self.infer, &generics_env, impl_id, lookup_ty);
                 let (all, params, ret) = self.instantiate_fn(method, impl_args, &explicit, span);
+                if self.prog.lazy_owner(self.interner, method).is_some() {
+                    // closure literals handed to lazy iterator methods are inlined into the loop
+                    for &a in &arg_nodes {
+                        if matches!(ast.kind(a), NodeKind::Closure { .. }) {
+                            self.inline_closure_args.insert(a);
+                        }
+                    }
+                }
                 self.finish_user_method(id, receiver, method, Callee::Fn(method, all), &params, ret, &arg_nodes, span);
                 ret
             }
@@ -253,6 +272,18 @@ impl Checker<'_> {
         }
     }
 
+    /// `Iter<T>` for a `Range<T>` / `RangeInclusive<T>`.
+    fn range_as_iter(&mut self, ty: Ty) -> Option<Ty> {
+        let la = self.prog.lang_adts;
+        let ty = self.shallow(ty);
+        match self.prog.types.kind(ty).clone() {
+            TyKind::Adt(a, args) if Some(a) == la.range || Some(a) == la.range_inclusive => {
+                Some(self.prog.types.adt(la.iter?, args))
+            }
+            _ => None,
+        }
+    }
+
     #[allow(clippy::too_many_arguments)]
     fn finish_user_method(
         &mut self,
@@ -280,7 +311,15 @@ impl Checker<'_> {
         } else {
             let recv_ty = self.ty_of(receiver);
             let rspan = self.span(receiver);
-            self.unify_at(rspan, params[0], recv_ty);
+            match self.range_as_iter(recv_ty) {
+                // a range used through `Iter`: only the element types have to agree
+                Some(view) if self.prog.lazy_owner(self.interner, method) == Some(crate::sema::LazyOwner::Iter) => {
+                    self.unify_at(rspan, params[0], view);
+                }
+                _ => {
+                    self.unify_at(rspan, params[0], recv_ty);
+                }
+            }
             if self.self_is_mut(method) {
                 self.check_mutable_place(receiver);
             }

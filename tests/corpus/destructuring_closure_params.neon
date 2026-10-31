@@ -1,0 +1,11 @@
+fn main() {
+    let pairs = [(1, "a"), (2, "b"), (3, "c")];
+    println(pairs.iter().map(|(n, s)| => f"{n}{s}").join(","));
+    println(pairs.iter().filter(|(n, _)| => n % 2 == 1).count());
+    println(["x", "y"].iter().enumerate().map(|(i, s)| => f"{i}:{s}").collect());
+    println([1, 2].iter().zip([10, 20].iter()).map(|(a, b)| => a * b).sum());
+    let add = |(a, b): (i64, i64)| => a + b;
+    println(add((3, 4)));
+    println(pairs.map(|(n, s)| => n * 10));
+    println([(1, 2), (3, 4)].iter().fold(0, |acc, (a, b)| => acc + a * b));
+}

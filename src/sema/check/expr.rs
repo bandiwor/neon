@@ -25,8 +25,48 @@ impl Checker<'_> {
     pub fn expr_has_type(&mut self, id: NodeId, ty: Ty) -> Ty {
         let t = self.expr(id, Some(ty));
         let span = self.span(id);
+        // where an `Iter<U>` is wanted, a range or an array of `U` serves as its source
+        if let Some(elem) = self.iterable_elem(ty, t) {
+            let want = self.iter_elem(ty).expect("an Iter");
+            self.unify_at(span, want, elem);
+            return t;
+        }
         self.unify_at(span, ty, t);
         t
+    }
+
+    /// `a..` needs integers (it runs up to the type's largest value).
+    fn require_integer(&mut self, ty: Ty, span: Span) {
+        let ok = match self.kind(ty) {
+            TyKind::Prim(p) => p.is_int(),
+            TyKind::Infer(v) => self.infer.var_kind(v) == VarKind::Int,
+            TyKind::Error => true,
+            _ => false,
+        };
+        if !ok {
+            self.err(span, "E0218", "an open range `a..` needs integers", "not an integer range");
+        }
+    }
+
+    /// The element type of a lazy `Iter<T>`.
+    fn iter_elem(&mut self, ty: Ty) -> Option<Ty> {
+        let ty = self.shallow(ty);
+        match self.prog.types.kind(ty).clone() {
+            TyKind::Adt(a, args) if Some(a) == self.prog.lang_adts.iter => Some(args[0]),
+            _ => None,
+        }
+    }
+
+    /// If `wanted` is an `Iter<U>` and `found` a range or an array, the element type of `found`.
+    fn iterable_elem(&mut self, wanted: Ty, found: Ty) -> Option<Ty> {
+        self.iter_elem(wanted)?;
+        let found = self.shallow(found);
+        let la = self.prog.lang_adts;
+        match self.prog.types.kind(found).clone() {
+            TyKind::Adt(a, args) if Some(a) == la.range || Some(a) == la.range_inclusive => Some(args[0]),
+            TyKind::Array(e) => Some(e),
+            _ => None,
+        }
     }
 
     /// Type of expression `id`, using `expected` only as a hint for literals,
@@ -105,9 +145,28 @@ impl Checker<'_> {
             NodeKind::Field { base, name } => self.field(id, base, name),
             NodeKind::Index { base, index } => self.index(id, base, index),
             NodeKind::Try { expr } => self.try_expr(expr, span),
-            NodeKind::Range { .. } => {
-                self.err(span, "E0218", "ranges can only be used as the iterable of a `for` loop", "not allowed here");
-                self.error_ty()
+            NodeKind::Range { start, end, inclusive } => {
+                // a range is a value: `Range<T>` (`a..b`) or `RangeInclusive<T>` (`a..=b`)
+                let Some(s) = start.get() else {
+                    self.err(span, "E0218", "a range value needs a start", "write `a..b`, `a..=b` or `a..`");
+                    return self.error_ty();
+                };
+                // `a..` runs to the largest value of its type: it is `a..=MAX`
+                let inclusive = inclusive || end.is_none();
+                let la = self.prog.lang_adts;
+                let Some(adt) = (if inclusive { la.range_inclusive } else { la.range }) else { return self.error_ty() };
+                let elem = match expected.map(|x| self.shallow(x)).map(|x| self.prog.types.kind(x).clone()) {
+                    Some(TyKind::Adt(a, args)) if a == adt && args.len() == 1 => args[0],
+                    _ => self.fresh(span),
+                };
+                self.expr_has_type(s, elem);
+                match end.get() {
+                    Some(e) => {
+                        self.expr_has_type(e, elem);
+                    }
+                    None => self.require_integer(elem, span),
+                }
+                self.prog.types.adt(adt, vec![elem])
             }
             NodeKind::ArrayLit { elems } => {
                 let elem = match expected.map(|e| self.kind(e)) {
@@ -319,6 +378,18 @@ impl Checker<'_> {
             (elem, IterKind::Range)
         } else {
             let t = self.expr(iter, None);
+            let t = self.shallow(t);
+            let la = self.prog.lang_adts;
+            let lazy_elem = match self.prog.types.kind(t).clone() {
+                TyKind::Adt(a, args) if Some(a) == la.iter || Some(a) == la.range || Some(a) == la.range_inclusive => {
+                    Some(args[0])
+                }
+                _ => None,
+            };
+            if let Some(e) = lazy_elem {
+                self.info().iter_kinds.insert(id, IterKind::Lazy);
+                return self.finish_for(id, pat, body, e);
+            }
             match self.kind(t) {
                 TyKind::Array(e) => (e, IterKind::Array),
                 TyKind::Set(e) => (e, IterKind::Set),
@@ -338,6 +409,11 @@ impl Checker<'_> {
             }
         };
         self.info().iter_kinds.insert(id, kind);
+        self.finish_for(id, pat, body, elem)
+    }
+
+    fn finish_for(&mut self, _id: NodeId, pat: NodeId, body: NodeId, elem: Ty) -> Ty {
+        let ast = self.ast.clone();
         self.push_scope();
         let mut ctx = super::PatCtx::default();
         self.pattern(pat, elem, &mut ctx);
@@ -368,7 +444,11 @@ impl Checker<'_> {
             Some(r) => self.resolve_type(r),
             None => exp_ret.unwrap_or_else(|| self.fresh(span)),
         };
-        self.frames.push(Frame { owner: id, ret: ret_ty, loops: Vec::new(), captures: Vec::new() });
+        // an inline closure (an argument of a lazy iterator method) is part of the enclosing function: its
+        // variables live there and nothing it uses counts as captured
+        let inline = self.inline_closure_args.contains(&id);
+        let owner = if inline { self.frames.last().map_or(id, |f| f.owner) } else { id };
+        self.frames.push(Frame { owner, ret: ret_ty, loops: Vec::new(), captures: Vec::new() });
         self.push_scope();
         let mut ptys = Vec::new();
         let mut locals = Vec::new();
@@ -398,6 +478,9 @@ impl Checker<'_> {
         }
         self.pop_scope();
         let frame = self.frames.pop().unwrap();
+        if inline {
+            self.info().inline_closures.insert(id);
+        }
         self.info().closures.insert(id, ClosureInfo { params: locals, captures: frame.captures, ret: ret_ty });
         self.closure_nodes.push(id);
         self.prog.types.func(ptys, ret_ty)

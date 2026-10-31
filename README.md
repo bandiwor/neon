@@ -139,6 +139,30 @@ Tuples have 2 to 8 elements and are immutable. A tuple is an ordinary one-varian
 their own; the optimizer replaces tuples that do not escape (also ones built in two branches and merged
 afterwards) by plain registers. Top-level `let` still binds a single name, so destructure inside a function.
 
+### Ranges and lazy iterators
+
+`a..b`, `a..=b` and `a..` are values (`Range<T>`, `RangeInclusive<T>`: fields `start` / `end`, methods `contains`,
+`is_empty`). `xs.iter()` or a range starts a **lazy iterator**, and the chain is compiled into **one loop**:
+no array is built between the steps, no closure object exists, the closures are inlined.
+
+```
+let evens = (1..=100).filter(|n| => n % 2 == 0).map(|n| => n * n).take(5).collect();
+let total = xs.iter().zip(weights.iter()).map(|(x, w)| => x * w).sum();
+for (i, line) in lines.iter().enumerate().skip(1) { println(f"{i}: {line}"); }
+```
+
+| steps that give another iterator | steps that end the chain |
+|---|---|
+| `map` `filter` `filter_map` `flat_map` `take` `skip` `take_while` `skip_while` `step_by` `enumerate` `zip` `chain` `rev` `inspect` | `for_each` `fold` `reduce` `collect` `count` `sum` `product` `any` `all` `find` `position` `first` `last` `nth` `max` `min` `max_by_key` `min_by_key` `join` |
+
+`|(a, b)| => ..` takes a tuple argument apart. Laziness is Rust's: `take(2)` pulls two elements, `any` stops at the
+first hit. The price of compiling the chain away: an iterator exists **only inside one chain** (it may be bound
+with `let it = ..` and used several times inside a function, each use starts over), so it cannot be passed to a
+function, returned or stored: end the chain with `collect()` first. `rev()` must come right after the source (or
+`map` / `filter`), the right side of `zip` must be an array or a range (possibly with `map`s), and
+`flat_map` closures return arrays. On a 3-million-element array a `map -> filter -> sum` chain runs as fast as the
+hand-written loop; the array methods of the previous section (`xs.map(..)`) still build a new array per step.
+
 ### Array combinators
 
 Arrays have the usual functional methods, written in Neon itself (in the prelude) and taking closures,

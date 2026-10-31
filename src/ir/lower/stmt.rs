@@ -9,6 +9,10 @@ impl FnLower<'_, '_> {
         match *self.ast.kind(s) {
             NodeKind::Let { pat, init, .. } => {
                 let Some(init) = init.get() else { return };
+                // `let it = xs.iter().map(..)`: a lazy iterator has no value, only a definition
+                if self.bind_iterator(pat, init) {
+                    return;
+                }
                 let v = self.expr(init);
                 self.bind_irrefutable(pat, v);
             }

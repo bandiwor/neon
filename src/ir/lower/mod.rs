@@ -10,6 +10,7 @@ mod calls;
 mod ctrl;
 mod expr;
 mod func;
+mod iter;
 mod pat;
 mod place;
 mod stmt;
@@ -120,6 +121,18 @@ impl Lowerer<'_> {
     pub fn error_at(&mut self, span: crate::diag::Span, code: &'static str, message: impl Into<String>) {
         self.failed = true;
         self.diags.report(Diagnostic::error(message.into()).with_code(code).with_label(span, "in this constant"));
+    }
+
+    /// An error attached to a source location, with its own label text.
+    pub fn error_labeled(
+        &mut self,
+        span: crate::diag::Span,
+        code: &'static str,
+        message: impl Into<String>,
+        label: &str,
+    ) {
+        self.failed = true;
+        self.diags.report(Diagnostic::error(message.into()).with_code(code).with_label(span, label.to_string()));
     }
 
     /// The value of the `const` `g`, evaluated by the compiler (once).
