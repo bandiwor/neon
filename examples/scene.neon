@@ -1,0 +1,122 @@
+// A tiny software renderer: draws a scene into a character canvas.
+//
+// Showcases the newer features of the language:
+//  * compact enums: `Color`, `Shape` and `Op` hold only small integers, so each one is a single
+//    64-bit word (tag byte + payload) - no heap object, no allocation, nothing for the GC to scan;
+//  * tuples as ordinary values: `(x, y)`, `t.0`, destructuring in `let`, `for` and closure parameters;
+//  * ranges as values (`0..n`, `a..=b`) and lazy iterator chains that are fused into one loop.
+
+enum Color { Black, Gray(u8), Rgb(u8, u8, u8) }
+
+enum Shape {
+    Dot(u8, u8),
+    HLine(u8, u8, u8),     // x, y, length
+    Rect(u8, u8, u8, u8),  // x, y, width, height
+    Circle(u8, u8, u8),    // cx, cy, radius
+}
+
+enum Op { Draw(Shape, Color), Clear }
+
+const W: i64 = 40;
+const H: i64 = 16;
+
+impl Color {
+    fn brightness(self) -> i64 {
+        match self {
+            Color::Black => 0,
+            Color::Gray(v) => v as i64,
+            Color::Rgb(r, g, b) => (2 * (r as i64) + 5 * (g as i64) + (b as i64)) / 8,
+        }
+    }
+
+    fn glyph(self) -> char {
+        let b = self.brightness();
+        if b == 0 { ' ' } elif b < 64 { '.' } elif b < 128 { ':' } elif b < 192 { 'o' } else { '#' }
+    }
+}
+
+impl Display for Color {
+    fn to_string(self) -> string {
+        match self {
+            Color::Black => "black",
+            Color::Gray(v) => f"gray({v})",
+            Color::Rgb(r, g, b) => f"rgb({r}, {g}, {b})",
+        }
+    }
+}
+
+// Does the shape cover the point (x, y)?
+fn covers(s: Shape, p: (i64, i64)) -> bool {
+    let (x, y) = p;
+    match s {
+        Shape::Dot(dx, dy) => x == dx as i64 && y == dy as i64,
+        Shape::HLine(lx, ly, len) => y == ly as i64 && lx as i64 <= x && x < (lx as i64) + (len as i64),
+        Shape::Rect(rx, ry, w, h) => {
+            let xs = (rx as i64)..((rx as i64) + (w as i64));
+            let ys = (ry as i64)..((ry as i64) + (h as i64));
+            xs.contains(x) && ys.contains(y)
+        }
+        Shape::Circle(cx, cy, r) => {
+            let dx = x - cx as i64;
+            let dy = (y - cy as i64) * 2; // characters are about twice as tall as wide
+            dx * dx + dy * dy <= (r as i64) * (r as i64)
+        }
+    }
+}
+
+fn area(s: Shape) -> i64 {
+    // count the covered cells of the canvas: one fused loop over all points, nothing is allocated
+    (0..H).map(|y| => (0..W).filter(|x| => covers(s, (x, y))).count()).sum()
+}
+
+fn render(ops: [Op]) -> [string] {
+    var canvas: [[char]] = [];
+    for _ in 0..H {
+        var row: [char] = [];
+        for _ in 0..W { row.push(' '); }
+        canvas.push(row);
+    }
+    for op in ops {
+        match op {
+            Op::Clear => {
+                for y in 0..H { for x in 0..W { canvas[y][x] = ' '; } }
+            }
+            Op::Draw(shape, color) => {
+                for y in 0..H {
+                    for x in 0..W {
+                        if covers(shape, (x, y)) { canvas[y][x] = color.glyph(); }
+                    }
+                }
+            }
+        }
+    }
+    canvas.map(|row| => row.iter().map(|c| => f"{c}").join(""))
+}
+
+fn main() {
+    let scene = [
+        Op::Draw(Shape::Rect(2, 1, 12, 5), Color::Gray(70)),
+        Op::Draw(Shape::Circle(26, 7, 7), Color::Rgb(250, 240, 200)),
+        Op::Draw(Shape::HLine(0, 14, 40), Color::Gray(130)),
+        Op::Draw(Shape::Circle(26, 7, 3), Color::Rgb(40, 20, 10)),
+        Op::Draw(Shape::Dot(7, 3), Color::Gray(255)),
+    ];
+    for line in render(scene) { println("|" + line + "|"); }
+
+    // tuples and lazy chains over ranges
+    let shapes = [Shape::Dot(1, 1), Shape::HLine(0, 0, 9), Shape::Rect(3, 3, 4, 5), Shape::Circle(20, 8, 6)];
+    println("areas:");
+    for (i, s) in shapes.iter().enumerate() {
+        println(f"  shape {i}: {area(s)} cells");
+    }
+    let (biggest, cells) = shapes.iter().map(|s| => (s, area(s))).max_by_key(|p| => p.1).unwrap();
+    println(f"biggest: {biggest} with {cells} cells");
+
+    let palette = [Color::Black, Color::Gray(40), Color::Gray(100), Color::Rgb(200, 180, 90), Color::Rgb(255, 255, 255)];
+    println(palette);
+    println(palette.iter().map(|c| => c.brightness()).collect());
+    println(palette.iter().zip(0..).filter(|(c, i)| => c.brightness() > 50).map(|(c, i)| => f"{i}:{c}").join(", "));
+    println((1..=5).rev().map(|n| => (n, n * n)).collect());
+    println((0..40).step_by(8).collect());
+    println((0..20).filter(|n| => n % 3 == 0).map(|n| => n * n).sum());
+}
