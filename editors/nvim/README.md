@@ -39,7 +39,7 @@ return {
     end,
     opts = {
       -- cmd = { "/home/me/.cargo/bin/neon", "lsp" },   -- if neon is not in $PATH
-      keymaps = true,          -- gd, gr, K, <leader>rn, <leader>ds, <C-s> in insert mode
+      keymaps = true,          -- gd, gr, K, <leader>rn, <leader>ds, <leader>ca, <C-s> in insert mode
     },
   },
 }
@@ -58,7 +58,7 @@ because the plugin sits in a subdirectory.
 | `cmd` | `{ "neon", "lsp" }` | how to start the server |
 | `lsp` | `true` | start the server for `neon` buffers |
 | `root_markers` | `{ ".git", "neon.toml" }` | project root detection |
-| `keymaps` | `false` | buffer-local `gd gr K <leader>rn <leader>ds` and `<C-s>` (signature help) |
+| `keymaps` | `false` | buffer-local `gd gr K <leader>rn <leader>ds <leader>ca` and `<C-s>` (signature help) |
 | `semantic_tokens` | `true` | highlight with the server's semantic tokens on top of the regex syntax |
 | `capabilities` | `nil` | extra client capabilities; `nvim-cmp` / `blink.cmp` are picked up automatically |
 | `on_attach` | `nil` | `function(client, bufnr)` called after the built-in setup |
@@ -148,3 +148,21 @@ open document.
   the buffer; the server log is in `:lua vim.cmd.edit(vim.lsp.get_log_path())`.
 * Run `neon lsp` by hand: it should sit silently waiting for input on stdin.
 * No highlighting at all → `:set filetype?` must print `filetype=neon`.
+
+## Code actions
+
+`:lua vim.lsp.buf.code_action()` (Neovim 0.10+: `gra`; with `keymaps = true`: `<leader>ca`) offers, at the
+cursor or on a diagnostic:
+
+* **`impl Add for Data {}`** - adds the missing generic argument (`Add<Data>`) and a stub for every
+  required method of the trait, all at once or one by one; the same for any `impl Trait for Type`;
+* **non-exhaustive `match`** - adds an arm for every uncovered case (`Color::Green => ...`,
+  `Option::Some(_) => ...`), or a wildcard `_`; removes an unreachable arm;
+* **struct literal with missing fields** - adds them with zero values;
+* **`let x` that is assigned later** - changes it to `var x` (also for parameters);
+* **misspelled names, fields and enum variants** - `Change to ...` with the closest candidates;
+* **missing `;`**;
+* **`"{x}"` that is not a format string** - makes it `f"{x}"`.
+
+The stubs call `panic("not implemented")`, so the result compiles and fails loudly where you have yet to
+write code.

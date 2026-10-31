@@ -424,6 +424,71 @@ impl<'v, W: Write> Server<'v, W> {
                 let changes = Json::Obj(by_uri.into_iter().map(|(u, e)| (u, Json::Arr(e))).collect());
                 Ok(Json::object(vec![("changes", changes)]))
             }
+            "textDocument/codeAction" => {
+                let pos = |p: &Json| -> Result<(u32, u32), (i64, String)> {
+                    let line = p.get("line").and_then(Json::as_u32).ok_or_else(|| invalid("bad position"))?;
+                    let ch = p.get("character").and_then(Json::as_u32).ok_or_else(|| invalid("bad position"))?;
+                    Ok((line, ch))
+                };
+                let range = params.get("range").ok_or_else(|| invalid("missing range"))?;
+                let start = pos(range.get("start").ok_or_else(|| invalid("bad range"))?)?;
+                let end = pos(range.get("end").ok_or_else(|| invalid("bad range"))?)?;
+                let only: Vec<String> = params
+                    .path(&["context", "only"])
+                    .and_then(Json::as_array)
+                    .map(|a| a.iter().filter_map(|k| k.as_str().map(String::from)).collect())
+                    .unwrap_or_default();
+                let client_diags: Vec<Json> = params
+                    .path(&["context", "diagnostics"])
+                    .and_then(Json::as_array)
+                    .map(<[Json]>::to_vec)
+                    .unwrap_or_default();
+                let a = self.analysis_of(&uri)?;
+                let (lo, hi) = (a.offset_at(start.0, start.1), a.offset_at(end.0, end.1));
+                let actions = a.code_actions(lo.min(hi), lo.max(hi));
+                let wanted = |kind: &str| {
+                    only.is_empty() || only.iter().any(|o| kind == o || kind.starts_with(&format!("{o}.")))
+                };
+                let items: Vec<Json> = actions
+                    .into_iter()
+                    .filter(|act| wanted(act.kind))
+                    .map(|act| {
+                        let edits: Vec<Json> = act
+                            .edits
+                            .iter()
+                            .map(|e| {
+                                let range = Json::object(vec![
+                                    ("start", a.position(a.file, e.lo)),
+                                    ("end", a.position(a.file, e.hi)),
+                                ]);
+                                Json::object(vec![("range", range), ("newText", e.text.clone().into())])
+                            })
+                            .collect();
+                        let mut fields = vec![
+                            ("title", Json::from(act.title.clone())),
+                            ("kind", act.kind.into()),
+                            ("isPreferred", act.preferred.into()),
+                            (
+                                "edit",
+                                Json::object(vec![("changes", Json::object(vec![(uri.clone(), Json::Arr(edits))]))]),
+                            ),
+                        ];
+                        // tie the fix to the diagnostics it answers, so editors can offer it per squiggle
+                        if let Some(code) = act.fixes {
+                            let ds: Vec<Json> = client_diags
+                                .iter()
+                                .filter(|d| d.get("code").and_then(Json::as_str) == Some(code))
+                                .cloned()
+                                .collect();
+                            if !ds.is_empty() {
+                                fields.push(("diagnostics", Json::Arr(ds)));
+                            }
+                        }
+                        Json::object(fields)
+                    })
+                    .collect();
+                Ok(Json::Arr(items))
+            }
             "textDocument/documentSymbol" => Ok(self.analysis_of(&uri)?.document_symbols()),
             "textDocument/semanticTokens/full" => {
                 let data = self.analysis_of(&uri)?.semantic_tokens();
@@ -513,6 +578,13 @@ fn initialize_result() -> Json {
                 ("documentHighlightProvider", true.into()),
                 ("renameProvider", Json::object(vec![("prepareProvider", true.into())])),
                 ("documentSymbolProvider", true.into()),
+                (
+                    "codeActionProvider",
+                    Json::object(vec![
+                        ("codeActionKinds", vec!["quickfix", "refactor.rewrite"].into()),
+                        ("resolveProvider", false.into()),
+                    ]),
+                ),
                 (
                     "completionProvider",
                     Json::object(vec![("triggerCharacters", vec![".", ":"].into()), ("resolveProvider", false.into())]),

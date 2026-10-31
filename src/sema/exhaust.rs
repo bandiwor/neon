@@ -48,15 +48,25 @@ enum P {
 #[derive(Debug, Clone)]
 enum W {
     Wild,
-    Ctor(String, Vec<W>),
+    /// Display name, the constructor (to turn the witness back into a pattern), sub-patterns.
+    Ctor(String, Option<Ctor>, Vec<W>),
 }
 
 impl W {
     fn show(&self) -> String {
         match self {
             W::Wild => "_".to_string(),
-            W::Ctor(name, subs) if subs.is_empty() => name.clone(),
-            W::Ctor(name, subs) => format!("{name}({})", subs.iter().map(W::show).collect::<Vec<_>>().join(", ")),
+            W::Ctor(name, _, subs) if subs.is_empty() => name.clone(),
+            W::Ctor(name, _, subs) => format!("{name}({})", subs.iter().map(W::show).collect::<Vec<_>>().join(", ")),
+        }
+    }
+
+    /// The pattern a witness stands for, so it can be added to the rows as an arm.
+    fn to_pattern(&self) -> P {
+        match self {
+            W::Wild => P::Wild,
+            W::Ctor(_, Some(c), subs) => P::Ctor(c.clone(), subs.iter().map(W::to_pattern).collect()),
+            W::Ctor(..) => P::Wild,
         }
     }
 }
@@ -277,7 +287,7 @@ impl Env<'_> {
                         ntys.extend_from_slice(&tys[1..]);
                         if let Some(mut w) = self.missing(spec, &ntys) {
                             let rest = w.split_off(ftys.len());
-                            let mut out = vec![W::Ctor(name, w)];
+                            let mut out = vec![W::Ctor(name, Some(c), w)];
                             out.extend(rest);
                             return Some(out);
                         }
@@ -289,8 +299,7 @@ impl Env<'_> {
                         .into_iter()
                         .find(|(c, _, _)| !used.iter().any(|u| u.covers(c)))
                         .expect("incomplete signature has a missing constructor");
-                    let _ = c;
-                    let mut out = vec![W::Ctor(name, vec![W::Wild; ftys.len()])];
+                    let mut out = vec![W::Ctor(name, Some(c), vec![W::Wild; ftys.len()])];
                     out.append(&mut w);
                     Some(out)
                 }
@@ -303,6 +312,44 @@ impl Env<'_> {
             }
         }
     }
+}
+
+/// The patterns a `match` still has to handle (one per missing case, at most `limit`), written as
+/// they would appear in an arm: `Color::Green`, `Option::Some(_)`, or just `_` for an infinite domain.
+/// Empty when the match is exhaustive. Arms with a guard do not count, as in the check itself.
+pub fn missing_patterns(
+    prog: &mut Program,
+    interner: &Interner,
+    module: ModuleId,
+    node: NodeId,
+    scrut_ty: Ty,
+    limit: usize,
+) -> Vec<String> {
+    let ast = prog.modules[module.index()].ast.clone();
+    let NodeKind::Match { arms, .. } = *ast.kind(node) else { return Vec::new() };
+    if matches!(prog.types.kind(scrut_ty), TyKind::Error) {
+        return Vec::new();
+    }
+    let mut env = Env { prog, interner, ast: &ast, module };
+    let mut rows: Vec<Vec<P>> = Vec::new();
+    for &arm in ast.list(arms) {
+        let NodeKind::MatchArm { pat, guard, .. } = *ast.kind(arm) else { continue };
+        if guard.is_none() {
+            rows.push(vec![env.convert(pat)]);
+        }
+    }
+    let mut out = Vec::new();
+    while out.len() < limit {
+        let Some(w) = env.missing(rows.clone(), &[scrut_ty]) else { break };
+        let Some(first) = w.into_iter().next() else { break };
+        out.push(first.show());
+        // handle the witness in the next round, so every case is listed once
+        rows.push(vec![first.to_pattern()]);
+        if matches!(first, W::Wild) {
+            break;
+        }
+    }
+    out
 }
 
 /// Checks one `match` expression whose scrutinee has type `scrut_ty`.

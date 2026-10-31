@@ -181,7 +181,9 @@ More programs live in `tests/corpus/`.
 `neon lsp` is a language server (stdio, no dependencies). It reports the
 compiler's own diagnostics (with `help:` notes) and offers hover, go to
 definition, references, rename, document and workspace symbols, completion,
-signature help, document highlights, formatting and semantic tokens. Unsaved buffers are
+signature help, document highlights, formatting, semantic tokens and code actions
+(missing `impl` methods, missing `match` arms and struct fields, `let` → `var`, typo fixes, `;`,
+plain string → `f"..."`). Unsaved buffers are
 analyzed through an overlay file system, and the importers of a changed module
 are re-analyzed. Rename and references work across the import graph of the open
 document; files that are not reachable from it are not searched.

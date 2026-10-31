@@ -11,6 +11,7 @@ mod builtins;
 mod check;
 mod collect;
 mod exhaust;
+pub use exhaust::missing_patterns;
 mod ids;
 mod infer;
 mod loader;

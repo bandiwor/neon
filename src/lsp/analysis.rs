@@ -8,11 +8,13 @@ use crate::sema::{self, DefId, DefKind, FnOwner, Generics, ModuleId, Program, Ty
 use crate::syntax::{Interner, Keyword, NodeId, NodeKind};
 use crate::vfs::Vfs;
 
+mod actions;
 pub mod complete;
 mod describe;
 mod symbols;
 mod tokens;
 
+pub use actions::{Action, TextEdit};
 pub use tokens::{TOKEN_MODIFIERS, TOKEN_TYPES};
 
 /// The result of analyzing one document (as the root of its own import graph).

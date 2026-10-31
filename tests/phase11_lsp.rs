@@ -112,6 +112,38 @@ fn text_pos(uri: &str, line: u32, ch: u32) -> Json {
     ])
 }
 
+fn code_action_params(uri: &str, start: (u32, u32), end: (u32, u32), diagnostics: &[Json], only: &[&str]) -> Json {
+    let pos = |(l, c): (u32, u32)| obj(vec![("line", l.into()), ("character", c.into())]);
+    let mut context = vec![("diagnostics", Json::Arr(diagnostics.to_vec()))];
+    if !only.is_empty() {
+        context.push(("only", Json::Arr(only.iter().map(|k| Json::from(*k)).collect())));
+    }
+    obj(vec![
+        ("textDocument", obj(vec![("uri", uri.into())])),
+        ("range", obj(vec![("start", pos(start)), ("end", pos(end))])),
+        ("context", obj(context)),
+    ])
+}
+
+/// Applies the `changes` of a code action to the text (single document).
+fn apply_changes(text: &str, action: &Json, uri: &str) -> String {
+    let edits = action.path(&["edit", "changes", uri]).and_then(Json::as_array).expect("edits for the document");
+    let index = neon::lsp::position::LineIndex::new(text);
+    let mut spans: Vec<(usize, usize, String)> = edits
+        .iter()
+        .map(|e| {
+            let (l0, c0, l1, c1) = range_of(e);
+            (index.offset(l0, c0), index.offset(l1, c1), e.get("newText").and_then(Json::as_str).unwrap().to_string())
+        })
+        .collect();
+    spans.sort_by_key(|(lo, ..)| std::cmp::Reverse(*lo));
+    let mut out = text.to_string();
+    for (lo, hi, t) in spans {
+        out.replace_range(lo..hi, &t);
+    }
+    out
+}
+
 fn range_of(v: &Json) -> (u32, u32, u32, u32) {
     let r = v.get("range").unwrap_or(v);
     let g = |a: &str, b: &str| r.path(&[a, b]).and_then(Json::as_u32).unwrap();
@@ -733,6 +765,11 @@ fn no_request_panics_on_partially_typed_programs() {
                     ]),
                 );
             }
+            for (line, ch) in [(lines, last_col), (0, 0), (lines / 2, 3)] {
+                let _ =
+                    c.try_request("textDocument/codeAction", code_action_params(URI, (line, ch), (line, ch), &[], &[]));
+                requests += 1;
+            }
             for method in ["textDocument/documentSymbol", "textDocument/semanticTokens/full"] {
                 let r = c.request(method, obj(vec![("textDocument", obj(vec![("uri", URI.into())]))]));
                 assert!(r.as_array().is_some() || r.get("data").is_some());
@@ -854,4 +891,75 @@ fn formatting_returns_one_edit_for_the_whole_document() {
     assert_eq!(c.request("textDocument/formatting", params.clone()).as_array().unwrap().len(), 0);
     c.open(URI, "fn main( {");
     assert_eq!(c.request("textDocument/formatting", params).as_array().unwrap().len(), 0);
+}
+
+#[test]
+fn code_actions_complete_an_impl_a_match_and_more() {
+    let vfs = MemVfs::new();
+    let mut c = Client::new(&vfs);
+    let init = c.request("initialize", obj(vec![("capabilities", obj(vec![]))]));
+    let provider = init.path(&["capabilities", "codeActionProvider"]).expect("codeActionProvider");
+    assert!(provider
+        .path(&["codeActionKinds"])
+        .and_then(Json::as_array)
+        .unwrap()
+        .iter()
+        .any(|k| k.as_str() == Some("quickfix")));
+
+    // the case from the editor: an empty `impl Add for Data`
+    let src = "struct Data { x: i64 }\nimpl Add for Data {\n    \n}\n";
+    c.open(URI, src);
+    let diags = c.diagnostics(URI);
+    assert!(!diags.is_empty());
+    let r = c.request("textDocument/codeAction", code_action_params(URI, (1, 6), (1, 6), &diags, &[]));
+    let actions = r.as_array().unwrap();
+    let a = actions
+        .iter()
+        .find(|a| a.get("title").and_then(Json::as_str).is_some_and(|t| t.starts_with("Implement `Add<Data>`")))
+        .unwrap_or_else(|| panic!("{r:?}"));
+    assert_eq!(a.get("kind").and_then(Json::as_str), Some("quickfix"));
+    assert_eq!(a.get("isPreferred").and_then(Json::as_bool), Some(true));
+    let fixed = apply_changes(src, a, URI);
+    assert!(
+        fixed.contains("impl Add<Data> for Data {") && fixed.contains("fn add(self, rhs: Data) -> Data {"),
+        "{fixed}"
+    );
+    c.open(URI, &fixed);
+    assert!(c.diagnostics(URI).is_empty(), "{:?}", c.diagnostics(URI));
+
+    // a non-exhaustive match: the action carries the diagnostic it answers
+    let src = "enum Color { Red, Green }\nfn f(c: Color) -> i64 {\n    match c {\n        Color::Red => 1,\n    }\n}\n";
+    c.open(URI, src);
+    let diags = c.diagnostics(URI);
+    let r = c.request("textDocument/codeAction", code_action_params(URI, (2, 4), (2, 4), &diags, &[]));
+    let a = r
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|a| a.get("title").and_then(Json::as_str).unwrap().contains("Color::Green"))
+        .unwrap();
+    assert!(a.get("diagnostics").and_then(Json::as_array).is_some_and(|d| d.len() == 1));
+    let fixed = apply_changes(src, a, URI);
+    c.open(URI, &fixed);
+    assert!(c.diagnostics(URI).is_empty(), "{fixed}");
+
+    // `only` narrows the kinds; ranges that overlap nothing give an empty list
+    let src = "let i = 1;\nprintln(\"{i}\");\n";
+    c.open(URI, src);
+    let all = c.request("textDocument/codeAction", code_action_params(URI, (1, 9), (1, 9), &[], &[]));
+    assert!(all.as_array().unwrap().iter().any(|a| a.get("kind").and_then(Json::as_str) == Some("refactor.rewrite")));
+    let only_fix = c.request("textDocument/codeAction", code_action_params(URI, (1, 9), (1, 9), &[], &["quickfix"]));
+    assert!(only_fix.as_array().unwrap().is_empty());
+    let only_refactor =
+        c.request("textDocument/codeAction", code_action_params(URI, (1, 9), (1, 9), &[], &["refactor"]));
+    assert_eq!(only_refactor.as_array().unwrap().len(), 1);
+    let none = c.request("textDocument/codeAction", code_action_params(URI, (0, 0), (0, 3), &[], &[]));
+    assert!(none.as_array().unwrap().is_empty());
+    // a closed document is an error, a malformed request is rejected
+    assert!(c
+        .try_request("textDocument/codeAction", code_action_params("file:///nope.neon", (0, 0), (0, 0), &[], &[]))
+        .is_err());
+    assert!(c
+        .try_request("textDocument/codeAction", obj(vec![("textDocument", obj(vec![("uri", URI.into())]))]))
+        .is_err());
 }

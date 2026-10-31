@@ -68,6 +68,7 @@ local function set_keymaps(bufnr)
   map("K", vim.lsp.buf.hover, "hover")
   map("<leader>rn", vim.lsp.buf.rename, "rename")
   map("<leader>ds", vim.lsp.buf.document_symbol, "document symbols")
+  map("<leader>ca", vim.lsp.buf.code_action, "code actions")
   map("<leader>f", M.format, "format")
   vim.keymap.set("i", "<C-s>", vim.lsp.buf.signature_help, { buffer = bufnr, desc = "Neon: signature help" })
 end
