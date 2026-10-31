@@ -10,9 +10,9 @@ enum Color { Black, Gray(u8), Rgb(u8, u8, u8) }
 
 enum Shape {
     Dot(u8, u8),
-    HLine(u8, u8, u8),     // x, y, length
-    Rect(u8, u8, u8, u8),  // x, y, width, height
-    Circle(u8, u8, u8),    // cx, cy, radius
+    HLine(u8, u8, u8), // x, y, length
+    Rect(u8, u8, u8, u8), // x, y, width, height
+    Circle(u8, u8, u8), // cx, cy, radius
 }
 
 enum Op { Draw(Shape, Color), Clear }
