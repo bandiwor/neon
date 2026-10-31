@@ -122,6 +122,32 @@ match "12x".try_parse_i64() {
 let safe = 250u8.checked_add(10u8).unwrap_or(255u8);  // 255
 ```
 
+### Array combinators
+
+Arrays have the usual functional methods, written in Neon itself (in the prelude) and taking closures,
+so chains read left to right and the closures' parameter types are inferred:
+
+```
+let words = ["pear", "fig", "apple"];
+words.filter(|w| => w.len() > 3).map(|w| => w.to_upper()).for_each(|w| => println(w));
+println([5, 3, 8].sorted());            // [3, 5, 8]  (a copy; `sort()` sorts in place)
+println([5, 3, 8].fold(0, |a, x| => a + x));
+```
+
+| method | |
+|---|---|
+| `map(f)` `filter(p)` `filter_map(f)` `flat_map(f)` `for_each(f)` | new array / side effects |
+| `fold(init, f)` `reduce(f)` | accumulate (`reduce` → `Option`) |
+| `any(p)` `all(p)` `count(p)` `find(p)` `position(p)` | search (`find`, `position` → `Option`) |
+| `first()` `last()` `take(n)` `skip(n)` `reversed()` | slicing (copies) |
+| `sum()` `product()` | numeric arrays (every integer and float type) |
+| `max()` `min()` `sorted()` | element types with an order |
+
+`Option` also has `map`, `and_then`, `filter`, `is_some_and`, `or`, `or_else`, `unwrap_or`,
+`unwrap_or_else`, `expect`, `ok_or`; `Result` has the matching set. Each combinator builds a new array, so
+a long chain is a few times slower than one hand-written loop; ranges are not values yet, so
+`(0..n).map(..)` is not available (use `for`).
+
 ### Format strings
 
 `f"..."` strings embed expressions in `{}` with Python's format mini-language

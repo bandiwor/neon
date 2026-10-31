@@ -74,6 +74,18 @@ impl<T> Option<T> {
     fn or(self, other: Option<T>) -> Option<T> {
         match self { Option::Some(v) => Option::Some(v), Option::None => other }
     }
+    fn or_else(self, f: fn() -> Option<T>) -> Option<T> {
+        match self { Option::Some(v) => Option::Some(v), Option::None => f() }
+    }
+    fn filter(self, keep: fn(T) -> bool) -> Option<T> {
+        match self {
+            Option::Some(v) => if keep(v) { Option::Some(v) } else { Option::None },
+            Option::None => Option::None,
+        }
+    }
+    fn is_some_and(self, test: fn(T) -> bool) -> bool {
+        match self { Option::Some(v) => test(v), Option::None => false }
+    }
     fn ok_or<E>(self, err: E) -> Result<T, E> {
         match self { Option::Some(v) => Result::Ok(v), Option::None => Result::Err(err) }
     }
@@ -117,5 +129,273 @@ impl<T, E> Result<T, E> {
     }
     fn err(self) -> Option<E> {
         match self { Result::Ok(_) => Option::None, Result::Err(e) => Option::Some(e) }
+    }
+}
+
+// ---- arrays -------------------------------------------------------------------------
+//
+// Combinators over arrays, written in Neon itself: each takes a closure and builds a new array (or a
+// value); `nums.filter(|x| => x > 0).map(|x| => x * 2)` reads left to right. The arrays they
+// are called on are not changed.
+
+impl<T> [T] {
+    fn map<U>(self, f: fn(T) -> U) -> [U] {
+        var out: [U] = [];
+        for x in self { out.push(f(x)); }
+        out
+    }
+    fn filter(self, keep: fn(T) -> bool) -> [T] {
+        var out: [T] = [];
+        for x in self { if keep(x) { out.push(x); } }
+        out
+    }
+    fn filter_map<U>(self, f: fn(T) -> Option<U>) -> [U] {
+        var out: [U] = [];
+        for x in self {
+            match f(x) { Option::Some(v) => out.push(v), Option::None => {} }
+        }
+        out
+    }
+    fn flat_map<U>(self, f: fn(T) -> [U]) -> [U] {
+        var out: [U] = [];
+        for x in self { for y in f(x) { out.push(y); } }
+        out
+    }
+    fn for_each(self, f: fn(T)) {
+        for x in self { f(x); }
+    }
+    fn fold<A>(self, init: A, f: fn(A, T) -> A) -> A {
+        var acc = init;
+        for x in self { acc = f(acc, x); }
+        acc
+    }
+    fn reduce(self, f: fn(T, T) -> T) -> Option<T> {
+        var acc: Option<T> = Option::None;
+        for x in self {
+            acc = match acc {
+                Option::Some(a) => Option::Some(f(a, x)),
+                Option::None => Option::Some(x),
+            };
+        }
+        acc
+    }
+    fn any(self, test: fn(T) -> bool) -> bool {
+        for x in self { if test(x) { return true; } }
+        false
+    }
+    fn all(self, test: fn(T) -> bool) -> bool {
+        for x in self { if !test(x) { return false; } }
+        true
+    }
+    fn count(self, test: fn(T) -> bool) -> i64 {
+        var n = 0;
+        for x in self { if test(x) { n += 1; } }
+        n
+    }
+    fn find(self, test: fn(T) -> bool) -> Option<T> {
+        for x in self { if test(x) { return Option::Some(x); } }
+        Option::None
+    }
+    fn position(self, test: fn(T) -> bool) -> Option<i64> {
+        var i = 0;
+        for x in self {
+            if test(x) { return Option::Some(i); }
+            i += 1;
+        }
+        Option::None
+    }
+    fn first(self) -> Option<T> { self.get(0) }
+    fn last(self) -> Option<T> { self.get(self.len() - 1) }
+    fn take(self, n: i64) -> [T] {
+        var out: [T] = [];
+        var i = 0;
+        for x in self {
+            if i >= n { break; }
+            out.push(x);
+            i += 1;
+        }
+        out
+    }
+    fn skip(self, n: i64) -> [T] {
+        var out: [T] = [];
+        var i = 0;
+        for x in self {
+            if i >= n { out.push(x); }
+            i += 1;
+        }
+        out
+    }
+    fn reversed(self) -> [T] {
+        var out: [T] = [];
+        var i = self.len() - 1;
+        while i >= 0 {
+            out.push(self[i]);
+            i -= 1;
+        }
+        out
+    }
+}
+
+impl<T: Ord> [T] {
+    fn max(self) -> Option<T> {
+        self.reduce(|a, b| => if b > a { b } else { a })
+    }
+    fn min(self) -> Option<T> {
+        self.reduce(|a, b| => if b < a { b } else { a })
+    }
+    // A stable merge sort; the original array is left alone (`xs.clone()` + `sort()` sorts in place).
+    fn sorted(self) -> [T] {
+        let n = self.len();
+        if n <= 1 { return self.take(n); }
+        let left = self.take(n / 2).sorted();
+        let right = self.skip(n / 2).sorted();
+        var out: [T] = [];
+        var i = 0;
+        var j = 0;
+        while i < left.len() && j < right.len() {
+            if right[j] < left[i] {
+                out.push(right[j]);
+                j += 1;
+            } else {
+                out.push(left[i]);
+                i += 1;
+            }
+        }
+        while i < left.len() { out.push(left[i]); i += 1; }
+        while j < right.len() { out.push(right[j]); j += 1; }
+        out
+    }
+}
+
+// Sums and products. The 64-bit types come first: an array of bare literals (`[1, 2, 3]`) uses the first
+// impl that fits, and `i64` / `f64` are the defaults.
+
+impl [i64] {
+    fn sum(self) -> i64 {
+        var total: i64 = 0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> i64 {
+        var total: i64 = 1;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [i32] {
+    fn sum(self) -> i32 {
+        var total: i32 = 0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> i32 {
+        var total: i32 = 1;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [i16] {
+    fn sum(self) -> i16 {
+        var total: i16 = 0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> i16 {
+        var total: i16 = 1;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [i8] {
+    fn sum(self) -> i8 {
+        var total: i8 = 0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> i8 {
+        var total: i8 = 1;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [u64] {
+    fn sum(self) -> u64 {
+        var total: u64 = 0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> u64 {
+        var total: u64 = 1;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [u32] {
+    fn sum(self) -> u32 {
+        var total: u32 = 0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> u32 {
+        var total: u32 = 1;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [u16] {
+    fn sum(self) -> u16 {
+        var total: u16 = 0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> u16 {
+        var total: u16 = 1;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [u8] {
+    fn sum(self) -> u8 {
+        var total: u8 = 0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> u8 {
+        var total: u8 = 1;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [f64] {
+    fn sum(self) -> f64 {
+        var total: f64 = 0.0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> f64 {
+        var total: f64 = 1.0;
+        for x in self { total *= x; }
+        total
+    }
+}
+
+impl [f32] {
+    fn sum(self) -> f32 {
+        var total: f32 = 0.0;
+        for x in self { total += x; }
+        total
+    }
+    fn product(self) -> f32 {
+        var total: f32 = 1.0;
+        for x in self { total *= x; }
+        total
     }
 }

@@ -1,0 +1,34 @@
+// A pipeline built from the array combinators, with a user type printed through `Display`.
+struct Reading {
+    sensor: string,
+    value: f64,
+}
+
+impl Display for Reading {
+    fn to_string(self) -> string {
+        f"{self.sensor}={self.value:.1f}"
+    }
+}
+
+let raw = ["a:1.5", "b:oops", "a:2.5", "c:10", "b:4"];
+
+fn parse(line: string) -> Option<Reading> {
+    let parts = line.split(":");
+    if parts.len() != 2 {
+        return Option::None;
+    }
+    match parts[1].try_parse_f64() {
+        Result::Ok(v) => Option::Some(Reading { sensor: parts[0], value: v }),
+        Result::Err(_) => Option::None,
+    }
+}
+
+let readings = raw.filter_map(|l| => parse(l));
+readings.for_each(|r| => println(r));
+println(readings.map(|r| => r.value).sum());
+println(readings.filter(|r| => r.sensor == "a").map(|r| => r.value).max());
+println(readings.map(|r| => r.sensor).sorted());
+println(readings.any(|r| => r.value > 9.0));
+println(readings.find(|r| => r.sensor == "b").map(|r| => r.value).unwrap_or(0.0));
+println(readings.reversed().first().map(|r| => r.to_string()));
+println(readings.fold(0.0, |total, r| => total + r.value));
