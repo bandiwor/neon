@@ -210,6 +210,32 @@ println([5, 3, 8].fold(0, |a, x| => a + x));
 a long chain is a few times slower than one hand-written loop; ranges are not values yet, so
 `(0..n).map(..)` is not available (use `for`).
 
+### The REPL
+
+`neon repl` at a terminal is a small editor, not a bare line reader:
+
+* **Colors.** Keywords, types and variants, functions and methods, parameters, locals, globals, numbers,
+  strings, operators (`->`, `=>` and the rest in red) and punctuation each have their own color, also inside
+  `f"..."` interpolations. It works on half-typed input (an open string or comment just runs on); 24-bit
+  colors with `COLORTERM=truecolor`, the 256-color palette otherwise, none with `NO_COLOR`.
+* **Live preview.** Under a complete expression a gray `↳ value` shows what Enter would print: `foo()` after
+  `fn foo() -> i64 { 42 }` shows `↳ 42` as you type. The preview runs the cell on the side: the session replays
+  its cells from scratch for every evaluation, so nothing is kept; expressions that print, ask for input,
+  trap or run too long show nothing.
+* **Completion.** Tab completes names visible at the cursor (the session's variables and functions, the
+  prelude, keywords), the members of a value by its type (`xs.ma` → `map`, `max`) and `Enum::` variants,
+  using the same analysis as the language server; Tab again cycles through the choices, Shift-Tab goes back.
+* **Editing.** Left/Right (Ctrl-Left/Right by word), Home/End, Ctrl-A/E/K/U/W/Y, undo (Ctrl-_), bracketed
+  paste, Alt-Enter for a line break; unfinished input (open brackets) continues on an indented line, and
+  Enter between `{` and `}` opens a block. Up/Down move between the lines of the input and then through the
+  history, Ctrl-R searches it. The history is kept in `~/.neon_history` (`NEON_HISTORY` picks another file;
+  empty disables it).
+* **vi keys.** Esc switches to normal mode (the prompt becomes `[n]`, the cursor a block): `h j k l w b e 0 ^ $`,
+  `i a I A o`, `x X D C dd dw d$ cw`, `p P u`; `k` and `j` walk the history. `i` goes back to inserting.
+
+Without a terminal (a pipe, `TERM=dumb`, `NEON_REPL=plain`) the plain `>>>` loop is used. `:help` lists
+the commands.
+
 ### Examples
 
 * `examples/scene.neon` — a small software renderer (compact enums, tuples, ranges, fused iterator chains).
@@ -322,7 +348,7 @@ source ─▶ lexer ─▶ parser ─▶ sema ─▶ IR ─▶ IR optimizer ─�
 | `runtime/` | Numeric semantics, formatting and builtins shared by the constant folder, the interpreter and the VM, so `127i8 + 1` means the same thing at compile time and at run time. |
 | `fmt/` | The formatter (`neon fmt`, LSP formatting): re-indents by brackets, normalizes spacing (operators are classified with the parser's tree) and blank lines, keeps the author's line breaks and every comment, and verifies that the token stream is unchanged. |
 | `lsp/` | Language server (`neon lsp`): JSON-RPC over stdio, a std-only JSON codec, an overlay VFS for unsaved buffers, and features built on the same analysis the compiler uses. |
-| `cli.rs`, `repl.rs` | The command line and the replay-based REPL, written against traits. |
+| `cli.rs`, `repl/` | The command line and the replay-based REPL (`repl/`: the session, plus the terminal prompt: `highlight`, `editor`, `terminal`, `complete`, `history`, `interactive`). |
 
 ### Effect analysis
 

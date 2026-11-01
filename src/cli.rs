@@ -313,6 +313,18 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
     if args.command == Command::Repl {
         let cfg = ReplConfig { options: args.opts, vm: args.vm, prompt: interactive };
         let mut stdin = stdin;
+        // at a terminal the prompt is a line editor with colors, history, completion and a live preview
+        if interactive && repl::interactive::wanted() {
+            match repl::interactive::run(&mut stdin, &mut stdout, vfs, &cfg) {
+                Ok(()) => return EXIT_OK,
+                // no way to switch the terminal to raw mode (nothing was drawn): the plain loop it is
+                Err(e) if e.kind() == std::io::ErrorKind::Unsupported => {}
+                Err(e) => {
+                    let _ = writeln!(stderr, "error: {e}");
+                    return EXIT_RUNTIME;
+                }
+            }
+        }
         return match repl::run(&mut stdin, &mut stdout, vfs, &cfg) {
             Ok(()) => EXIT_OK,
             Err(e) => {

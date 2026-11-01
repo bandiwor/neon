@@ -6,6 +6,13 @@
 //! answers are fed back), and shows only what the new cell prints. A cell that
 //! fails to compile or traps is dropped, leaving the session as it was.
 
+pub mod complete;
+pub mod editor;
+pub mod highlight;
+pub mod history;
+pub mod interactive;
+pub mod terminal;
+
 use std::collections::VecDeque;
 use std::io::{self, BufRead, Write};
 
@@ -17,6 +24,8 @@ use crate::vm::{self, VmConfig, VmIo};
 const MARK: &str = "\u{1}";
 /// Marks where an expression cell's value starts (after its side effects).
 const VALUE_MARK: &str = "\u{2}";
+/// How many VM instructions a live preview may run (the replayed history counts too).
+const PREVIEW_STEPS: u64 = 4_000_000;
 
 #[derive(Debug, Clone, Copy, Default)]
 pub struct ReplConfig {
@@ -34,6 +43,19 @@ Unfinished input (open brackets) continues on the next line.
   :reset         forget everything
   :history       show the accepted cells
   :load <file>   evaluate a file as one cell
+
+At a terminal the prompt is an editor:
+  Tab / Shift-Tab   complete a name or a member (repeat to cycle through the choices)
+  Up / Down         move between the lines of the input, then through the history
+  Left / Right      move the cursor (Ctrl-Left / Ctrl-Right: by word; Home / End: line ends)
+  Ctrl-R            search the history; Ctrl-C drops the input; Ctrl-D leaves; Ctrl-L clears the screen
+  Alt-Enter         a line break without finishing the input
+  Ctrl-A/E/K/U/W/Y  line start / end, kill to the end / start / word, yank
+  Esc               vi normal mode: h j k l w b e 0 $ x dd cw p u, i a I A o to insert again
+                    (k and j walk the history)
+  A gray `↳ value` under the input shows what the expression would print, before Enter.
+The history is kept in ~/.neon_history ($NEON_HISTORY sets another file, empty disables it).
+NO_COLOR turns colors off; COLORTERM=truecolor enables 24-bit colors, otherwise 256 colors are used.
 ";
 
 /// Whether `text` ends inside an open bracket, string or block comment.
@@ -107,7 +129,7 @@ pub fn needs_more(text: &str) -> bool {
 }
 
 /// Whether a cell is a bare expression whose value should be shown.
-fn is_expression(cell: &str) -> bool {
+pub fn is_expression(cell: &str) -> bool {
     let t = cell.trim();
     if t.is_empty() || t.ends_with(';') || t.ends_with('}') {
         return false;
@@ -144,6 +166,8 @@ struct ReplayIo<'a> {
     output: String,
     value_start: Option<usize>,
     read_error: Option<String>,
+    /// How many lines the program asked the user for (as opposed to replayed ones).
+    live_reads: usize,
 }
 
 impl VmIo for ReplayIo<'_> {
@@ -167,6 +191,7 @@ impl VmIo for ReplayIo<'_> {
         if let Some(line) = self.replay.pop_front() {
             return Ok(Some(line));
         }
+        self.live_reads += 1;
         let mut line = String::new();
         match self.live.read_line(&mut line) {
             Ok(0) => Ok(None),
@@ -203,6 +228,23 @@ pub enum Eval {
     Trapped { output: String, error: String },
 }
 
+/// A cell turned into the program that evaluates it after the session's history.
+struct Prepared {
+    expr: bool,
+    /// What is stored in the session when the cell is accepted.
+    text: String,
+    source: String,
+}
+
+/// What running a prepared cell produced.
+struct Ran {
+    result: Result<(), String>,
+    io_output: String,
+    value_start: Option<usize>,
+    fresh_input: Vec<String>,
+    live_reads: usize,
+}
+
 impl Session {
     pub fn new() -> Session {
         Session::default()
@@ -216,8 +258,7 @@ impl Session {
         *self = Session::default();
     }
 
-    /// Evaluates `cell` after the session's history; keeps it if it succeeds.
-    pub fn eval(&mut self, cell: &str, vfs: &dyn Vfs, cfg: &ReplConfig, live: &mut dyn BufRead) -> Eval {
+    fn prepare(&self, cell: &str) -> Prepared {
         let expr = is_expression(cell);
         // evaluate first, then mark where the value text begins
         let text = if expr {
@@ -233,39 +274,129 @@ impl Session {
         source.push_str(&format!("print(\"{MARK}\");\n"));
         source.push_str(&text);
         source.push('\n');
+        Prepared { expr, text, source }
+    }
 
-        let compiled = compile_source("<repl>", &source, vfs, &cfg.options);
+    /// Compiles and runs a prepared cell after the replayed history. `Err` carries the rendered diagnostics.
+    fn execute(&self, p: &Prepared, vfs: &dyn Vfs, cfg: &ReplConfig, live: &mut dyn BufRead) -> Result<Ran, String> {
+        let compiled = compile_source("<repl>", &p.source, vfs, &cfg.options);
         let Some(bc) = compiled.bytecode.as_ref().filter(|_| !compiled.diags.has_errors()) else {
-            return Eval::Rejected(compiled.render_diagnostics());
+            return Err(compiled.render_diagnostics());
         };
         let mut io = ReplayIo {
             replay: self.inputs.iter().cloned().collect(),
             live,
             fresh_input: Vec::new(),
+            live_reads: 0,
             silent: true,
             output: String::new(),
             value_start: None,
             read_error: None,
         };
         let report = vm::run(bc, &mut io, &cfg.vm);
-        match report.result {
+        Ok(Ran {
+            result: report.result.map_err(|e| e.to_string()),
+            io_output: io.output,
+            value_start: io.value_start,
+            fresh_input: io.fresh_input,
+            live_reads: io.live_reads,
+        })
+    }
+
+    /// Evaluates `cell` after the session's history; keeps it if it succeeds.
+    pub fn eval(&mut self, cell: &str, vfs: &dyn Vfs, cfg: &ReplConfig, live: &mut dyn BufRead) -> Eval {
+        let p = self.prepare(cell);
+        let ran = match self.execute(&p, vfs, cfg, live) {
+            Ok(r) => r,
+            Err(diags) => return Eval::Rejected(diags),
+        };
+        match ran.result {
             Ok(()) => {
-                self.cells.push(text);
-                self.inputs.extend(io.fresh_input.iter().cloned());
-                let mut out = io.output.clone();
+                self.cells.push(p.text);
+                self.inputs.extend(ran.fresh_input);
+                let mut out = ran.io_output;
                 // a unit-valued expression prints `()`; there is nothing worth showing
-                if let Some(at) = io.value_start.filter(|&at| expr && out[at..] == *"()\n") {
+                if let Some(at) = ran.value_start.filter(|&at| p.expr && out[at..] == *"()\n") {
                     out.truncate(at);
                 }
                 Eval::Ok(out)
             }
             Err(e) => {
                 // the failed cell may have consumed input; keep it so a retry does not ask twice
-                self.inputs.extend(io.fresh_input);
-                Eval::Trapped { output: io.output, error: e.to_string() }
+                self.inputs.extend(ran.fresh_input);
+                Eval::Trapped { output: ran.io_output, error: e }
             }
         }
     }
+
+    /// The value `cell` would print, if it is an expression that runs to completion without printing
+    /// anything else and without asking for input. Nothing is kept: the session replays its cells from
+    /// scratch for every evaluation, so running a cell "on the side" cannot change it. A step limit
+    /// stops runaway loops.
+    pub fn preview(&self, cell: &str, vfs: &dyn Vfs, cfg: &ReplConfig) -> Option<String> {
+        if needs_more(cell) || !is_expression(cell) {
+            return None;
+        }
+        let mut cfg = *cfg;
+        cfg.vm.max_steps = Some(PREVIEW_STEPS);
+        let p = self.prepare(cell);
+        let ran = self.execute(&p, vfs, &cfg, &mut io::empty()).ok()?;
+        if ran.result.is_err() || ran.live_reads > 0 {
+            return None;
+        }
+        let at = ran.value_start?;
+        if at != 0 {
+            return None; // it printed something besides its value
+        }
+        let value = ran.io_output[at..].trim_end();
+        (!value.is_empty() && value != "()").then(|| value.to_string())
+    }
+}
+
+/// Whether the loop goes on.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Flow {
+    Continue,
+    Quit,
+}
+
+/// Runs one finished input: a `:command`, or a cell to evaluate.
+pub fn dispatch<R: BufRead, W: Write>(
+    session: &mut Session,
+    input_text: &str,
+    vfs: &dyn Vfs,
+    cfg: &ReplConfig,
+    input: &mut R,
+    out: &mut W,
+) -> io::Result<Flow> {
+    let trimmed = input_text.trim();
+    if trimmed.is_empty() {
+        return Ok(Flow::Continue);
+    }
+    if let Some(cmd) = trimmed.strip_prefix(':') {
+        let (name, rest) = cmd.split_once(char::is_whitespace).unwrap_or((cmd, ""));
+        match name {
+            "q" | "quit" | "exit" => return Ok(Flow::Quit),
+            "help" | "h" => write!(out, "{HELP}")?,
+            "reset" => {
+                session.reset();
+                writeln!(out, "session cleared")?;
+            }
+            "history" => {
+                for (i, c) in session.cells().iter().enumerate() {
+                    writeln!(out, "[{}] {}", i + 1, c.trim_end())?;
+                }
+            }
+            "load" => match vfs.read_to_string(rest.trim()) {
+                Ok(text) => report(session, &text, vfs, cfg, input, out)?,
+                Err(e) => writeln!(out, "cannot read `{}`: {e}", rest.trim())?,
+            },
+            other => writeln!(out, "unknown command `:{other}` (try :help)")?,
+        }
+        return Ok(Flow::Continue);
+    }
+    report(session, trimmed, vfs, cfg, input, out)?;
+    Ok(Flow::Continue)
 }
 
 /// Runs the loop until end of input or `:quit`.
@@ -295,33 +426,9 @@ pub fn run<R: BufRead, W: Write>(input: &mut R, out: &mut W, vfs: &dyn Vfs, cfg:
                 break;
             }
         }
-        let trimmed = cell.trim();
-        if trimmed.is_empty() {
-            continue;
+        if dispatch(&mut session, &cell, vfs, cfg, input, out)? == Flow::Quit {
+            return Ok(());
         }
-        if let Some(cmd) = trimmed.strip_prefix(':') {
-            let (name, rest) = cmd.split_once(char::is_whitespace).unwrap_or((cmd, ""));
-            match name {
-                "q" | "quit" | "exit" => return Ok(()),
-                "help" | "h" => write!(out, "{HELP}")?,
-                "reset" => {
-                    session.reset();
-                    writeln!(out, "session cleared")?;
-                }
-                "history" => {
-                    for (i, c) in session.cells().iter().enumerate() {
-                        writeln!(out, "[{}] {}", i + 1, c.trim_end())?;
-                    }
-                }
-                "load" => match vfs.read_to_string(rest.trim()) {
-                    Ok(text) => report(&mut session, &text, vfs, cfg, input, out)?,
-                    Err(e) => writeln!(out, "cannot read `{}`: {e}", rest.trim())?,
-                },
-                other => writeln!(out, "unknown command `:{other}` (try :help)")?,
-            }
-            continue;
-        }
-        report(&mut session, trimmed, vfs, cfg, input, out)?;
     }
 }
 
@@ -463,6 +570,55 @@ mod tests {
         run(&mut io::Cursor::new(b"1 + 1\nfn f() {\n}\n".to_vec()), &mut out, &MemVfs::new(), &cfg).unwrap();
         let out = String::from_utf8(out).unwrap();
         assert!(out.contains(">>> ") && out.contains("... ") && out.contains("2\n"), "{out}");
+    }
+
+    fn preview_of(cells: &[&str], cell: &str) -> Option<String> {
+        let mut s = Session::new();
+        let cfg = ReplConfig::default();
+        let vfs = MemVfs::new();
+        for c in cells {
+            assert!(matches!(s.eval(c, &vfs, &cfg, &mut io::empty()), Eval::Ok(_)), "{c}");
+        }
+        s.preview(cell, &vfs, &cfg)
+    }
+
+    #[test]
+    fn previews_show_the_value_of_pure_expressions_only() {
+        let cells = ["fn foo() -> i64 { 42 }", "let xs = [3, 1, 2];"];
+        assert_eq!(preview_of(&cells, "1 + 2").as_deref(), Some("3"));
+        assert_eq!(preview_of(&cells, "foo()").as_deref(), Some("42"));
+        assert_eq!(preview_of(&cells, "xs.len()").as_deref(), Some("3"));
+        assert_eq!(preview_of(&cells, "xs.map(|x| => x * 2)").as_deref(), Some("[6, 2, 4]"));
+        assert_eq!(preview_of(&cells, "(1, \"a\")").as_deref(), Some("(1, \"a\")"));
+        // not expressions, unfinished, wrong or without a value
+        assert_eq!(preview_of(&cells, "let y = 1;"), None);
+        assert_eq!(preview_of(&cells, "foo("), None);
+        assert_eq!(preview_of(&cells, "1 +"), None);
+        assert_eq!(preview_of(&cells, "nope"), None);
+        assert_eq!(preview_of(&cells, "10 / 0"), None, "a trap shows nothing");
+        assert_eq!(preview_of(&["fn hi() { println(\"x\"); }"], "hi()"), None, "unit values are not shown");
+    }
+
+    #[test]
+    fn a_preview_changes_nothing_and_prints_nothing_else() {
+        let mut s = Session::new();
+        let cfg = ReplConfig::default();
+        let vfs = MemVfs::new();
+        s.eval("var n = 0;", &vfs, &cfg, &mut io::empty());
+        // side effects of the previewed expression stay inside the preview
+        s.eval("fn bump() -> i64 { n += 1; n }", &vfs, &cfg, &mut io::empty());
+        assert_eq!(s.preview("bump()", &vfs, &cfg).as_deref(), Some("1"));
+        assert_eq!(s.preview("bump()", &vfs, &cfg).as_deref(), Some("1"), "same again: nothing was kept");
+        assert_eq!(s.cells().len(), 2);
+        // printing is not a pure preview
+        assert_eq!(s.preview("{ println(\"side\"); 5 }", &vfs, &cfg), None);
+    }
+
+    #[test]
+    fn previews_do_not_ask_for_input_and_stop_runaway_programs() {
+        assert_eq!(preview_of(&[], "input()"), None);
+        let looping = ["fn spin() -> i64 { var i = 0; while true { i += 1; } i }"];
+        assert_eq!(preview_of(&looping, "spin()"), None, "the step limit ends it");
     }
 
     #[test]
