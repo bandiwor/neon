@@ -12,7 +12,7 @@ mod actions;
 pub mod complete;
 mod describe;
 mod symbols;
-mod tokens;
+pub(crate) mod tokens;
 
 pub use actions::{Action, TextEdit};
 pub use tokens::{TOKEN_MODIFIERS, TOKEN_TYPES};

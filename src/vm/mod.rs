@@ -30,11 +30,20 @@ pub struct VmConfig {
     pub max_stack_words: usize,
     /// Stop with a panic after this many instructions (`None`: unlimited).
     pub max_steps: Option<u64>,
+    /// When set (to `true`, by another thread), the program stops with a panic within about 65 000
+    /// instructions. It is only looked at while `max_steps` is set (use `Some(u64::MAX)` for "no limit").
+    pub interrupt: Option<&'static std::sync::atomic::AtomicBool>,
 }
 
 impl Default for VmConfig {
     fn default() -> Self {
-        VmConfig { gc: GcConfig::default(), max_frames: 20_000, max_stack_words: 4 << 20, max_steps: None }
+        VmConfig {
+            gc: GcConfig::default(),
+            max_frames: 20_000,
+            max_stack_words: 4 << 20,
+            max_steps: None,
+            interrupt: None,
+        }
     }
 }
 
@@ -374,6 +383,11 @@ impl<'p, 'io> Vm<'p, 'io> {
                 self.steps += 1;
                 if self.steps > limit {
                     return Err(Trap::Panic("step limit exceeded".into()));
+                }
+                if self.steps & 0xFFFF == 0
+                    && self.cfg.interrupt.is_some_and(|f| f.load(std::sync::atomic::Ordering::Relaxed))
+                {
+                    return Err(Trap::Panic("interrupted".into()));
                 }
             }
             let w = code[pc];

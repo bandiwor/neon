@@ -55,6 +55,21 @@ impl Pane {
     }
 }
 
+impl Pane {
+    /// Waits until `text` is on the screen at least `n` times.
+    fn wait_for_count(&self, text: &str, n: usize) -> String {
+        let end = Instant::now() + Duration::from_secs(8);
+        loop {
+            let s = self.screen();
+            if s.matches(text).count() >= n {
+                return s;
+            }
+            assert!(Instant::now() < end, "waiting for {n}x {text:?}; the screen shows:\n{s}");
+            std::thread::sleep(Duration::from_millis(50));
+        }
+    }
+}
+
 impl Drop for Pane {
     fn drop(&mut self) {
         let _ = tmux(&["kill-session", "-t", &self.name]);
@@ -154,4 +169,54 @@ fn control_c_drops_the_input_and_a_new_session_remembers_the_history() {
     p.key("C-d");
     p.wait_for("EXIT_CODE=0");
     let _ = std::fs::remove_file(&history);
+}
+
+#[test]
+fn control_c_stops_a_running_cell_not_the_session_and_errors_are_about_the_input() {
+    let Some(p) = Pane::start("intr", "") else {
+        eprintln!("no tmux: skipping");
+        return;
+    };
+    p.type_text("fn spin() -> i64 { var i = 0; while true { i += 1; } i } ");
+    p.key("Enter");
+    p.type_text("let n = 7; ");
+    p.key("Enter");
+    p.type_text("spin()");
+    p.key("Enter");
+    std::thread::sleep(Duration::from_millis(300)); // it is running now
+    p.key("C-c");
+    p.wait_for("interrupted");
+    // the session is alive and kept what it had
+    p.type_text("n + 1");
+    p.wait_for("↳ 8");
+    p.key("Enter");
+
+    // a cell waiting for input() is interrupted too, and typing there is echoed and can be corrected
+    p.type_text("let w = input(); ");
+    p.key("Enter");
+    p.type_text("abx");
+    p.key("BSpace");
+    p.type_text("c");
+    p.key("Enter");
+    p.wait_for("abc");
+    p.type_text("let v = input(); ");
+    p.key("Enter");
+    std::thread::sleep(Duration::from_millis(300));
+    p.key("C-c");
+    p.wait_for_count("interrupted", 2);
+
+    // errors point into what was typed, not into the machinery around it
+    p.type_text("n + missing");
+    p.key("Enter");
+    let s = p.wait_for("not found in this scope");
+    assert!(s.contains("--> <repl>:1:5") && s.contains("1 | n + missing"), "{s}");
+    assert!(!s.contains("let value") && !s.contains("aborting"), "{s}");
+    // a forgotten semicolon is not an error
+    p.type_text("var k = 5");
+    p.key("Enter");
+    p.type_text("k * 2");
+    p.key("Enter");
+    p.wait_for("\n10");
+    p.key("C-d");
+    p.wait_for("EXIT_CODE=0");
 }

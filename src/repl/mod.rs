@@ -24,6 +24,11 @@ use crate::vm::{self, VmConfig, VmIo};
 const MARK: &str = "\u{1}";
 /// Marks where an expression cell's value starts (after its side effects).
 const VALUE_MARK: &str = "\u{2}";
+/// Set (by the terminal prompt, on Ctrl-C) to stop the cell that is running.
+pub static INTERRUPT: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// What an expression cell is wrapped in, up to the expression itself.
+const WRAP_PREFIX: &str = "{ let value = ";
 /// How many VM instructions a live preview may run (the replayed history counts too).
 const PREVIEW_STEPS: u64 = 4_000_000;
 
@@ -33,6 +38,8 @@ pub struct ReplConfig {
     pub vm: VmConfig,
     /// Print `>>> ` / `... ` prompts (for terminals).
     pub prompt: bool,
+    /// Color the diagnostics (the terminal prompt sets it).
+    pub color: bool,
 }
 
 const HELP: &str = "\
@@ -142,6 +149,7 @@ pub fn is_expression(cell: &str) -> bool {
             | "trait"
             | "impl"
             | "let"
+            | "var"
             | "const"
             | "import"
             | "export"
@@ -228,12 +236,117 @@ pub enum Eval {
     Trapped { output: String, error: String },
 }
 
+/// The diagnostics of a failed compilation, as they concern what the user typed: positions are
+/// relative to the cell (not to the whole replayed program), the machinery around an expression
+/// is never shown, and errors that only follow from another one are dropped.
+fn user_diagnostics(compiled: &crate::driver::Compiled, p: &Prepared) -> String {
+    use crate::diag::{DiagBag, Diagnostic, Emitter, Label, SourceMap, Span};
+    let Some(repl_file) = compiled.map.id_by_name("<repl>") else { return compiled.render_diagnostics() };
+    let mut map = SourceMap::new();
+    let Ok(file) = map.add_file("<repl>", p.user.clone()) else { return compiled.render_diagnostics() };
+    let (lo, hi) = (p.user_lo as u32, (p.user_lo + p.user.len()) as u32);
+    let remap = |sp: Span| -> Option<Span> {
+        (sp.file == repl_file && sp.lo >= lo && sp.hi <= hi).then(|| Span::new(file, sp.lo - lo, sp.hi - lo))
+    };
+    let mut kept: Vec<Diagnostic> = Vec::new();
+    let mut unlocated: Vec<Diagnostic> = Vec::new();
+    for d in compiled.diags.iter() {
+        let mut out = d.clone();
+        out.labels = d.labels.iter().filter_map(|l| remap(l.span).map(|span| Label { span, ..l.clone() })).collect();
+        if out.labels.iter().any(|l| l.primary) {
+            kept.push(out);
+        } else {
+            unlocated.push(out);
+        }
+    }
+    // errors about the machinery are consequences of an earlier one; with nothing else to show they
+    // concern the whole input
+    if kept.is_empty() {
+        for mut d in unlocated {
+            d.labels.push(Label {
+                span: Span::new(file, 0, p.user.len() as u32),
+                message: String::new(),
+                primary: true,
+            });
+            kept.push(d);
+        }
+    }
+    let mut bag = DiagBag::new();
+    for d in kept {
+        bag.report(d);
+    }
+    let emitter = Emitter::new(&map);
+    let mut out = String::new();
+    for (i, d) in bag.iter().enumerate() {
+        if i > 0 {
+            out.push('\n');
+        }
+        out.push_str(&emitter.render(d));
+    }
+    out
+}
+
+/// Colors a rendered diagnostic: the severity, the arrow, the gutter and the carets.
+pub fn colorize_diagnostics(text: &str) -> String {
+    const RED: &str = "\x1b[1;31m";
+    const YELLOW: &str = "\x1b[1;33m";
+    const BLUE: &str = "\x1b[1;34m";
+    const CYAN: &str = "\x1b[1;36m";
+    const BOLD: &str = "\x1b[1m";
+    const RESET: &str = "\x1b[0m";
+    let mut out = String::with_capacity(text.len() * 2);
+    for line in text.lines() {
+        let trimmed = line.trim_start();
+        if let Some(color) =
+            ["error", "warning"]
+                .iter()
+                .find(|k| trimmed.starts_with(*k))
+                .map(|k| if *k == "error" { RED } else { YELLOW })
+        {
+            if let Some((head, msg)) = line.split_once(": ") {
+                out.push_str(&format!("{color}{head}{RESET}{BOLD}: {msg}{RESET}"));
+                out.push('\n');
+                continue;
+            }
+        }
+        if let Some((pad, rest)) = line.split_once("--> ") {
+            out.push_str(&format!("{pad}{BLUE}-->{RESET} {rest}\n"));
+            continue;
+        }
+        // the gutter: `  | text`, `1 | text`
+        if let Some((gutter, rest)) =
+            line.split_once("| ").filter(|(g, _)| g.chars().all(|c| c.is_ascii_digit() || c == ' ')).or_else(|| {
+                line.strip_suffix('|')
+                    .map(|g| (g, ""))
+                    .filter(|(g, _)| g.chars().all(|c| c.is_ascii_digit() || c == ' '))
+            })
+        {
+            let caret = rest.trim_start().starts_with(['^', '-']);
+            let body = if caret { format!("{RED}{rest}{RESET}") } else { rest.to_string() };
+            let space = if rest.is_empty() { "" } else { " " };
+            out.push_str(&format!("{BLUE}{gutter}|{RESET}{space}{body}\n"));
+            continue;
+        }
+        if let Some((pad, rest)) = trimmed.strip_prefix("= ").map(|r| (&line[..line.len() - trimmed.len()], r)) {
+            let (label, tail) = rest.split_once(": ").unwrap_or((rest, ""));
+            out.push_str(&format!("{pad}{BLUE}={RESET} {CYAN}{label}{RESET}: {tail}\n"));
+            continue;
+        }
+        out.push_str(line);
+        out.push('\n');
+    }
+    out
+}
+
 /// A cell turned into the program that evaluates it after the session's history.
 struct Prepared {
     expr: bool,
     /// What is stored in the session when the cell is accepted.
     text: String,
     source: String,
+    /// What the user typed and where it sits in `source` (bytes), for error messages.
+    user: String,
+    user_lo: usize,
 }
 
 /// What running a prepared cell produced.
@@ -262,7 +375,7 @@ impl Session {
         let expr = is_expression(cell);
         // evaluate first, then mark where the value text begins
         let text = if expr {
-            format!("{{ let value = {}; print(\"{VALUE_MARK}\"); println(value); }}", cell.trim())
+            format!("{WRAP_PREFIX}{}; print(\"{VALUE_MARK}\"); println(value); }}", cell.trim())
         } else {
             cell.to_string()
         };
@@ -272,16 +385,19 @@ impl Session {
             source.push('\n');
         }
         source.push_str(&format!("print(\"{MARK}\");\n"));
+        // an expression sits inside the wrapper, after `{ let value = `
+        let user_lo = source.len() + if expr { WRAP_PREFIX.len() } else { 0 };
         source.push_str(&text);
         source.push('\n');
-        Prepared { expr, text, source }
+        let user = if expr { cell.trim().to_string() } else { cell.trim_end().to_string() };
+        Prepared { expr, text, source, user, user_lo }
     }
 
     /// Compiles and runs a prepared cell after the replayed history. `Err` carries the rendered diagnostics.
     fn execute(&self, p: &Prepared, vfs: &dyn Vfs, cfg: &ReplConfig, live: &mut dyn BufRead) -> Result<Ran, String> {
         let compiled = compile_source("<repl>", &p.source, vfs, &cfg.options);
         let Some(bc) = compiled.bytecode.as_ref().filter(|_| !compiled.diags.has_errors()) else {
-            return Err(compiled.render_diagnostics());
+            return Err(user_diagnostics(&compiled, p));
         };
         let mut io = ReplayIo {
             replay: self.inputs.iter().cloned().collect(),
@@ -305,8 +421,17 @@ impl Session {
 
     /// Evaluates `cell` after the session's history; keeps it if it succeeds.
     pub fn eval(&mut self, cell: &str, vfs: &dyn Vfs, cfg: &ReplConfig, live: &mut dyn BufRead) -> Eval {
-        let p = self.prepare(cell);
-        let ran = match self.execute(&p, vfs, cfg, live) {
+        let mut p = self.prepare(cell);
+        let mut attempt = self.execute(&p, vfs, cfg, live);
+        // `let x = 1` and `x += 2` without the final `;`: the missing semicolon is not worth an error
+        if matches!(&attempt, Err(d) if d.contains("expected `;`")) && !p.expr && !cell.trim_end().ends_with([';', '}'])
+        {
+            let with = self.prepare(&format!("{};", cell.trim_end()));
+            // whatever the cell with its semicolon says is what the user meant
+            attempt = self.execute(&with, vfs, cfg, live);
+            p = with;
+        }
+        let ran = match attempt {
             Ok(r) => r,
             Err(diags) => return Eval::Rejected(diags),
         };
@@ -442,10 +567,16 @@ fn report<R: BufRead, W: Write>(
 ) -> io::Result<()> {
     match session.eval(cell, vfs, cfg, input) {
         Eval::Ok(text) => write!(out, "{text}"),
+        Eval::Rejected(diags) if cfg.color => write!(out, "{}", colorize_diagnostics(&diags)),
         Eval::Rejected(diags) => write!(out, "{diags}"),
         Eval::Trapped { output, error } => {
             write!(out, "{output}")?;
-            writeln!(out, "{error}")
+            if INTERRUPT.swap(false, std::sync::atomic::Ordering::Relaxed) {
+                return writeln!(out, "interrupted");
+            }
+            // the frame of the cell itself says nothing
+            let trimmed: Vec<&str> = error.lines().filter(|l| l.trim() != "at <start>").collect();
+            writeln!(out, "{}", trimmed.join("\n"))
         }
     }
 }
@@ -619,6 +750,52 @@ mod tests {
         assert_eq!(preview_of(&[], "input()"), None);
         let looping = ["fn spin() -> i64 { var i = 0; while true { i += 1; } i }"];
         assert_eq!(preview_of(&looping, "spin()"), None, "the step limit ends it");
+    }
+
+    #[test]
+    fn errors_talk_about_what_was_typed_not_about_the_machinery() {
+        let out = session(&["let x = 1;", "x + v"]);
+        assert!(out.contains("cannot find value `v`"), "{out}");
+        assert!(
+            out.contains("--> <repl>:1:5") && out.contains("1 | x + v"),
+            "positions are relative to the cell: {out}"
+        );
+        assert!(!out.contains("let value") && !out.contains("print(") && !out.contains("aborting"), "{out}");
+        assert_eq!(out.matches("error[").count(), 1, "the follow-up error is dropped: {out}");
+        // a statement on the second line of the session still reports line 1
+        let out = session(&["let a = 1;", "let b: i64 = \"s\";"]);
+        assert!(out.contains("--> <repl>:1:14"), "{out}");
+    }
+
+    #[test]
+    fn a_missing_final_semicolon_is_forgiven() {
+        let out = session(&["let x = 40", "var y = 1", "y += x", "y + 1"]);
+        assert_eq!(out, "42\n");
+    }
+
+    #[test]
+    fn traps_do_not_show_the_cell_frame() {
+        let out = session(&["10 / 0"]);
+        assert_eq!(out, "runtime error: division by zero\n");
+        let out = session(&["fn f(a: i64) -> i64 { 1 / a }", "f(0)"]);
+        assert!(out.contains("division by zero") && !out.contains("<start>"), "{out}");
+    }
+
+    #[test]
+    fn diagnostics_can_be_colored() {
+        let text = "error[E0210]: cannot find value `v` in this scope\n --> <repl>:1:5\n  |\n1 | x + v\n  |     ^ not found in this scope\n";
+        let c = colorize_diagnostics(text);
+        assert!(c.contains("\x1b[1;31merror[E0210]\x1b[0m"), "{c:?}");
+        assert!(c.contains("\x1b[1;34m-->\x1b[0m"), "{c:?}");
+        assert!(c.contains("\x1b[1;31m    ^ not found"), "{c:?}");
+        // without the escapes it is the same text
+        let plain: String = c
+            .replace("\x1b[0m", "")
+            .replace("\x1b[1;31m", "")
+            .replace("\x1b[1;34m", "")
+            .replace("\x1b[1;33m", "")
+            .replace("\x1b[1m", "");
+        assert_eq!(plain, text);
     }
 
     #[test]

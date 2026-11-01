@@ -1,13 +1,17 @@
 //! The terminal side of the interactive prompt: raw mode, key decoding and character widths.
 //!
-//! The standard library has no termios, so the mode is switched with `stty` (it acts on the terminal
-//! that is standard input). Reading uses a short timeout (`min 0 time 1`: a read returns after a tenth of
-//! a second without input), which makes a lone `Esc` distinguishable from the start of an escape
-//! sequence, and gives the prompt idle moments to compute its preview.
+//! The standard library has no termios (and the crate has no `unsafe`), so the mode is switched with
+//! `stty` (it acts on the terminal that is standard input). A thread of its own reads the terminal
+//! ([`TtyInput`]) and hands the bytes over through a channel with a timeout: a lone `Esc` can be told
+//! from the start of an escape sequence, the prompt gets idle moments to compute its preview, and
+//! `Ctrl-C` can be noticed while a cell is running, when nobody else is reading.
 
 use std::collections::VecDeque;
-use std::io::{self, BufRead};
+use std::io::{self, BufRead, Read, Write};
 use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{mpsc, Arc};
+use std::time::Duration;
 
 use super::editor::Key;
 
@@ -26,7 +30,7 @@ pub struct RawMode {
 }
 
 const RAW: &[&str] =
-    &["-icanon", "-echo", "-isig", "-ixon", "-icrnl", "-inlcr", "-igncr", "-iexten", "min", "0", "time", "1"];
+    &["-icanon", "-echo", "-isig", "-ixon", "-icrnl", "-inlcr", "-igncr", "-iexten", "min", "1", "time", "0"];
 
 impl RawMode {
     pub fn enter() -> io::Result<RawMode> {
@@ -67,6 +71,216 @@ pub fn size() -> (usize, usize) {
     let cols = std::env::var("COLUMNS").ok().and_then(|v| v.parse().ok()).unwrap_or(80);
     let rows = std::env::var("LINES").ok().and_then(|v| v.parse().ok()).unwrap_or(24);
     (rows, cols)
+}
+
+/// What the terminal sends, read by a thread of its own. It is a [`BufRead`]: when nothing arrives for a
+/// tenth of a second the buffer is empty (a pause, not the end of input).
+#[derive(Debug)]
+pub struct TtyInput {
+    rx: mpsc::Receiver<Vec<u8>>,
+    buf: Vec<u8>,
+    pos: usize,
+    running: Arc<AtomicBool>,
+}
+
+impl TtyInput {
+    /// Starts reading `/dev/tty` (the terminal must already be in raw mode). While a cell runs (see
+    /// [`set_running`](Self::set_running)) a `Ctrl-C` byte sets `interrupt` instead of being delivered.
+    pub fn open(interrupt: &'static AtomicBool) -> io::Result<TtyInput> {
+        let mut tty = std::fs::File::open("/dev/tty")?;
+        let (tx, rx) = mpsc::channel::<Vec<u8>>();
+        let running = Arc::new(AtomicBool::new(false));
+        let flag = running.clone();
+        std::thread::Builder::new().name("neon-tty".into()).spawn(move || {
+            let mut chunk = [0u8; 512];
+            loop {
+                match tty.read(&mut chunk) {
+                    Ok(0) => break,
+                    Ok(n) => {
+                        let mut data = chunk[..n].to_vec();
+                        if flag.load(Ordering::SeqCst) && data.contains(&3) {
+                            interrupt.store(true, Ordering::SeqCst);
+                            data.retain(|&b| b != 3);
+                        }
+                        if !data.is_empty() && tx.send(data).is_err() {
+                            break;
+                        }
+                    }
+                    Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                    Err(_) => break,
+                }
+            }
+        })?;
+        Ok(TtyInput { rx, buf: Vec::new(), pos: 0, running })
+    }
+
+    /// Whether a cell is running: its `Ctrl-C` is an interrupt, not a key.
+    pub fn set_running(&self, on: bool) {
+        self.running.store(on, Ordering::SeqCst);
+    }
+
+    /// The next byte, waiting at most `timeout`.
+    fn byte(&mut self, timeout: Duration) -> io::Result<Option<u8>> {
+        if self.pos >= self.buf.len() {
+            match self.rx.recv_timeout(timeout) {
+                Ok(v) => {
+                    self.buf = v;
+                    self.pos = 0;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => return Ok(None),
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            }
+        }
+        let b = self.buf[self.pos];
+        self.pos += 1;
+        Ok(Some(b))
+    }
+}
+
+impl Read for TtyInput {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let n = {
+            let avail = self.fill_buf()?;
+            let n = avail.len().min(out.len());
+            out[..n].copy_from_slice(&avail[..n]);
+            n
+        };
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl BufRead for TtyInput {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.pos >= self.buf.len() {
+            match self.rx.recv_timeout(Duration::from_millis(100)) {
+                Ok(v) => {
+                    self.buf = v;
+                    self.pos = 0;
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {
+                    self.buf.clear();
+                    self.pos = 0;
+                }
+                Err(mpsc::RecvTimeoutError::Disconnected) => return Err(io::ErrorKind::UnexpectedEof.into()),
+            }
+        }
+        Ok(&self.buf[self.pos..])
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.pos = (self.pos + n).min(self.buf.len());
+    }
+}
+
+/// Lines for the program that runs in a cell (`input()`), typed at a terminal that is in raw mode: the
+/// typed characters are echoed, Backspace edits the line, `Ctrl-D` on an empty line ends the input and
+/// `Ctrl-C` (seen by the reading thread) makes the read fail so the cell stops.
+#[derive(Debug)]
+pub struct LineInput<'a> {
+    tty: &'a mut TtyInput,
+    interrupt: &'static AtomicBool,
+    line: Vec<u8>,
+    pos: usize,
+    eof: bool,
+}
+
+impl<'a> LineInput<'a> {
+    pub fn new(tty: &'a mut TtyInput, interrupt: &'static AtomicBool) -> LineInput<'a> {
+        LineInput { tty, interrupt, line: Vec::new(), pos: 0, eof: false }
+    }
+}
+
+fn echo(s: &str) {
+    let mut out = io::stdout();
+    let _ = out.write_all(s.as_bytes());
+    let _ = out.flush();
+}
+
+impl Read for LineInput<'_> {
+    fn read(&mut self, out: &mut [u8]) -> io::Result<usize> {
+        let n = {
+            let avail = self.fill_buf()?;
+            let n = avail.len().min(out.len());
+            out[..n].copy_from_slice(&avail[..n]);
+            n
+        };
+        self.consume(n);
+        Ok(n)
+    }
+}
+
+impl BufRead for LineInput<'_> {
+    fn fill_buf(&mut self) -> io::Result<&[u8]> {
+        if self.pos < self.line.len() {
+            return Ok(&self.line[self.pos..]);
+        }
+        if self.eof {
+            return Ok(&[]);
+        }
+        self.line.clear();
+        self.pos = 0;
+        let mut typed: Vec<u8> = Vec::new();
+        let mut partial: Vec<u8> = Vec::new();
+        loop {
+            if self.interrupt.load(Ordering::SeqCst) {
+                return Err(io::Error::other("interrupted"));
+            }
+            let Some(b) = self.tty.byte(Duration::from_millis(50))? else { continue };
+            match b {
+                b'\r' | b'\n' => {
+                    echo("\r\n");
+                    typed.push(b'\n');
+                    self.line = typed;
+                    return Ok(&self.line);
+                }
+                0x7f | 0x08 => {
+                    // one character, which may be several bytes
+                    while let Some(last) = typed.pop() {
+                        if last & 0xc0 != 0x80 {
+                            echo("\x08 \x08");
+                            break;
+                        }
+                    }
+                }
+                0x04 => {
+                    if typed.is_empty() {
+                        self.eof = true;
+                        return Ok(&[]);
+                    }
+                }
+                0x15 => {
+                    // Ctrl-U: forget the line
+                    let n = String::from_utf8_lossy(&typed).chars().count();
+                    echo(&"\x08 \x08".repeat(n));
+                    typed.clear();
+                }
+                0x1b => {
+                    // an escape sequence (arrows and the like) is of no use here
+                    while let Some(c) = self.tty.byte(Duration::from_millis(5))? {
+                        if (0x40..=0x7e).contains(&c) && c != b'[' && c != b'O' {
+                            break;
+                        }
+                    }
+                }
+                0x20.. => {
+                    // a character may arrive in several bytes: echo it once it is whole
+                    partial.push(b);
+                    if let Ok(text) = std::str::from_utf8(&partial) {
+                        echo(text);
+                        typed.append(&mut partial);
+                    } else if partial.len() >= 4 {
+                        partial.clear();
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn consume(&mut self, n: usize) {
+        self.pos = (self.pos + n).min(self.line.len());
+    }
 }
 
 /// Columns a character occupies: 0 for combining marks, 2 for wide (East Asian, emoji), else 1.

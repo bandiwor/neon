@@ -1,12 +1,19 @@
 //! Syntax highlighting for the interactive prompt.
 //!
-//! Highlighting runs on every keystroke over text that is usually half typed, so it cannot depend on
-//! the parser: a forgiving scanner cuts the text into tokens (an unterminated string or comment simply
-//! runs to the end), and a light pass over the tokens decides what an identifier is from its
-//! neighbourhood: a declaration, a parameter, a local, a global of the session, a function, a type.
+//! The colors come from the compiler itself: the lexer cuts the input into tokens (keywords, literals,
+//! operators, punctuation) and the very analysis the language server runs, over the session's cells
+//! followed by the input, says what every identifier refers to: a parameter, a local, a global, a
+//! function, a type, an enum variant. Half-typed input is fine, the parser recovers from errors.
 
-use crate::fx::FxHashSet as HashSet;
-use crate::syntax::Keyword;
+use crate::diag::FileId;
+use crate::lsp::analysis::complete::{closing_delimiters, scan};
+use crate::lsp::analysis::tokens::{
+    M_LOCAL, T_COMMENT, T_ENUM, T_ENUM_MEMBER, T_FUNCTION, T_INTERFACE, T_KEYWORD, T_METHOD, T_NAMESPACE, T_PARAMETER,
+    T_STRUCT, T_TYPE, T_TYPE_PARAM, T_VARIABLE,
+};
+use crate::lsp::analysis::Analysis;
+use crate::syntax::{tokenize, Interner, Keyword, LitPool, TokenKind};
+use crate::vfs::Vfs;
 
 /// What a stretch of text is, as far as colors are concerned.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -160,560 +167,84 @@ fn xterm256(r: u8, g: u8, b: u8) -> u8 {
     }
 }
 
-// ---- scanning ------------------------------------------------------------------------------------
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-enum Tok {
-    Ident,
-    Number,
-    Str,
-    Char,
-    Comment,
-    /// An operator or punctuation, classified later.
-    Sym,
-    Space,
-}
-
-#[derive(Debug, Clone, Copy)]
-struct Span {
-    lo: usize,
-    hi: usize,
-    tok: Tok,
-}
-
-fn is_ident_start(c: char) -> bool {
-    c == '_' || c.is_alphabetic()
-}
-
-fn is_ident_char(c: char) -> bool {
-    c == '_' || c.is_alphanumeric()
-}
-
-/// Cuts `src` into tokens, in order, covering every character. Inside an `f"..."` the `{...}` parts are
-/// scanned as code. Stops at `until_brace` (a `}` or a format `:`) when scanning an interpolation.
-fn scan(src: &[char], i: &mut usize, out: &mut Vec<Span>, in_interp: bool) {
-    let mut depth = 0usize;
-    while *i < src.len() {
-        let c = src[*i];
-        let lo = *i;
-        let next = src.get(*i + 1).copied();
-        if in_interp && depth == 0 && (c == '}' || (c == ':' && next != Some(':'))) {
-            return;
-        }
-        if c.is_whitespace() {
-            while *i < src.len() && src[*i].is_whitespace() {
-                *i += 1;
-            }
-            out.push(Span { lo, hi: *i, tok: Tok::Space });
-        } else if c == '/' && next == Some('/') {
-            while *i < src.len() && src[*i] != '\n' {
-                *i += 1;
-            }
-            out.push(Span { lo, hi: *i, tok: Tok::Comment });
-        } else if c == '/' && next == Some('*') {
-            let mut nest = 0;
-            while *i < src.len() {
-                if src[*i] == '/' && src.get(*i + 1) == Some(&'*') {
-                    nest += 1;
-                    *i += 2;
-                } else if src[*i] == '*' && src.get(*i + 1) == Some(&'/') {
-                    nest -= 1;
-                    *i += 2;
-                    if nest == 0 {
-                        break;
-                    }
-                } else {
-                    *i += 1;
-                }
-            }
-            out.push(Span { lo, hi: *i, tok: Tok::Comment });
-        } else if c == 'f' && next == Some('"') {
-            *i += 2;
-            scan_fstring(src, i, out, lo);
-        } else if c == '"' {
-            *i += 1;
-            while *i < src.len() {
-                match src[*i] {
-                    '\\' => *i += 2,
-                    '"' => {
-                        *i += 1;
-                        break;
-                    }
-                    _ => *i += 1,
-                }
-            }
-            *i = (*i).min(src.len());
-            out.push(Span { lo, hi: *i, tok: Tok::Str });
-        } else if c == '\'' {
-            // 'x' or '\n'; a lone quote is just a symbol
-            let mut j = *i + 1;
-            if src.get(j) == Some(&'\\') {
-                j += 2;
-            } else {
-                j += 1;
-            }
-            if src.get(j) == Some(&'\'') {
-                *i = j + 1;
-                out.push(Span { lo, hi: *i, tok: Tok::Char });
-            } else {
-                *i += 1;
-                out.push(Span { lo, hi: *i, tok: Tok::Sym });
-            }
-        } else if c.is_ascii_digit() {
-            while *i < src.len() {
-                let d = src[*i];
-                if d.is_alphanumeric() || d == '_' {
-                    // 1e-5 / 1E+5
-                    if (d == 'e' || d == 'E') && matches!(src.get(*i + 1), Some('+') | Some('-')) {
-                        *i += 1;
-                    }
-                    *i += 1;
-                } else if d == '.' && src.get(*i + 1).is_some_and(|n| n.is_ascii_digit()) {
-                    *i += 1;
-                } else {
-                    break;
-                }
-            }
-            out.push(Span { lo, hi: *i, tok: Tok::Number });
-        } else if is_ident_start(c) {
-            while *i < src.len() && is_ident_char(src[*i]) {
-                *i += 1;
-            }
-            out.push(Span { lo, hi: *i, tok: Tok::Ident });
-        } else {
-            // symbols: group the multi-character operators
-            let two: String = src[*i..(*i + 3).min(src.len())].iter().collect();
-            let len = if two.starts_with("..=") || two.starts_with("<<=") || two.starts_with(">>=") {
-                3
-            } else if [
-                "->", "=>", "==", "!=", "<=", ">=", "&&", "||", "<<", ">>", "+=", "-=", "*=", "/=", "%=", "&=", "|=",
-                "^=", "..", "::",
-            ]
-            .iter()
-            .any(|op| two.starts_with(op))
-            {
-                2
-            } else {
-                1
-            };
-            match c {
-                '(' | '[' | '{' => depth += 1,
-                ')' | ']' | '}' => depth = depth.saturating_sub(1),
-                _ => {}
-            }
-            *i += len;
-            out.push(Span { lo, hi: *i, tok: Tok::Sym });
-        }
-    }
-}
-
-/// After `f"`: the literal pieces are string text, the `{...}` parts are code.
-fn scan_fstring(src: &[char], i: &mut usize, out: &mut Vec<Span>, start: usize) {
-    let mut lit_lo = start;
-    while *i < src.len() {
-        match src[*i] {
-            '\\' => *i += 2,
-            '"' => {
-                *i += 1;
-                out.push(Span { lo: lit_lo, hi: *i, tok: Tok::Str });
-                return;
-            }
-            '{' if src.get(*i + 1) == Some(&'{') => *i += 2,
-            '}' if src.get(*i + 1) == Some(&'}') => *i += 2,
-            '{' => {
-                out.push(Span { lo: lit_lo, hi: *i, tok: Tok::Str });
-                let open = *i;
-                out.push(Span { lo: open, hi: open + 1, tok: Tok::Sym });
-                *i += 1;
-                scan(src, i, out, true);
-                // an optional format spec after a `:` is text
-                if src.get(*i) == Some(&':') {
-                    let lo = *i;
-                    while *i < src.len() && src[*i] != '}' && src[*i] != '"' {
-                        *i += 1;
-                    }
-                    out.push(Span { lo, hi: *i, tok: Tok::Str });
-                }
-                if src.get(*i) == Some(&'}') {
-                    out.push(Span { lo: *i, hi: *i + 1, tok: Tok::Sym });
-                    *i += 1;
-                }
-                lit_lo = *i;
-            }
-            _ => *i += 1,
-        }
-    }
-    *i = (*i).min(src.len());
-    out.push(Span { lo: lit_lo, hi: *i, tok: Tok::Str });
-}
-
-// ---- names ---------------------------------------------------------------------------------------
-
-/// Free functions that exist without being declared.
-const BUILTIN_FUNCTIONS: &[&str] = &["print", "println", "input", "read_line", "panic", "assert"];
-
-/// The top-level names the session has declared so far.
-#[derive(Debug, Default, Clone)]
-pub struct Names {
-    pub vars: HashSet<String>,
-    pub functions: HashSet<String>,
-    pub types: HashSet<String>,
-}
-
-impl Names {
-    pub fn from_cells(cells: &[String]) -> Names {
-        let mut n = Names::default();
-        for c in cells {
-            n.absorb(c);
-        }
-        n
-    }
-
-    /// Adds what `cell` declares at its top level.
-    pub fn absorb(&mut self, cell: &str) {
-        let src: Vec<char> = cell.chars().collect();
-        let mut toks = Vec::new();
-        scan(&src, &mut 0, &mut toks, false);
-        let toks: Vec<Span> = toks.into_iter().filter(|t| t.tok != Tok::Space && t.tok != Tok::Comment).collect();
-        let text = |t: &Span| -> String { src[t.lo..t.hi].iter().collect() };
-        let mut depth = 0i32;
-        for (k, t) in toks.iter().enumerate() {
-            let s = text(t);
-            match s.as_str() {
-                "(" | "[" | "{" => depth += 1,
-                ")" | "]" | "}" => depth -= 1,
-                _ => {}
-            }
-            if depth != 0 || t.tok != Tok::Ident {
-                continue;
-            }
-            let Some(name) = toks.get(k + 1).filter(|n| n.tok == Tok::Ident).map(&text) else { continue };
-            match s.as_str() {
-                "fn" => {
-                    self.functions.insert(name);
-                }
-                "let" | "var" | "const" => {
-                    self.vars.insert(name);
-                }
-                "struct" | "enum" | "trait" => {
-                    self.types.insert(name);
-                }
-                _ => {}
-            }
-        }
-    }
-}
-
 // ---- classification --------------------------------------------------------------------------------
 
-/// The class of every character of `text`.
-pub fn highlight(text: &str, names: &Names) -> Vec<Class> {
-    let src: Vec<char> = text.chars().collect();
-    let mut spans = Vec::new();
-    scan(&src, &mut 0, &mut spans, false);
-    let mut classes = vec![Class::Plain; src.len()];
-    let word = |s: &Span| -> String { src[s.lo..s.hi].iter().collect() };
-
-    // significant tokens only, with their index in `spans`
-    let sig: Vec<usize> = (0..spans.len()).filter(|&k| !matches!(spans[k].tok, Tok::Space | Tok::Comment)).collect();
-    let words: Vec<String> = sig.iter().map(|&k| word(&spans[k])).collect();
-    let n = sig.len();
-
-    // per token class, filled below; identifiers start as `None`
-    let mut class: Vec<Option<Class>> = vec![None; n];
-    for (j, &k) in sig.iter().enumerate() {
-        class[j] = match spans[k].tok {
-            Tok::Number => Some(Class::Number),
-            Tok::Str => Some(Class::Str),
-            Tok::Char => Some(Class::Char),
-            Tok::Sym => Some(sym_class(&words[j])),
-            _ => None,
-        };
-    }
-
-    // names bound by parameters, `let`, `for`, closures and match arms: (name, class, from, until) in
-    // token indices; a use is looked up by position
-    let mut bindings: Vec<(String, Class, usize, usize)> = Vec::new();
-    let mut declared: Vec<Option<Class>> = vec![None; n];
-    let ident = |m: usize| spans[sig[m]].tok == Tok::Ident;
-    // the token index of the `}` matching the `{` at `open` (or the end)
-    let block_end = |open: usize| -> usize {
-        let mut d = 0;
-        for (m, w) in words.iter().enumerate().skip(open) {
-            match w.as_str() {
-                "{" => d += 1,
-                "}" => {
-                    d -= 1;
-                    if d == 0 {
-                        return m;
-                    }
-                }
-                _ => {}
-            }
-        }
-        n
-    };
-    let mut depth_brace = 0i32;
-    for j in 0..n {
-        let w = words[j].as_str();
-        if !ident(j) {
-            match w {
-                "{" => depth_brace += 1,
-                "}" => depth_brace -= 1,
-                "|" if expression_may_start(&words, j) => {
-                    // closure parameters: `|a, b|`, `|(a, b)|`, `|x: i64|`
-                    let mut m = j + 1;
-                    while m < n && words[m] != "|" {
-                        if ident(m) && keyword(&words[m]).is_none() && !words[m.wrapping_sub(1)].eq(":") {
-                            declared[m] = Some(Class::Param);
-                            bindings.push((words[m].clone(), Class::Param, m, n));
-                        }
-                        m += 1;
-                    }
-                }
-                "=>" => {
-                    // match-arm bindings: lowercase names of the pattern before `=>`
-                    let mut m = j;
-                    while m > 0 {
-                        m -= 1;
-                        let wm = words[m].as_str();
-                        if matches!(wm, "," | "{" | ";" | "|") || (wm == "}" && depth_of(&words, m, j) == 0) {
-                            break;
-                        }
-                        if ident(m)
-                            && keyword(wm).is_none()
-                            && !starts_upper(wm)
-                            && declared[m].is_none()
-                            && !words.get(m + 1).is_some_and(|x| x == "(" || x == "::")
-                            && !words.get(m.wrapping_sub(1)).is_some_and(|x| x == "::" || x == ".")
-                        {
-                            declared[m] = Some(Class::Local);
-                            bindings.push((wm.to_string(), Class::Local, m, n));
-                        }
-                    }
-                }
-                _ => {}
-            }
-            continue;
-        }
-        match w {
-            "fn" => {
-                // fn name<..>(params) -> ty { body }
-                let mut m = j + 1;
-                if m < n && ident(m) {
-                    declared[m] = Some(Class::Function);
-                    m += 1;
-                }
-                if m < n && words[m] == "<" {
-                    let mut g = 0;
-                    while m < n {
-                        match words[m].as_str() {
-                            "<" => g += 1,
-                            ">" => {
-                                g -= 1;
-                                if g == 0 {
-                                    m += 1;
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                        m += 1;
-                    }
-                }
-                if m < n && words[m] == "(" {
-                    // the body starts at the first `{` after the parameter list
-                    let mut p = 0;
-                    let mut close = m;
-                    while close < n {
-                        match words[close].as_str() {
-                            "(" | "[" => p += 1,
-                            ")" | "]" => {
-                                p -= 1;
-                                if p == 0 {
-                                    break;
-                                }
-                            }
-                            _ => {}
-                        }
-                        close += 1;
-                    }
-                    let mut body = close;
-                    while body < n && words[body] != "{" && words[body] != ";" {
-                        body += 1;
-                    }
-                    let until = if body < n && words[body] == "{" { block_end(body) } else { body };
-                    let mut p = 0;
-                    for q in m..close.min(n) {
-                        match words[q].as_str() {
-                            "(" | "[" => p += 1,
-                            ")" | "]" => p -= 1,
-                            _ => {}
-                        }
-                        if p == 1
-                            && ident(q)
-                            && words.get(q + 1).is_some_and(|x| x == ":")
-                            && keyword(&words[q]).is_none()
-                        {
-                            declared[q] = Some(Class::Param);
-                            bindings.push((words[q].clone(), Class::Param, q, until));
-                        } else if p == 1 && words[q] == "self" {
-                            declared[q] = Some(Class::Keyword);
-                        }
-                    }
-                }
-            }
-            "let" | "var" | "const" | "for" => {
-                // binders up to `=`, `:` or `in` at the same nesting
-                let top_level = depth_brace == 0 && w != "for";
-                let stop: &[&str] = if w == "for" { &["in"] } else { &["=", ":", ";"] };
-                let mut m = j + 1;
-                let mut p = 0;
-                while m < n && !(p == 0 && stop.contains(&words[m].as_str())) {
-                    match words[m].as_str() {
-                        "(" | "[" => p += 1,
-                        ")" | "]" => p -= 1,
-                        "{" | "}" => break,
-                        _ => {}
-                    }
-                    if ident(m) && keyword(&words[m]).is_none() && !starts_upper(&words[m]) {
-                        if top_level {
-                            declared[m] = Some(Class::Global);
-                        } else {
-                            declared[m] = Some(Class::Local);
-                            bindings.push((words[m].clone(), Class::Local, m, n));
-                        }
-                    }
-                    m += 1;
-                }
-            }
-            "struct" | "enum" | "trait" | "impl" if j + 1 < n && ident(j + 1) => declared[j + 1] = Some(Class::Type),
-            _ => {}
-        }
-    }
-
-    let bound = |w: &str, j: usize| -> Option<Class> {
-        bindings.iter().rev().find(|(name, _, from, until)| name == w && *from <= j && j < *until).map(|b| b.1)
-    };
-    for j in 0..n {
-        if class[j].is_some() || !ident(j) {
-            continue;
-        }
-        let w = words[j].as_str();
-        let prev = if j > 0 { words[j - 1].as_str() } else { "" };
-        let next = words.get(j + 1).map(|s| s.as_str()).unwrap_or("");
-        let c = if let Some(d) = declared[j] {
-            d
-        } else if let Some(k) = keyword(w) {
-            if k.is_primitive_type() {
-                Class::Type
-            } else {
-                Class::Keyword
-            }
-        } else if prev == "." {
-            if next == "(" {
-                Class::Function
-            } else {
-                Class::Plain
-            }
-        } else if next == "::" {
-            Class::Type
-        } else if prev == "::" {
-            if starts_upper(w) {
-                Class::Variant
-            } else if next == "(" {
-                Class::Function
-            } else {
-                Class::Plain
-            }
-        } else if starts_upper(w) {
-            if w.chars().count() > 1 && w.chars().all(|c| c.is_uppercase() || c.is_ascii_digit() || c == '_') {
-                Class::Global // CONSTANT
-            } else {
-                Class::Type
-            }
-        } else if let Some(b) = bound(w, j) {
-            b
-        } else if next == "(" || names.functions.contains(w) || BUILTIN_FUNCTIONS.contains(&w) {
-            Class::Function
-        } else if names.vars.contains(w) {
-            Class::Global
-        } else if names.types.contains(w) {
-            Class::Type
-        } else {
-            Class::Plain
-        };
-        class[j] = Some(c);
-    }
-
-    // comments and everything else
-    for (k, sp) in spans.iter().enumerate() {
-        let c = match sig.binary_search(&k) {
-            Ok(j) => class[j].unwrap_or(Class::Plain),
-            Err(_) if sp.tok == Tok::Comment => Class::Comment,
-            Err(_) => Class::Plain,
-        };
-        for slot in &mut classes[sp.lo..sp.hi] {
-            *slot = c;
-        }
-    }
-    classes
-}
-
-fn keyword(w: &str) -> Option<Keyword> {
-    Keyword::ALL.iter().copied().find(|k| k.as_str() == w)
-}
-
-fn starts_upper(w: &str) -> bool {
-    w.chars().next().is_some_and(|c| c.is_uppercase())
-}
-
-fn sym_class(w: &str) -> Class {
-    match w {
-        "(" | ")" | "[" | "]" | "{" | "}" => Class::Bracket,
-        "," | "." | ";" | ":" | "::" => Class::Punct,
+fn token_class(kind: TokenKind) -> Option<Class> {
+    use TokenKind::*;
+    Some(match kind {
+        Kw(k) if k.is_primitive_type() => Class::Type,
+        Kw(Keyword::SelfValue | Keyword::SelfType) => Class::Keyword,
+        Kw(_) => Class::Keyword,
+        Int(_) | Float(_) => Class::Number,
+        Str(_) | Char(_) | FStrBegin | FStrLit(_) | FStrSpec(_) | FStrEnd => Class::Str,
+        FStrOpen | FStrClose | LParen | RParen | LBrace | RBrace | LBracket | RBracket => Class::Bracket,
+        Comma | Semi | Colon | ColonColon | Dot => Class::Punct,
+        Ident(_) | Underscore => return None,
         _ => Class::Operator,
-    }
+    })
 }
 
-/// Whether a `|` at token `j` can open a closure (it follows something after which an expression starts).
-fn expression_may_start(words: &[String], j: usize) -> bool {
-    if j == 0 {
-        return true;
-    }
-    matches!(
-        words[j - 1].as_str(),
-        "(" | ","
-            | "="
-            | "=>"
-            | "{"
-            | ";"
-            | "return"
-            | "+"
-            | "-"
-            | "*"
-            | "/"
-            | "&&"
-            | "||"
-            | "["
-            | ":"
-            | "?"
-            | "else"
-            | "in"
-    )
-}
-
-/// Net bracket depth of the tokens `from..to` (to find a `}` that ends a previous arm).
-fn depth_of(words: &[String], from: usize, to: usize) -> i32 {
-    let mut d = 0;
-    for w in &words[from..to] {
-        match w.as_str() {
-            "(" | "[" | "{" => d += 1,
-            ")" | "]" | "}" => d -= 1,
-            _ => {}
+/// The class of every character of `text`, typed after the session's `cells`.
+pub fn highlight(cells: &[String], text: &str, vfs: &dyn Vfs) -> Vec<Class> {
+    let mut by_byte = vec![Class::Plain; text.len()];
+    // tokens: everything but identifiers
+    let mut interner = Interner::new();
+    let mut pool = LitPool::new();
+    let mut diags = crate::diag::DiagBag::new();
+    let tokens = tokenize(FileId(0), text, &mut interner, &mut pool, &mut diags);
+    // what an unfinished input needs for the parser to see a whole expression: an operand after a
+    // trailing operator, a name after a dot
+    let tail = match tokens.iter().rev().map(|t| t.kind).find(|k| *k != TokenKind::Eof) {
+        Some(TokenKind::Dot) => " _p",
+        Some(k) if token_class(k) == Some(Class::Operator) && k != TokenKind::Question => " 0",
+        Some(TokenKind::Comma | TokenKind::Colon | TokenKind::ColonColon) => " _p",
+        _ => "",
+    };
+    for t in tokens {
+        if let Some(c) = token_class(t.kind) {
+            let (lo, hi) = (t.span.lo as usize, (t.span.hi as usize).min(text.len()));
+            if lo < hi {
+                by_byte[lo..hi].fill(c);
+            }
         }
     }
-    d
+    // identifiers and comments: what the analysis knows
+    let mut doc = String::new();
+    for c in cells {
+        doc.push_str(c);
+        doc.push('\n');
+    }
+    let base = doc.len();
+    doc.push_str(text);
+    let end = doc.len();
+    // an unfinished input: complete it, so the parser has a whole definition to work with
+    doc.push_str(tail);
+    // a statement cut off inside a block (or at the top level) still lacks its `;`
+    let (open, inside) = scan(&doc);
+    let last = doc.trim_end().chars().last();
+    if !inside && open.last().is_none_or(|o| o.ch == b'{') && !matches!(last, Some(';' | '}' | '{') | None) {
+        doc.push(';');
+    }
+    doc.push_str(&closing_delimiters(&doc, doc.len()));
+    let analysis = Analysis::run("<repl>", &doc, vfs);
+    for p in analysis.pieces() {
+        if p.lo < base || p.hi > end {
+            continue;
+        }
+        let class = match p.ty {
+            T_COMMENT => Class::Comment,
+            T_KEYWORD => continue,
+            T_FUNCTION | T_METHOD => Class::Function,
+            T_TYPE | T_STRUCT | T_ENUM | T_INTERFACE | T_TYPE_PARAM | T_NAMESPACE => Class::Type,
+            T_ENUM_MEMBER => Class::Variant,
+            T_PARAMETER => Class::Param,
+            T_VARIABLE if p.modifiers & M_LOCAL != 0 => Class::Local,
+            T_VARIABLE => Class::Global,
+            _ => continue, // literals are already colored, fields stay plain
+        };
+        by_byte[p.lo - base..p.hi - base].fill(class);
+    }
+    text.char_indices().map(|(i, _)| by_byte[i]).collect()
 }
 
 // ---- rendering -------------------------------------------------------------------------------------
@@ -746,26 +277,31 @@ pub fn render_lines(text: &str, classes: &[Class], theme: &Theme) -> Vec<String>
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vfs::MemVfs;
 
-    fn classes(text: &str) -> Vec<(String, Class)> {
-        classes_with(text, &Names::default())
-    }
-
-    /// The text grouped into runs of one class (whitespace dropped), for readable assertions.
-    fn classes_with(text: &str, names: &Names) -> Vec<(String, Class)> {
-        let cl = highlight(text, names);
+    fn classes_after(cells: &[&str], text: &str) -> Vec<(String, Class)> {
+        let cells: Vec<String> = cells.iter().map(|s| s.to_string()).collect();
+        let cl = highlight(&cells, text, &MemVfs::new());
+        assert_eq!(cl.len(), text.chars().count());
+        // runs of one class, split at blanks, for readable assertions
         let mut out: Vec<(String, Class)> = Vec::new();
+        let mut open = false;
         for (ch, c) in text.chars().zip(cl) {
             if ch.is_whitespace() {
-                out.push((String::new(), Class::Plain)); // run separator
+                open = false;
                 continue;
             }
             match out.last_mut() {
-                Some((s, last)) if *last == c && !s.is_empty() => s.push(ch),
+                Some((s, last)) if open && *last == c => s.push(ch),
                 _ => out.push((ch.to_string(), c)),
             }
+            open = true;
         }
-        out.into_iter().filter(|(s, _)| !s.is_empty()).collect()
+        out
+    }
+
+    fn classes(text: &str) -> Vec<(String, Class)> {
+        classes_after(&[], text)
     }
 
     fn of(text: &str, word: &str) -> Class {
@@ -774,28 +310,37 @@ mod tests {
 
     #[test]
     fn the_screenshot_example_gets_its_colors() {
-        let src = "fn input_data() -> Data {\n    let parts = read_line().expect(\"x\").split(\" \");\n    if parts.len() != 4 { panic(\"bad\"); }\n    let v = parts.skip(1).map(|s| => s.parse_u64() as u8);\n    match parts[0] {\n        \"rgb\" => Data::RGB(v[0], v[1]),\n        other => panic(f\"Invalid type {other}\"),\n    }\n}";
-        assert_eq!(of(src, "fn"), Class::Keyword);
-        assert_eq!(of(src, "input_data"), Class::Function);
-        assert_eq!(of(src, "->"), Class::Operator);
-        assert_eq!(of(src, "=>"), Class::Operator);
-        assert_eq!(of(src, "Data"), Class::Type);
-        assert_eq!(of(src, "parts"), Class::Local);
-        assert_eq!(of(src, "read_line"), Class::Function);
-        assert_eq!(of(src, "split"), Class::Function);
-        assert_eq!(of(src, "!="), Class::Operator);
-        assert_eq!(of(src, "4"), Class::Number);
-        assert_eq!(of(src, "u8"), Class::Type);
-        assert_eq!(of(src, "RGB"), Class::Variant);
-        assert_eq!(of(src, "other"), Class::Local);
-        assert_eq!(of(src, "\"rgb\""), Class::Str);
+        let cells = ["enum Data { RGB(u8, u8, u8), Pos(u8, u8, u8) }"];
+        let src = "fn input_data() -> Data {\n    let parts = read_line().expect(\"x\").split(\" \");\n    if parts.len() != 4 { panic(\"bad\"); }\n    let v = parts.skip(1).map(|s| => s.parse_u64() as u8);\n    match parts[0] {\n        \"rgb\" => Data::RGB(v[0], v[1], v[2]),\n        other => panic(f\"Invalid type {other}\"),\n    }\n}";
+        let got = classes_after(&cells, src);
+        let class_of = |w: &str, nth: usize| got.iter().filter(|(s, _)| s == w).nth(nth).map(|(_, c)| *c);
+        assert_eq!(class_of("fn", 0), Some(Class::Keyword));
+        assert_eq!(class_of("input_data", 0), Some(Class::Function));
+        assert_eq!(class_of("->", 0), Some(Class::Operator));
+        assert_eq!(class_of("=>", 0), Some(Class::Operator));
+        assert_eq!(class_of("Data", 0), Some(Class::Type));
+        assert_eq!(class_of("parts", 0), Some(Class::Local));
+        assert_eq!(class_of("read_line", 0), Some(Class::Function));
+        assert_eq!(class_of("split", 0), Some(Class::Function));
+        assert_eq!(class_of("!=", 0), Some(Class::Operator));
+        assert_eq!(class_of("4", 0), Some(Class::Number));
+        assert_eq!(class_of("u8", 0), Some(Class::Type));
+        assert_eq!(class_of("RGB", 0), Some(Class::Variant));
+        assert_eq!(class_of("s", 0), Some(Class::Param), "closure parameter");
+        assert_eq!(class_of("s", 1), Some(Class::Param), "and its use");
+        assert_eq!(class_of("v", 0), Some(Class::Local));
+        assert_eq!(class_of("v", 1), Some(Class::Local));
+        assert_eq!(class_of("other", 0), Some(Class::Local), "match binding");
+        assert_eq!(class_of("\"rgb\"", 0), Some(Class::Str));
+        assert_eq!(class_of("{", 0), Some(Class::Bracket));
+        assert_eq!(class_of(",", 0), Some(Class::Punct));
+        assert_eq!(class_of(".", 0), Some(Class::Punct));
     }
 
     #[test]
     fn parameters_locals_and_globals_have_their_own_colors() {
-        let mut names = Names::default();
-        names.absorb("let total = 5;\nfn helper() -> i64 { 1 }");
-        let got = classes_with("fn add(a: i64, b: i64) -> i64 { let c = a + b; c + total + helper() }", &names);
+        let cells = ["let total = 5;", "fn helper() -> i64 { 1 }"];
+        let got = classes_after(&cells, "fn add(a: i64, b: i64) -> i64 { let c = a + b; c + total + helper() }");
         let class_of = |w: &str, nth: usize| got.iter().filter(|(s, _)| s == w).nth(nth).map(|(_, c)| *c);
         assert_eq!(class_of("add", 0), Some(Class::Function));
         assert_eq!(class_of("a", 0), Some(Class::Param), "declaration");
@@ -807,14 +352,31 @@ mod tests {
     }
 
     #[test]
-    fn top_level_names_are_globals_and_closure_parameters_are_parameters() {
-        assert_eq!(classes("let count = 3;").iter().find(|(s, _)| s == "count").unwrap().1, Class::Global);
-        let got = classes("xs.map(|v| => v * 2)");
+    fn what_a_name_is_depends_on_what_it_refers_to_not_on_its_look() {
+        // the same word is a parameter in one function and a global elsewhere; a function called without
+        // parentheses-looking syntax is still a function; an unknown name is plain
+        let cells = ["let count = 3;", "fn twice(n: i64) -> i64 { n * 2 }"];
+        let got = classes_after(&cells, "count + twice(count) + nothing");
+        assert_eq!(got[0], ("count".into(), Class::Global));
+        assert_eq!(got[2], ("twice".into(), Class::Function));
+        assert_eq!(got.last().unwrap(), &("nothing".into(), Class::Plain));
+        let got = classes_after(&["let n = 1;"], "fn f(n: i64) -> i64 { n }");
+        let ns: Vec<Class> = got.iter().filter(|(s, _)| s == "n").map(|(_, c)| *c).collect();
+        assert_eq!(ns, [Class::Param, Class::Param], "the parameter shadows the global");
+    }
+
+    #[test]
+    fn methods_variants_and_types() {
+        let cells = ["let xs = [3, 1, 2];", "enum Shape { Dot, Circle(u8) }", "struct P { x: i64 }"];
+        assert_eq!(classes_after(&cells, "xs.len()").iter().find(|(s, _)| s == "len").unwrap().1, Class::Function);
+        let got = classes_after(&cells, "Shape::Circle(3)");
+        assert_eq!(got[0], ("Shape".into(), Class::Type));
+        assert_eq!(got[2], ("Circle".into(), Class::Variant));
+        assert_eq!(classes_after(&cells, "P { x: 1 }")[0].1, Class::Type);
         assert_eq!(
-            got.iter().filter(|(s, _)| s == "v").map(|(_, c)| *c).collect::<Vec<_>>(),
-            [Class::Param, Class::Param]
+            classes_after(&cells, "let p: Option<i32> = Option::None;").iter().find(|(s, _)| s == "Option").unwrap().1,
+            Class::Type
         );
-        assert_eq!(of("xs.map(|v| => v)", "map"), Class::Function);
     }
 
     #[test]
@@ -833,52 +395,52 @@ mod tests {
         assert_eq!(of("let x = 3.14;", "3.14"), Class::Number);
         assert_eq!(of("let x = 0xFFu8;", "0xFFu8"), Class::Number);
         assert_eq!(of("1..5", "1"), Class::Number);
-        assert_eq!(of("'a'", "'a'"), Class::Char);
-        assert_eq!(of("'\\n'", "'\\n'"), Class::Char);
+        assert_eq!(of("'a'", "'a'"), Class::Str);
         assert_eq!(of("x // note", "//"), Class::Comment);
         assert_eq!(of("/* a */ x", "/*"), Class::Comment);
         assert_eq!(of("true && false", "true"), Class::Keyword);
     }
 
     #[test]
-    fn unfinished_input_does_not_confuse_the_scanner() {
-        // an open string, comment and f-string run to the end
+    fn unfinished_input_does_not_confuse_it() {
         assert_eq!(classes("\"abc")[0].1, Class::Str);
         assert_eq!(classes("/* abc")[0].1, Class::Comment);
-        let cl = highlight("f\"x {a", &Names::default());
+        let cl = highlight(&[], "f\"x {a", &MemVfs::new());
         assert_eq!(cl.len(), 6);
         assert_eq!(cl[0], Class::Str);
-        // every character is classified, whatever the input
-        for text in ["", "'", "f\"{", "f\"{a:", "1e", "a::", "|", "=>", "\"\\"] {
-            assert_eq!(highlight(text, &Names::default()).len(), text.chars().count(), "{text:?}");
+        // one class per character, whatever the input
+        for text in ["", "'", "f\"{", "f\"{a:", "1e", "a::", "|", "=>", "\"\\", "fn (", "let = ;", "é + ü", "match {"]
+        {
+            assert_eq!(highlight(&[], text, &MemVfs::new()).len(), text.chars().count(), "{text:?}");
         }
+        // a half-typed definition still colors what is known
+        let got = classes("fn f(a: i64) -> i64 { let b = a +");
+        assert_eq!(got.iter().find(|(s, _)| s == "b").unwrap().1, Class::Local);
+        assert_eq!(got.iter().find(|(s, _)| s == "i64").unwrap().1, Class::Type);
     }
 
     #[test]
     fn fstring_interpolations_are_code() {
-        let src = "f\"sum {a + 1:>4} done\"";
-        let cl = highlight(src, &Names::default());
+        let src = "let n = 1; f\"sum {n + 1:>4} done\"";
+        let cl = highlight(&[], src, &MemVfs::new());
         let at = |s: &str| src.chars().position(|c| c.to_string() == s).unwrap();
-        assert_eq!(cl[0], Class::Str);
-        assert_eq!(cl[at("+")], Class::Operator);
-        assert_eq!(cl[at("1")], Class::Number);
-        assert_eq!(cl[at("{")], Class::Bracket);
+        let q = src.chars().position(|c| c == 'f').unwrap();
+        assert_eq!(cl[q], Class::Str);
+        let plus = src.chars().skip(q).position(|c| c == '+').unwrap() + q;
+        assert_eq!(cl[plus], Class::Operator);
+        assert_eq!(cl[plus + 2], Class::Number);
+        // the interpolated name is the local variable it refers to... here a global of the input
+        let n_in = src.chars().skip(q).position(|c| c == 'n').unwrap() + q;
+        assert_eq!(cl[n_in], Class::Global);
+        assert_eq!(cl[src.chars().skip(q).position(|c| c == '{').unwrap() + q], Class::Bracket);
         assert_eq!(cl[src.len() - 3], Class::Str);
-    }
-
-    #[test]
-    fn declarations_register_session_names() {
-        let mut names = Names::default();
-        names.absorb("struct Point { x: i64 }\nlet origin = 1;\nfn dist() { let inner = 2; }\nenum Shape { A }");
-        assert!(names.types.contains("Point") && names.types.contains("Shape"));
-        assert!(names.vars.contains("origin") && !names.vars.contains("inner"));
-        assert!(names.functions.contains("dist"));
+        let _ = at;
     }
 
     #[test]
     fn rendering_resets_at_line_breaks_and_can_be_plain() {
         let text = "let a = \"x\ny\";";
-        let cl = highlight(text, &Names::default());
+        let cl = highlight(&[], text, &MemVfs::new());
         let lines = render_lines(text, &cl, &Theme::new(true));
         assert_eq!(lines.len(), 2);
         assert!(lines[0].ends_with(RESET) && lines[1].starts_with("\x1b[38;2;"), "{lines:?}");

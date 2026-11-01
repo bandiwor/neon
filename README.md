@@ -216,8 +216,12 @@ a long chain is a few times slower than one hand-written loop; ranges are not va
 
 * **Colors.** Keywords, types and variants, functions and methods, parameters, locals, globals, numbers,
   strings, operators (`->`, `=>` and the rest in red) and punctuation each have their own color, also inside
-  `f"..."` interpolations. It works on half-typed input (an open string or comment just runs on); 24-bit
-  colors with `COLORTERM=truecolor`, the 256-color palette otherwise, none with `NO_COLOR`.
+  `f"..."` interpolations. They come from the compiler, not from patterns: the lexer cuts the input into
+  tokens and the language server's analysis of the session plus the input says what every name refers to
+  (a parameter, a local, a global, a function, a method, a type, a variant), so `n` is a parameter in one
+  function and a global in the next. An unfinished input is completed (a missing operand, `;`, closing
+  brackets) before it is analyzed. 24-bit colors with `COLORTERM=truecolor`, the 256-color palette
+  otherwise, none with `NO_COLOR`.
 * **Live preview.** Under a complete expression a gray `↳ value` shows what Enter would print: `foo()` after
   `fn foo() -> i64 { 42 }` shows `↳ 42` as you type. The preview runs the cell on the side: the session replays
   its cells from scratch for every evaluation, so nothing is kept; expressions that print, ask for input,
@@ -230,6 +234,13 @@ a long chain is a few times slower than one hand-written loop; ranges are not va
   Enter between `{` and `}` opens a block. Up/Down move between the lines of the input and then through the
   history, Ctrl-R searches it. The history is kept in `~/.neon_history` (`NEON_HISTORY` picks another file;
   empty disables it).
+* **Ctrl-C** stops the cell that is running (an endless loop, an `input()` waiting for a line) and
+  keeps the session; at the prompt it drops the input. While a cell runs, the terminal is read by a
+  separate thread, so the interruption is noticed within a moment; what you type for `input()` is echoed
+  and can be corrected with Backspace.
+* **Errors** talk about what you typed: positions are relative to the cell (`<repl>:1:5`), the code the
+  REPL wraps around an expression is never shown, follow-up errors are dropped, and the severity, the
+  arrow and the carets are colored. A forgotten final `;` (`let x = 5`) is not an error.
 * **vi keys.** Esc switches to normal mode (the prompt becomes `[n]`, the cursor a block): `h j k l w b e 0 ^ $`,
   `i a I A o`, `x X D C dd dw d$ cw`, `p P u`; `k` and `j` walk the history. `i` goes back to inserting.
 

@@ -9,9 +9,9 @@ use std::io::{self, BufRead, Write};
 
 use super::complete::{self, Candidate};
 use super::editor::{Editor, Event, Key, Mode};
-use super::highlight::{self, Class, Names, Theme};
-use super::terminal::{self, char_width, Decoder, RawMode};
-use super::{dispatch, history, Flow, ReplConfig, Session};
+use super::highlight::{self, Class, Theme};
+use super::terminal::{self, char_width, Decoder, LineInput, RawMode, TtyInput};
+use super::{dispatch, history, Flow, ReplConfig, Session, INTERRUPT};
 use crate::vfs::Vfs;
 
 const PROMPT_WIDTH: usize = 4;
@@ -196,7 +196,8 @@ struct Menu {
 struct Prompt<'a> {
     editor: Editor,
     session: Session,
-    names: Names,
+    /// The colors of the text last drawn, until the text or the session changes.
+    colors: Option<(String, Vec<Class>)>,
     theme: Theme,
     width: usize,
     menu: Option<Menu>,
@@ -257,7 +258,7 @@ impl Prompt<'_> {
             _ => self.editor.text(),
         };
         let cursor = if self.editor.search.is_some() { text.chars().count() } else { self.editor.cursor() };
-        let classes = highlight::highlight(&text, &self.names);
+        let classes = self.classes_of(&text);
         let (prompt, pw, continuation) = self.prompt_strings();
         let hints = self.hints();
         let view = View {
@@ -340,8 +341,20 @@ impl Prompt<'_> {
         Ok(())
     }
 
+    /// The colors of `text`: from the compiler's analysis of the session plus the text (cached).
+    fn classes_of(&mut self, text: &str) -> Vec<Class> {
+        if let Some((t, c)) = &self.colors {
+            if t == text {
+                return c.clone();
+            }
+        }
+        let c = highlight::highlight(self.session.cells(), text, self.vfs);
+        self.colors = Some((text.to_string(), c.clone()));
+        c
+    }
+
     fn refresh_names(&mut self) {
-        self.names = Names::from_cells(self.session.cells());
+        self.colors = None;
     }
 
     fn maybe_preview(&mut self) {
@@ -369,15 +382,23 @@ pub fn wanted() -> bool {
 
 /// Runs the prompt until `:quit`, `Ctrl-D` or the end of input. `Unsupported` means the terminal could
 /// not be switched to raw mode (nothing was drawn): use the plain loop instead.
-pub fn run<R: BufRead, W: Write>(input: &mut R, out: &mut W, vfs: &dyn Vfs, cfg: &ReplConfig) -> io::Result<()> {
+pub fn run<R: BufRead, W: Write>(_input: &mut R, out: &mut W, vfs: &dyn Vfs, cfg: &ReplConfig) -> io::Result<()> {
     let raw = RawMode::enter().map_err(|e| io::Error::new(io::ErrorKind::Unsupported, e.to_string()))?;
+    // the terminal is read by a thread of its own, so Ctrl-C is noticed while a cell runs
+    let mut tty = TtyInput::open(&INTERRUPT).map_err(|e| io::Error::new(io::ErrorKind::Unsupported, e.to_string()))?;
+    // cells run until they end or are interrupted
+    let mut cfg = *cfg;
+    cfg.color = Theme::detect().enabled();
+    cfg.vm.interrupt = Some(&INTERRUPT);
+    cfg.vm.max_steps.get_or_insert(u64::MAX);
+    let cfg = &cfg;
     let history_path = history::default_path();
     let entries = history_path.as_ref().map(history::load).unwrap_or_default();
     let (_, width) = terminal::size();
     let mut p = Prompt {
         editor: Editor::new(entries),
         session: Session::new(),
-        names: Names::default(),
+        colors: None,
         theme: Theme::detect(),
         width,
         menu: None,
@@ -393,7 +414,7 @@ pub fn run<R: BufRead, W: Write>(input: &mut R, out: &mut W, vfs: &dyn Vfs, cfg:
     // bracketed paste on, bar cursor
     write!(out, "\x1b[?2004h\x1b[6 q")?;
     writeln!(out, "Neon {} — :help for help, Ctrl-D to leave\r", env!("CARGO_PKG_VERSION"))?;
-    let result = event_loop(&mut p, &raw, input, out);
+    let result = event_loop(&mut p, &mut tty, out);
     // put the terminal back whatever happened
     let _ = write!(out, "\x1b[?2004l\x1b[0 q");
     let _ = out.flush();
@@ -401,12 +422,17 @@ pub fn run<R: BufRead, W: Write>(input: &mut R, out: &mut W, vfs: &dyn Vfs, cfg:
     result
 }
 
-fn event_loop<R: BufRead, W: Write>(p: &mut Prompt<'_>, raw: &RawMode, input: &mut R, out: &mut W) -> io::Result<()> {
+fn event_loop<W: Write>(p: &mut Prompt<'_>, tty: &mut TtyInput, out: &mut W) -> io::Result<()> {
     let mut decoder = Decoder::new();
     let mut ticks = 0u32;
     p.draw(out)?;
     loop {
-        let key = decoder.key(input)?;
+        let key = match decoder.key(tty) {
+            Ok(k) => k,
+            // the terminal went away
+            Err(e) if e.kind() == io::ErrorKind::UnexpectedEof => return Ok(()),
+            Err(e) => return Err(e),
+        };
         if key == Key::Tick {
             ticks += 1;
             p.idle += 1;
@@ -474,10 +500,16 @@ fn event_loop<R: BufRead, W: Write>(p: &mut Prompt<'_>, raw: &RawMode, input: &m
                         history::append(path, &text);
                     }
                 }
-                // the program runs with an ordinary terminal: echo, line input, Ctrl-C
-                raw.suspend();
-                let flow = dispatch(&mut p.session, &text, p.vfs, p.cfg, input, out);
-                raw.resume();
+                // while the cell runs, Ctrl-C stops it (the reader thread sets the flag) and `input()`
+                // reads lines from the terminal
+                INTERRUPT.store(false, std::sync::atomic::Ordering::SeqCst);
+                tty.set_running(true);
+                let flow = {
+                    let mut live = LineInput::new(tty, &INTERRUPT);
+                    dispatch(&mut p.session, &text, p.vfs, p.cfg, &mut live, out)
+                };
+                tty.set_running(false);
+                INTERRUPT.store(false, std::sync::atomic::Ordering::SeqCst);
                 if flow? == Flow::Quit {
                     return Ok(());
                 }
@@ -496,7 +528,7 @@ impl Prompt<'_> {
         // the editor has been emptied by `take`: draw what was submitted
         self.menu = None;
         self.preview = None;
-        let classes = highlight::highlight(text, &self.names);
+        let classes = self.classes_of(text);
         let (prompt, pw, continuation) = (
             if self.theme.enabled() { format!("\x1b[1;32m>>> {}", self.theme.reset()) } else { ">>> ".to_string() },
             PROMPT_WIDTH,
@@ -524,13 +556,14 @@ impl Prompt<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::vfs::MemVfs;
 
     fn plain_view<'a>(text: &'a str, cursor: usize, width: usize, hints: &'a [String]) -> View<'a> {
         View { text, cursor, prompt: ">>> ", prompt_width: 4, continuation: "... ", hints, width }
     }
 
     fn draw(text: &str, cursor: usize, width: usize, hints: &[String]) -> Frame {
-        let cl = highlight::highlight(text, &Names::default());
+        let cl = highlight::highlight(&[], text, &MemVfs::new());
         frame(0, &plain_view(text, cursor, width, hints), &cl, &Theme::plain())
     }
 
@@ -580,14 +613,14 @@ mod tests {
 
     #[test]
     fn redrawing_goes_back_up_to_where_the_input_began() {
-        let cl = highlight::highlight("ab", &Names::default());
+        let cl = highlight::highlight(&[], "ab", &MemVfs::new());
         let f = frame(3, &plain_view("ab", 2, 80, &[]), &cl, &Theme::plain());
         assert!(f.bytes.starts_with("\x1b[3A\r\x1b[J"), "{:?}", f.bytes);
     }
 
     #[test]
     fn colors_appear_only_with_a_color_theme() {
-        let cl = highlight::highlight("let x = 1;", &Names::default());
+        let cl = highlight::highlight(&[], "let x = 1;", &MemVfs::new());
         let colored = frame(0, &plain_view("let x = 1;", 10, 80, &[]), &cl, &Theme::new(true));
         assert!(colored.bytes.contains("\x1b[38;2;"), "{:?}", colored.bytes);
         let plain = frame(0, &plain_view("let x = 1;", 10, 80, &[]), &cl, &Theme::plain());

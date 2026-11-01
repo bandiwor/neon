@@ -27,38 +27,48 @@ pub const TOKEN_TYPES: &[&str] = &[
 
 pub const TOKEN_MODIFIERS: &[&str] = &["declaration", "readonly", "defaultLibrary"];
 
-const T_NAMESPACE: u32 = 0;
-const T_TYPE: u32 = 1;
-const T_STRUCT: u32 = 2;
-const T_ENUM: u32 = 3;
-const T_INTERFACE: u32 = 4;
-const T_TYPE_PARAM: u32 = 5;
-const T_PARAMETER: u32 = 6;
-const T_VARIABLE: u32 = 7;
-const T_PROPERTY: u32 = 8;
-const T_ENUM_MEMBER: u32 = 9;
-const T_FUNCTION: u32 = 10;
-const T_METHOD: u32 = 11;
-const T_KEYWORD: u32 = 12;
-const T_COMMENT: u32 = 13;
-const T_STRING: u32 = 14;
-const T_NUMBER: u32 = 15;
+pub(crate) const T_NAMESPACE: u32 = 0;
+pub(crate) const T_TYPE: u32 = 1;
+pub(crate) const T_STRUCT: u32 = 2;
+pub(crate) const T_ENUM: u32 = 3;
+pub(crate) const T_INTERFACE: u32 = 4;
+pub(crate) const T_TYPE_PARAM: u32 = 5;
+pub(crate) const T_PARAMETER: u32 = 6;
+pub(crate) const T_VARIABLE: u32 = 7;
+pub(crate) const T_PROPERTY: u32 = 8;
+pub(crate) const T_ENUM_MEMBER: u32 = 9;
+pub(crate) const T_FUNCTION: u32 = 10;
+pub(crate) const T_METHOD: u32 = 11;
+pub(crate) const T_KEYWORD: u32 = 12;
+pub(crate) const T_COMMENT: u32 = 13;
+pub(crate) const T_STRING: u32 = 14;
+pub(crate) const T_NUMBER: u32 = 15;
 
-const M_DECLARATION: u32 = 1;
-const M_READONLY: u32 = 2;
-const M_DEFAULT_LIBRARY: u32 = 4;
+pub(crate) const M_DECLARATION: u32 = 1;
+pub(crate) const M_READONLY: u32 = 2;
+pub(crate) const M_DEFAULT_LIBRARY: u32 = 4;
+/// Internal (not in the protocol legend): a variable that is local to a function or block.
+pub(crate) const M_LOCAL: u32 = 8;
 
-/// One classified stretch of a single line (byte offsets).
-struct Piece {
-    lo: usize,
-    hi: usize,
-    ty: u32,
-    modifiers: u32,
+/// One classified stretch of text (byte offsets).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Piece {
+    pub lo: usize,
+    pub hi: usize,
+    pub ty: u32,
+    pub modifiers: u32,
 }
 
 impl Analysis {
     /// The encoded `data` array of the semantic tokens response.
     pub fn semantic_tokens(&self) -> Vec<u32> {
+        let pieces = self.pieces();
+        let text = self.text().to_string();
+        self.encode(&text, pieces)
+    }
+
+    /// Identifiers (by what they refer to), keywords, literals and comments of the document, in order.
+    pub(crate) fn pieces(&self) -> Vec<Piece> {
         let text = self.text().to_string();
         let mut pieces: Vec<Piece> = Vec::new();
 
@@ -67,6 +77,27 @@ impl Analysis {
         let mut pool = LitPool::new();
         let mut diags = DiagBag::new();
         let tokens = tokenize(FileId(0), &text, &mut interner, &mut pool, &mut diags);
+        // names the symbol table does not know (methods and functions of the standard library are built
+        // in) are still known to the parser to be called
+        let ast = self.prog.module(self.module).ast.clone();
+        let mut called: std::collections::HashMap<u32, u32> = std::collections::HashMap::new();
+        for (id, node) in ast.iter() {
+            if node.span.file != self.file {
+                continue;
+            }
+            match &node.kind {
+                crate::syntax::NodeKind::MethodCall { .. } => {
+                    called.insert(ast.name_span(id).lo, T_METHOD);
+                }
+                crate::syntax::NodeKind::Call { callee, .. } => {
+                    let c = ast.span(*callee);
+                    if matches!(ast.kind(*callee), crate::syntax::NodeKind::Ident(_)) {
+                        called.insert(c.lo, T_FUNCTION);
+                    }
+                }
+                _ => {}
+            }
+        }
         let mut covered: Vec<(usize, usize)> = Vec::new();
         for t in &tokens {
             let (lo, hi) = (t.span.lo as usize, t.span.hi as usize);
@@ -87,6 +118,8 @@ impl Analysis {
                 TokenKind::Ident(_) => {
                     if let Some((ty, modifiers)) = self.classify_identifier(lo as u32) {
                         pieces.push(Piece { lo, hi, ty, modifiers });
+                    } else if let Some(&ty) = called.get(&(lo as u32)) {
+                        pieces.push(Piece { lo, hi, ty, modifiers: M_DEFAULT_LIBRARY });
                     }
                 }
                 _ => {}
@@ -104,7 +137,7 @@ impl Analysis {
         }
 
         pieces.sort_by_key(|p| p.lo);
-        self.encode(&text, pieces)
+        pieces
     }
 
     fn classify_identifier(&self, offset: u32) -> Option<(u32, u32)> {
@@ -144,6 +177,7 @@ impl Analysis {
                 if !ld.mutable {
                     modifiers |= M_READONLY;
                 }
+                modifiers |= M_LOCAL;
                 // parameters are the first locals of their function
                 let is_param = self.prog.fns.iter().any(|f| f.param_locals.contains(&l))
                     || self.prog.modules[ld.module.index()].info.closures.values().any(|c| c.params.contains(&l));
@@ -175,7 +209,7 @@ impl Analysis {
                     let len = end_col - col;
                     let delta_line = line - prev_line;
                     let delta_col = if delta_line == 0 { col - prev_col } else { col };
-                    data.extend_from_slice(&[delta_line, delta_col, len, p.ty, p.modifiers]);
+                    data.extend_from_slice(&[delta_line, delta_col, len, p.ty, p.modifiers & 7]);
                     prev_line = line;
                     prev_col = col;
                 }
