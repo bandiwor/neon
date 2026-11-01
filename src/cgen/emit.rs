@@ -1,6 +1,6 @@
 //! Translation of IR functions to C.
 //!
-//! Registers become typed C locals (`int64_t v3`, `Obj *v7`); containers store 64-bit words, so a
+//! Registers become typed C locals (`i64 v3`, `Obj *v7`); containers store 64-bit words, so a
 //! value is converted with `to_w` / `from_w` at the boundary. Control flow is `goto`, with the
 //! blocks in the compiler's layout order so most jumps are fall-throughs. References live in the
 //! locals the collector learns about through a per-call `Frame`; a variable captured by a closure
@@ -108,36 +108,46 @@ pub fn c_string(s: &str) -> String {
 
 fn num_cty(n: NumTy) -> &'static str {
     match n {
-        NumTy::I8 => "int8_t",
-        NumTy::I16 => "int16_t",
-        NumTy::I32 => "int32_t",
-        NumTy::I64 => "int64_t",
-        NumTy::U8 => "uint8_t",
-        NumTy::U16 => "uint16_t",
-        NumTy::U32 => "uint32_t",
-        NumTy::U64 => "uint64_t",
-        NumTy::F32 => "float",
-        NumTy::F64 => "double",
+        NumTy::I8 => "i8",
+        NumTy::I16 => "i16",
+        NumTy::I32 => "i32",
+        NumTy::I64 => "i64",
+        NumTy::U8 => "u8",
+        NumTy::U16 => "u16",
+        NumTy::U32 => "u32",
+        NumTy::U64 => "u64",
+        NumTy::F32 => "f32",
+        NumTy::F64 => "f64",
     }
 }
 
 fn cty(t: IrTy) -> &'static str {
     match t {
         IrTy::Num(n) => num_cty(n),
-        IrTy::Bool => "uint8_t",
-        IrTy::Char => "uint32_t",
+        IrTy::Bool => "bool",
+        IrTy::Char => "chr",
         IrTy::Ref => "Obj *",
-        IrTy::Unit => "unit_t",
+        // `unit` is `void`, which only a function result can be: a unit parameter or global is a dummy byte
+        IrTy::Unit => "u8",
         IrTy::Packed => unreachable!("packed enums are legalized before code generation"),
+    }
+}
+
+/// The C type of a function's result: `unit` (`void`) for `()`.
+fn ret_cty(t: IrTy) -> &'static str {
+    if t == IrTy::Unit {
+        "unit"
+    } else {
+        cty(t)
     }
 }
 
 fn unsigned_cty(n: NumTy) -> &'static str {
     match n.bits() {
-        8 => "uint8_t",
-        16 => "uint16_t",
-        32 => "uint32_t",
-        _ => "uint64_t",
+        8 => "u8",
+        16 => "u16",
+        32 => "u32",
+        _ => "u64",
     }
 }
 
@@ -378,7 +388,7 @@ impl<'p> Gen<'p> {
 
     fn as_word(&mut self, t: IrTy, e: &str) -> String {
         match t {
-            IrTy::Num(n) if n.is_signed() => format!("(W)(int64_t){}", paren(e)),
+            IrTy::Num(n) if n.is_signed() => format!("(W)(i64){}", paren(e)),
             IrTy::Num(NumTy::F64) => {
                 self.need("f64_bits");
                 format!("f64_bits({e})")
@@ -399,7 +409,7 @@ impl<'p> Gen<'p> {
 
     fn of_word(&mut self, t: IrTy, e: &str) -> String {
         match t {
-            IrTy::Num(n) if n.is_signed() => format!("({})(int64_t){}", num_cty(n), paren(e)),
+            IrTy::Num(n) if n.is_signed() => format!("({})(i64){}", num_cty(n), paren(e)),
             IrTy::Num(NumTy::F64) => {
                 self.need("bits_f64");
                 format!("bits_f64({e})")
@@ -409,8 +419,8 @@ impl<'p> Gen<'p> {
                 format!("bits_f32({e})")
             }
             IrTy::Num(n) => format!("({}){}", num_cty(n), paren(e)),
-            IrTy::Bool => format!("(uint8_t){}", paren(e)),
-            IrTy::Char => format!("(uint32_t){}", paren(e)),
+            IrTy::Bool => format!("(u8){}", paren(e)),
+            IrTy::Char => format!("(u32){}", paren(e)),
             IrTy::Ref => {
                 self.need("objects");
                 format!("W2O({e})")
@@ -431,7 +441,7 @@ impl<'p> Gen<'p> {
         let name = format!("{}_{n}", op.name());
         let signed = ty.is_signed();
         let bits = ty.bits();
-        let wide = if bits <= 32 { "uint32_t" } else { "uint64_t" };
+        let wide = if bits <= 32 { "u32" } else { "u64" };
         let (src, deps): (String, &[&str]) = match op {
             ArithOp::Add | ArithOp::Sub | ArithOp::Mul => {
                 let m = op.name().to_uppercase();
@@ -479,7 +489,7 @@ impl<'p> Gen<'p> {
                 };
                 (
                     format!(
-                        "static {c} {name}({c} a, int64_t n) {{\n#if NEON_CHECKS\n    if (UNLIKELY((uint64_t)n >= {bits})) trap_shift();\n#endif\n    return {body};\n}}"
+                        "static {c} {name}({c} a, i64 n) {{\n#if NEON_CHECKS\n    if (UNLIKELY((u64)n >= {bits})) trap_shift();\n#endif\n    return {body};\n}}"
                     ),
                     &["trap_shift", "hint_expect"],
                 )
@@ -493,7 +503,7 @@ impl<'p> Gen<'p> {
     fn neg_fn(&mut self, ty: NumTy) -> String {
         let (c, n) = (num_cty(ty), ty.name());
         let name = format!("neg_{n}");
-        let wide = if ty.bits() <= 32 { "uint32_t" } else { "uint64_t" };
+        let wide = if ty.bits() <= 32 { "u32" } else { "u64" };
         let check = if ty.is_signed() {
             let (min, _) = limits(ty);
             format!("    if (UNLIKELY(a == {min})) trap_overflow();\n")
@@ -511,7 +521,7 @@ impl<'p> Gen<'p> {
         let (c, n) = (num_cty(ty), ty.name());
         let name = format!("abs_{n}");
         let (min, _) = limits(ty);
-        let wide = if ty.bits() <= 32 { "uint32_t" } else { "uint64_t" };
+        let wide = if ty.bits() <= 32 { "u32" } else { "u64" };
         let src = format!(
             "static {c} {name}({c} a) {{\n#if NEON_CHECKS\n    if (UNLIKELY(a == {min})) trap_overflow();\n#endif\n    return a < 0 ? ({c})(0 - ({wide})a) : a;\n}}"
         );
@@ -541,12 +551,12 @@ impl<'p> Gen<'p> {
             }
             CheckedShl => {
                 let u = unsigned_cty(ty);
-                ("shl", format!("{c} a, int64_t n"), format!("    if ((uint64_t)n >= {bits}) return 0;\n    *r = ({c})(({u})a << n);\n    return 1;"))
+                ("shl", format!("{c} a, i64 n"), format!("    if ((u64)n >= {bits}) return 0;\n    *r = ({c})(({u})a << n);\n    return 1;"))
             }
             CheckedShr => (
                 "shr",
-                format!("{c} a, int64_t n"),
-                format!("    if ((uint64_t)n >= {bits}) return 0;\n    *r = ({c})(a >> n);\n    return 1;"),
+                format!("{c} a, i64 n"),
+                format!("    if ((u64)n >= {bits}) return 0;\n    *r = ({c})(a >> n);\n    return 1;"),
             ),
             CheckedNeg => {
                 let body = if signed {
@@ -558,7 +568,7 @@ impl<'p> Gen<'p> {
             }
             CheckedPow => (
                 "pow",
-                format!("{c} base, uint64_t exp"),
+                format!("{c} base, u64 exp"),
                 format!(
                     "    {c} result = 1, square = base;\n    while (exp > 0) {{\n        if (exp & 1) {{\n            if (OVF_MUL(result, square, &result)) return 0;\n        }}\n        exp >>= 1;\n        if (exp > 0 && OVF_MUL(square, square, &square)) return 0;\n    }}\n    *r = result;\n    return 1;"
                 ),
@@ -580,9 +590,9 @@ impl<'p> Gen<'p> {
         let chk = self.chk_fn(Builtin::CheckedPow, ty, false);
         let (c, n) = (num_cty(ty), ty.name());
         let name = format!("pow_{n}");
-        let wide = if ty.bits() <= 32 { "uint32_t" } else { "uint64_t" };
+        let wide = if ty.bits() <= 32 { "u32" } else { "u64" };
         let src = format!(
-            "static {c} {name}({c} base, uint64_t exp) {{\n#if NEON_CHECKS\n    {c} r;\n    if (UNLIKELY(!{chk}(base, exp, &r))) trap_overflow();\n    return r;\n#else\n    {c} result = 1, square = base;\n    while (exp > 0) {{\n        if (exp & 1) result = ({c})(({wide})result * ({wide})square);\n        exp >>= 1;\n        square = ({c})(({wide})square * ({wide})square);\n    }}\n    return result;\n#endif\n}}"
+            "static {c} {name}({c} base, u64 exp) {{\n#if NEON_CHECKS\n    {c} r;\n    if (UNLIKELY(!{chk}(base, exp, &r))) trap_overflow();\n    return r;\n#else\n    {c} result = 1, square = base;\n    while (exp > 0) {{\n        if (exp & 1) result = ({c})(({wide})result * ({wide})square);\n        exp >>= 1;\n        square = ({c})(({wide})square * ({wide})square);\n    }}\n    return result;\n#endif\n}}"
         );
         self.sysfn(&name, &[], &["trap_overflow", "hint_expect"], true, src);
         name
@@ -592,14 +602,14 @@ impl<'p> Gen<'p> {
     fn f2i_fn(&mut self, to: NumTy) -> String {
         let name = format!("f2i_{}", to.name());
         let src = match to {
-            NumTy::I64 => "static int64_t f2i_i64(double v) {\n    if (v != v) return 0;\n    if (v >= 9223372036854775808.0) return INT64_MAX;\n    if (v <= -9223372036854775808.0) return INT64_MIN;\n    return (int64_t)v;\n}".to_string(),
-            NumTy::U64 => "static uint64_t f2i_u64(double v) {\n    if (!(v > 0)) return 0;\n    if (v >= 18446744073709551616.0) return UINT64_MAX;\n    return (uint64_t)v;\n}".to_string(),
+            NumTy::I64 => "static i64 f2i_i64(f64 v) {\n    if (v != v) return 0;\n    if (v >= 9223372036854775808.0) return INT64_MAX;\n    if (v <= -9223372036854775808.0) return INT64_MIN;\n    return (i64)v;\n}".to_string(),
+            NumTy::U64 => "static u64 f2i_u64(f64 v) {\n    if (!(v > 0)) return 0;\n    if (v >= 18446744073709551616.0) return UINT64_MAX;\n    return (u64)v;\n}".to_string(),
             _ => {
                 self.f2i_fn(NumTy::I64);
                 let (min, max) = limits(to);
                 let c = num_cty(to);
                 format!(
-                    "static {c} {name}(double v) {{\n    int64_t w = f2i_i64(v);\n    return w < {min} ? ({c}){min} : w > (int64_t){max} ? ({c}){max} : ({c})w;\n}}"
+                    "static {c} {name}(f64 v) {{\n    i64 w = f2i_i64(v);\n    return w < {min} ? ({c}){min} : w > (i64){max} ? ({c}){max} : ({c})w;\n}}"
                 )
             }
         };
@@ -610,10 +620,7 @@ impl<'p> Gen<'p> {
     // ---- function pointer types ------------------------------------------------------------------
 
     fn fnptr(&mut self, ret: IrTy, args: &[IrTy]) -> String {
-        if ret == IrTy::Unit || args.contains(&IrTy::Unit) {
-            self.need("unit");
-        }
-        let mut sig = format!("{} (*)(Obj **", cty(ret));
+        let mut sig = format!("{} (*)(Obj **", ret_cty(ret));
         for a in args {
             sig.push_str(", ");
             sig.push_str(cty(*a));
@@ -665,11 +672,11 @@ impl<'p> Gen<'p> {
             }
             TypeDesc::Num(NumTy::F32) => {
                 self.needs_all(&["sb_float", "bits_f32"]);
-                format!("sb_float(&rt_sb, (double)bits_f32({w}), 1);")
+                format!("sb_float(&rt_sb, (f64)bits_f32({w}), 1);")
             }
             TypeDesc::Num(n) if n.is_signed() => {
                 self.need("sb_i64");
-                format!("sb_i64(&rt_sb, (int64_t){w});")
+                format!("sb_i64(&rt_sb, (i64){w});")
             }
             TypeDesc::Num(_) => {
                 self.need("sb_u64");
@@ -681,11 +688,11 @@ impl<'p> Gen<'p> {
             }
             TypeDesc::Char if nested => {
                 self.need("sb_dbg_char");
-                format!("sb_dbg_char(&rt_sb, (uint32_t){w});")
+                format!("sb_dbg_char(&rt_sb, (u32){w});")
             }
             TypeDesc::Char => {
                 self.need("sb_cp");
-                format!("sb_cp(&rt_sb, (uint32_t){w});")
+                format!("sb_cp(&rt_sb, (u32){w});")
             }
             TypeDesc::Str if nested => {
                 self.needs_all(&["sb_dbg_str", "objects"]);
@@ -835,10 +842,10 @@ impl<'p> Gen<'p> {
                 let at = if f.shift == 0 { "w".to_string() } else { format!("(w >> {})", f.shift) };
                 let expr = match f.kind {
                     PackedKind::Unit => "0".to_string(),
-                    PackedKind::Bool => format!("(W)(uint8_t){at}"),
-                    PackedKind::Char => format!("(W)(uint32_t){at}"),
-                    PackedKind::Int { signed: true } => format!("(W)(int64_t)(int{}_t){at}", f.bits),
-                    PackedKind::Int { signed: false } => format!("(W)(uint{}_t){at}", f.bits),
+                    PackedKind::Bool => format!("(W)(u8){at}"),
+                    PackedKind::Char => format!("(W)(u32){at}"),
+                    PackedKind::Int { signed: true } => format!("(W)(i64)(i{}){at}", f.bits),
+                    PackedKind::Int { signed: false } => format!("(W)(u{}){at}", f.bits),
                 };
                 let _ = writeln!(body, "        {}", self.put_word(*fd, &expr, true));
             }
@@ -887,9 +894,6 @@ impl<'p> Gen<'p> {
             let info = &self.prog.globals[g];
             let t = cty(info.ty);
             globals.push(format!("static {t}{}{};", if t.ends_with('*') { "" } else { " " }, self.gnames[g]));
-            if info.ty == IrTy::Unit {
-                self.need("unit");
-            }
             if info.ty == IrTy::Ref {
                 self.need("objects");
             }
@@ -922,10 +926,11 @@ impl<'p> Gen<'p> {
             params.push(format!("{t}{}a{i}", if t.ends_with('*') { "" } else { " " }));
             args.push(format!("a{i}"));
         }
-        let ret = cty(f.ret);
+        let ret = ret_cty(f.ret);
         let sep = if ret.ends_with('*') { "" } else { " " };
         let header = format!("static {ret}{sep}{name}_clo({})", params.join(", "));
-        let body = format!("{header} {{\n    (void)up;\n    return {name}({});\n}}", args.join(", "));
+        let call = if f.ret == IrTy::Unit { String::new() } else { "return ".to_string() };
+        let body = format!("{header} {{\n    (void)up;\n    {call}{name}({});\n}}", args.join(", "));
         (format!("{header};"), body)
     }
 
@@ -1001,6 +1006,8 @@ impl<'p> Gen<'p> {
         let eff = self.fx.of(id);
         let attr = if f.is_closure || self.guarded[id.index()] {
             ""
+        } else if f.ret == IrTy::Unit {
+            ""
         } else if eff == Effects::NONE {
             self.need("hint_const");
             "CONST_FN "
@@ -1010,11 +1017,8 @@ impl<'p> Gen<'p> {
         } else {
             ""
         };
-        let ret = cty(f.ret);
+        let ret = ret_cty(f.ret);
         let sep = if ret.ends_with('*') { "" } else { " " };
-        if f.ret == IrTy::Unit {
-            self.need("unit");
-        }
         if f.is_closure || f.regs.contains(&IrTy::Ref) {
             self.need("objects");
         }
@@ -1028,9 +1032,6 @@ impl<'p> Gen<'p> {
         for i in 0..nregs {
             if !(used[i] || i < params || (pinned[i] && defined[i])) {
                 continue;
-            }
-            if f.regs[i] == IrTy::Unit {
-                self.need("unit");
             }
             if pinned[i] {
                 cells.push(i);
@@ -1103,16 +1104,12 @@ impl<'p> Gen<'p> {
         }
         if need_frame {
             self.needs_all(&["gcstate", "gc_collect"]);
-            let _ = writeln!(text, "    Obj **fr_roots[{}] = {{{}}};", roots.len(), roots.join(", "));
-            let _ = writeln!(text, "    Frame fr = {{NULL, fr_roots, {}}};", roots.len());
+            let _ = writeln!(text, "    FRAME({});", roots.join(", "));
         }
         if guarded {
             self.need("depth");
             self.need_checked(&["trap_stack", "hint_expect"]);
             let _ = writeln!(text, "    DEPTH_ENTER();");
-        }
-        if need_frame {
-            let _ = writeln!(text, "    fr.up = gc_top;\n    gc_top = &fr;");
         }
         if f.is_closure && !uses_up {
             let _ = writeln!(text, "    (void)up;");
@@ -1133,12 +1130,22 @@ impl<'p> Gen<'p> {
             };
             let _ = writeln!(text, "    c{i} = {init};");
         }
+        // a blank line after a jump and before a label; a jump right before a label gets just one
+        let is_label = |l: &str| l.ends_with(':') && l.starts_with('B') && !l.contains(' ');
+        let is_jump = |l: &str| l.contains("goto B");
+        let mut prev: Option<&String> = None;
         for l in &body_lines {
-            if l.ends_with(':') && l.starts_with('B') && !l.contains(' ') {
+            let after_jump = prev.is_some_and(|p| is_jump(p) && !is_jump(l));
+            let before_label = is_label(l) && prev.is_some_and(|p| !is_label(p));
+            if after_jump || before_label {
+                text.push('\n');
+            }
+            if is_label(l) {
                 let _ = writeln!(text, "{l}");
             } else {
                 let _ = writeln!(text, "    {l}");
             }
+            prev = Some(l);
         }
         text.push('}');
         Ok((proto, text))
@@ -1220,6 +1227,9 @@ impl FnEmit<'_, '_> {
         if !self.used[dst.index()] || self.ty(dst) == IrTy::Unit {
             // nothing reads the result: keep the call, drop plain expressions
             // (a plain variable is still "used": its own assignment would otherwise warn)
+            if self.ty(dst) == IrTy::Unit && expr.contains('(') {
+                return format!("{expr};");
+            }
             let plain_variable = expr.chars().next().is_some_and(|c| c.is_ascii_alphabetic())
                 && expr.chars().all(|c| c.is_ascii_alphanumeric() || c == '_');
             return if expr.contains('(') || plain_variable {
@@ -1255,7 +1265,7 @@ impl FnEmit<'_, '_> {
             self.line("DEPTH_LEAVE();");
         }
         if self.frame {
-            self.line("gc_top = fr.up;");
+            self.line("FRAME_LEAVE();");
         }
     }
 
@@ -1309,9 +1319,10 @@ impl FnEmit<'_, '_> {
                 self.branch(format!("TAG({o}) == {tag}"), *then, *els, next);
             }
             Term::Return(r) => {
-                let e = self.rd(*r);
+                let unit = self.f.ret == IrTy::Unit;
+                let e = if unit { String::new() } else { format!(" {}", self.rd(*r)) };
                 self.epilogue();
-                self.line(format!("return {e};"));
+                self.line(format!("return{e};"));
             }
             Term::Unreachable => {
                 self.g.need("trap_unreach");
@@ -1384,7 +1395,7 @@ impl FnEmit<'_, '_> {
                         ArithOp::Xor => format!("({c})({a} ^ {b})"),
                         ArithOp::Shl | ArithOp::Shr => {
                             let n = self.g.arith_fn(*op, *ty);
-                            format!("{n}({a}, (int64_t){b})")
+                            format!("{n}({a}, (i64){b})")
                         }
                         _ => {
                             let n = self.g.arith_fn(*op, *ty);
@@ -1471,7 +1482,6 @@ impl FnEmit<'_, '_> {
                 self.emit_set(*dst, &format!("({c})TAG({o})"));
             }
             Inst::NewArray { dst, desc, elems } => {
-                self.gc_point();
                 let TypeDesc::Array(e) = prog.desc(*desc) else {
                     return Err("NewArray with a non-array descriptor".into());
                 };
@@ -1490,15 +1500,14 @@ impl FnEmit<'_, '_> {
             Inst::ArrayGet { dst, arr, idx, .. } => {
                 self.g.need("arr_get");
                 let (a, i) = (self.rd(*arr), self.rd(*idx));
-                self.set_word(*dst, &format!("arr_get({a}, (int64_t){i})"));
+                self.set_word(*dst, &format!("arr_get({a}, (i64){i})"));
             }
             Inst::ArraySet { arr, idx, src, .. } => {
                 self.g.need("arr_set");
                 let (a, i, w) = (self.rd(*arr), self.rd(*idx), self.w(*src));
-                self.line(format!("arr_set({a}, (int64_t){i}, {w});"));
+                self.line(format!("arr_set({a}, (i64){i}, {w});"));
             }
             Inst::NewMap { dst, desc, entries } => {
-                self.gc_point();
                 let TypeDesc::Map(k, v) = prog.desc(*desc) else {
                     return Err("NewMap with a non-map descriptor".into());
                 };
@@ -1522,7 +1531,6 @@ impl FnEmit<'_, '_> {
                 self.line(format!("map_put({m}, {k}, {v});"));
             }
             Inst::NewSet { dst, desc, elems } => {
-                self.gc_point();
                 let TypeDesc::Set(e) = prog.desc(*desc) else { return Err("NewSet with a non-set descriptor".into()) };
                 let flags = map_flags(prog, *e, None);
                 self.g.needs_all(&["map_new", "map_put"]);
@@ -1555,7 +1563,6 @@ impl FnEmit<'_, '_> {
                 self.emit_set(*dst, &format!("(({fp})CLO({c})->fn)({})", call_args.join(", ")));
             }
             Inst::MakeClosure { dst, func, captures } => {
-                self.gc_point();
                 self.g.needs_all(&["clo_new", "objects"]);
                 let target = prog.func(*func);
                 let mut fname = self.g.names[func.index()].clone();
@@ -1591,7 +1598,6 @@ impl FnEmit<'_, '_> {
                 self.line(format!("CELL(up[{idx}])->v = {w};"));
             }
             Inst::CloseUpvals { regs } => {
-                self.gc_point();
                 self.g.needs_all(&["cell_new", "objects"]);
                 for r in regs {
                     if !self.pinned[r.index()] {
@@ -1619,7 +1625,6 @@ impl FnEmit<'_, '_> {
     }
 
     fn alloc_agg(&mut self, dst: VReg, tag: u32, fields: &[VReg]) -> Result<(), String> {
-        self.gc_point();
         self.g.needs_all(&["agg_new", "objects"]);
         let mask = self.mask_of(fields)?;
         let ws: Vec<String> = fields.iter().map(|&r| self.w(r)).collect();
@@ -1698,7 +1703,7 @@ impl FnEmit<'_, '_> {
             }
             TypeDesc::Num(NumTy::F32) => {
                 self.g.need("sb_float");
-                format!("sb_float(&rt_sb, (double){e}, 1);")
+                format!("sb_float(&rt_sb, (f64){e}, 1);")
             }
             TypeDesc::Num(n) if n.is_signed() => {
                 self.g.need("sb_i64");
@@ -1729,13 +1734,18 @@ impl FnEmit<'_, '_> {
 
     fn intrinsic(&mut self, dst: VReg, b: Builtin, desc: Option<DescId>, args: &[VReg]) -> Result<(), String> {
         use Builtin::*;
-        if b.effects().allocates() {
+        // these allocate through runtime functions that open with `GC_POINT()` themselves
+        let collects_inside = matches!(
+            b,
+            StrConcat | StrChars | StrToUpper | StrToLower | StrTrim | StrSplit | ArrJoin | MapKeys | SetToArray
+        );
+        if b.effects().allocates() && !collects_inside {
             self.gc_point();
         }
         let a: Vec<String> = args.iter().map(|&r| self.rd(r)).collect();
         let aw = |me: &mut Self, i: usize| me.w(args[i]);
         let dst_ty = self.ty(dst);
-        let int64 = |e: &str| format!("(int64_t){}", paren(e));
+        let int64 = |e: &str| format!("(i64){}", paren(e));
         macro_rules! call {
             ($piece:expr, $e:expr) => {{
                 self.g.need($piece);
@@ -1954,7 +1964,7 @@ impl FnEmit<'_, '_> {
                 let rhs = match b {
                     CheckedNeg => String::new(),
                     CheckedShl | CheckedShr => format!(", {}", int64(&a[1])),
-                    CheckedPow => format!(", (uint64_t){}", paren(&a[1])),
+                    CheckedPow => format!(", (u64){}", paren(&a[1])),
                     _ => format!(", {}", a[1]),
                 };
                 let c = num_cty(ty);
@@ -1997,7 +2007,7 @@ impl FnEmit<'_, '_> {
                     format!("{}({}, {})", if n == NumTy::F32 { "powf" } else { "pow" }, a[0], a[1])
                 } else {
                     let f = self.g.pow_fn(n);
-                    format!("{f}({}, (uint64_t){})", a[0], paren(&a[1]))
+                    format!("{f}({}, (u64){})", a[0], paren(&a[1]))
                 };
                 self.emit_set(dst, &e);
             }

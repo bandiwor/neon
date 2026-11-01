@@ -23,6 +23,7 @@ use rt::Kind;
 pub fn emit_c(prog: &IrProgram) -> Result<String, String> {
     let (out, mut needs, sys) = Gen::new(prog).generate()?;
     needs.always.insert("hdr_stdio".to_string());
+    needs.always.insert("types".to_string());
     if !out.strs.is_empty() {
         needs.always.insert("str_new".to_string());
     }
@@ -260,9 +261,7 @@ mod tests {
         // the traps and the overflow macros are compiled out together with their only users
         let trap = c.find("#if NEON_CHECKS\nstatic NORETURN COLD void trap_overflow").unwrap();
         assert!(trap < c.find("Program: declarations").unwrap());
-        assert!(
-            c.contains("#if NEON_CHECKS\n    int64_t r;") && c.contains("return (int64_t)((uint64_t)a * (uint64_t)b);")
-        );
+        assert!(c.contains("#if NEON_CHECKS\n    i64 r;") && c.contains("return (i64)((u64)a * (u64)b);"));
         let rec = c_of("fn f(n: i64) -> i64 { if n == 0 { 0 } else { 1 + f(n - 1) } } fn main() { println(f(5)); }");
         assert!(
             rec.contains("DEPTH_ENTER();")
@@ -277,7 +276,7 @@ mod tests {
             "fn make() -> fn() -> i64 { var n = 0; || => { n += 1; n } } fn main() { let f = make(); println(f()); println(f()); }",
         );
         assert!(c.contains("cell_new") && c.contains("clo_new") && c.contains("CELL(up[0])->v"));
-        assert!(c.contains("Frame fr") && c.contains("GC_POINT();"));
+        assert!(c.contains("FRAME(") && c.contains("FRAME_LEAVE();") && c.contains("GC_POINT();"));
     }
 
     #[test]

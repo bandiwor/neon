@@ -5,28 +5,39 @@ use super::rt::{Kind::*, Piece};
 pub static PIECES: &[Piece] = &[
     // ---- structs, enums, Option / Result ------------------------------------------------------
     Piece {
-        name: "agg_new",
+        name: "agg_alloc",
         deps: &["obj_new"],
         hdrs: &[],
         kind: Funcs,
         src: r##"/* A struct or one variant of an enum: `n` word-sized fields, `mask` marks the references. */
-static Obj *agg_new(uint32_t tag, uint32_t n, uint64_t mask) {
-    uint32_t i;
+static Obj *agg_alloc(u32 tag, u32 n, u64 mask) {
+    u32 i;
     Agg *g = (Agg *)obj_new(sizeof(Agg) + n * sizeof(W), K_AGG, 0);
     g->h.n = n;
     g->mask = mask;
-    g->h.flags = (uint16_t)tag;
+    g->h.flags = (u16)tag;
     for (i = 0; i < n; i++) g->f[i] = 0;
     return &g->h;
 }"##,
     },
     Piece {
-        name: "agg1",
-        deps: &["agg_new"],
+        name: "agg_new",
+        deps: &["agg_alloc", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static Obj *agg1(uint32_t tag, W payload, int is_ref) {
-    Obj *o = agg_new(tag, 1, is_ref ? 1u : 0u);
+        src: r##"/* What the program calls: the collector may run here, before the new object exists. */
+static Obj *agg_new(u32 tag, u32 n, u64 mask) {
+    GC_POINT();
+    return agg_alloc(tag, n, mask);
+}"##,
+    },
+    Piece {
+        name: "agg1",
+        deps: &["agg_alloc"],
+        hdrs: &[],
+        kind: Funcs,
+        src: r##"static Obj *agg1(u32 tag, W payload, int is_ref) {
+    Obj *o = agg_alloc(tag, 1, is_ref ? 1u : 0u);
     AGG(o)->f[0] = payload;
     return o;
 }"##,
@@ -43,11 +54,11 @@ static Obj *opt_some(W v, int is_ref) {
     },
     Piece {
         name: "opt_none",
-        deps: &["agg_new"],
+        deps: &["agg_alloc"],
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *opt_none(void) {
-    return agg_new(1, 0, 0);
+    return agg_alloc(1, 0, 0);
 }"##,
     },
     Piece {
@@ -71,11 +82,11 @@ static Obj *res_ok(W v, int is_ref) {
     },
     // ---- arrays ----------------------------------------------------------------------------------
     Piece {
-        name: "arr_new",
+        name: "arr_alloc",
         deps: &["obj_new", "rt_malloc"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static Obj *arr_new(size_t cap, int is_ref) {
+        src: r##"static Obj *arr_alloc(size_t cap, int is_ref) {
     Arr *a = (Arr *)obj_new(sizeof(Arr), K_ARR, is_ref ? 1u : 0u);
     a->len = 0;
     a->cap = cap;
@@ -85,8 +96,19 @@ static Obj *res_ok(W v, int is_ref) {
 }"##,
     },
     Piece {
+        name: "arr_new",
+        deps: &["arr_alloc", "gcstate", "gc_collect", "hint_expect"],
+        hdrs: &[],
+        kind: Funcs,
+        src: r##"/* What the program calls: the collector may run here, before the new object exists. */
+static Obj *arr_new(size_t cap, int is_ref) {
+    GC_POINT();
+    return arr_alloc(cap, is_ref);
+}"##,
+    },
+    Piece {
         name: "arr_push",
-        deps: &["arr_new", "rt_realloc"],
+        deps: &["arr_alloc", "rt_realloc"],
         hdrs: &[],
         kind: Funcs,
         src: r##"static void arr_push(Obj *o, W v) {
@@ -105,9 +127,9 @@ static Obj *res_ok(W v, int is_ref) {
         deps: &["objects", "trap_index", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static W arr_get(Obj *o, int64_t i) {
+        src: r##"static W arr_get(Obj *o, i64 i) {
     const Arr *a = ARR(o);
-    if (UNLIKELY((uint64_t)i >= a->len)) trap_index(i, a->len);
+    if (UNLIKELY((u64)i >= a->len)) trap_index(i, a->len);
     return a->a[i];
 }"##,
     },
@@ -116,9 +138,9 @@ static Obj *res_ok(W v, int is_ref) {
         deps: &["objects", "trap_index", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static void arr_set(Obj *o, int64_t i, W v) {
+        src: r##"static void arr_set(Obj *o, i64 i, W v) {
     Arr *a = ARR(o);
-    if (UNLIKELY((uint64_t)i >= a->len)) trap_index(i, a->len);
+    if (UNLIKELY((u64)i >= a->len)) trap_index(i, a->len);
     a->a[i] = v;
 }"##,
     },
@@ -138,9 +160,9 @@ static Obj *res_ok(W v, int is_ref) {
         deps: &["arr_push", "trap_index"],
         hdrs: &["string.h"],
         kind: Funcs,
-        src: r##"static void arr_insert(Obj *o, int64_t i, W v) {
+        src: r##"static void arr_insert(Obj *o, i64 i, W v) {
     Arr *a = ARR(o);
-    if (i < 0 || (uint64_t)i > a->len) trap_index(i, a->len);
+    if (i < 0 || (u64)i > a->len) trap_index(i, a->len);
     arr_push(o, 0);
     memmove(a->a + i + 1, a->a + i, (a->len - 1 - (size_t)i) * sizeof(W));
     a->a[i] = v;
@@ -151,10 +173,10 @@ static Obj *res_ok(W v, int is_ref) {
         deps: &["objects", "trap_index"],
         hdrs: &["string.h"],
         kind: Funcs,
-        src: r##"static W arr_remove(Obj *o, int64_t i) {
+        src: r##"static W arr_remove(Obj *o, i64 i) {
     Arr *a = ARR(o);
     W v;
-    if (i < 0 || (uint64_t)i >= a->len) trap_index(i, a->len);
+    if (i < 0 || (u64)i >= a->len) trap_index(i, a->len);
     v = a->a[i];
     memmove(a->a + i, a->a + i + 1, (a->len - 1 - (size_t)i) * sizeof(W));
     a->len--;
@@ -178,11 +200,11 @@ static Obj *res_ok(W v, int is_ref) {
     },
     Piece {
         name: "arr_clone",
-        deps: &["arr_new"],
+        deps: &["arr_alloc"],
         hdrs: &["string.h"],
         kind: Funcs,
         src: r##"static Obj *arr_clone(Obj *o) {
-    Obj *r = arr_new(ARR(o)->len, ARR(o)->h.flags & 1);
+    Obj *r = arr_alloc(ARR(o)->len, ARR(o)->h.flags & 1);
     if (ARR(o)->len) memcpy(ARR(r)->a, ARR(o)->a, ARR(o)->len * sizeof(W));
     ARR(r)->len = ARR(o)->len;
     return r;
@@ -233,9 +255,9 @@ static void arr_sort(Obj *o, int (*cmp)(W, W)) {
         deps: &["opt_some", "opt_none"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static Obj *arr_try_get(Obj *o, int64_t i) {
+        src: r##"static Obj *arr_try_get(Obj *o, i64 i) {
     const Arr *a = ARR(o);
-    if (i < 0 || (uint64_t)i >= a->len) return opt_none();
+    if (i < 0 || (u64)i >= a->len) return opt_none();
     return opt_some(a->a[i], a->h.flags & 1);
 }"##,
     },
@@ -255,9 +277,9 @@ static void arr_sort(Obj *o, int (*cmp)(W, W)) {
         deps: &["opt_some", "opt_none", "arr_remove"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static Obj *arr_try_remove(Obj *o, int64_t i) {
+        src: r##"static Obj *arr_try_remove(Obj *o, i64 i) {
     const Arr *a = ARR(o);
-    if (i < 0 || (uint64_t)i >= a->len) return opt_none();
+    if (i < 0 || (u64)i >= a->len) return opt_none();
     return opt_some(arr_remove(o, i), a->h.flags & 1);
 }"##,
     },
@@ -304,7 +326,7 @@ static void arr_sort(Obj *o, int (*cmp)(W, W)) {
         hdrs: &[],
         kind: Funcs,
         src: r##"static CONST_FN int cmp_s64(W a, W b) {
-    return ((int64_t)a > (int64_t)b) - ((int64_t)a < (int64_t)b);
+    return ((i64)a > (i64)b) - ((i64)a < (i64)b);
 }"##,
     },
     Piece {
@@ -323,7 +345,7 @@ static void arr_sort(Obj *o, int (*cmp)(W, W)) {
         kind: Funcs,
         src: r##"/* Floats: NaN is unordered and sorts last. */
 static CONST_FN int cmp_f64(W a, W b) {
-    double x = bits_f64(a), y = bits_f64(b);
+    f64 x = bits_f64(a), y = bits_f64(b);
     if (x < y) return -1;
     if (x > y) return 1;
     if (x == y) return 0;
@@ -336,7 +358,7 @@ static CONST_FN int cmp_f64(W a, W b) {
         hdrs: &["math.h"],
         kind: Funcs,
         src: r##"static CONST_FN int cmp_f32(W a, W b) {
-    float x = bits_f32(a), y = bits_f32(b);
+    f32 x = bits_f32(a), y = bits_f32(b);
     if (x < y) return -1;
     if (x > y) return 1;
     if (x == y) return 0;
@@ -355,11 +377,12 @@ static CONST_FN int cmp_f64(W a, W b) {
     // ---- maps and sets -------------------------------------------------------------------------
     Piece {
         name: "map_new",
-        deps: &["obj_new"],
+        deps: &["obj_new", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Maps and sets keep their entries in insertion order; `ix` is an open-addressing hash index. */
 static Obj *map_new(unsigned flags) {
+    GC_POINT();
     Map *m = (Map *)obj_new(sizeof(Map), K_MAP, flags);
     m->len = m->cap = m->ixcap = 0;
     m->k = m->v = NULL;
@@ -372,10 +395,10 @@ static Obj *map_new(unsigned flags) {
         deps: &["objects"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static uint64_t map_hash(const Map *m, W k) {
+        src: r##"static u64 map_hash(const Map *m, W k) {
     if (m->h.flags & MF_KSTR) {
         const Str *s = (const Str *)W2O(k);
-        uint64_t h = 1469598103934665603ULL;
+        u64 h = 1469598103934665603ULL;
         size_t i;
         for (i = 0; i < s->len; i++) h = (h ^ (unsigned char)s->s[i]) * 1099511628211ULL;
         return h;
@@ -395,7 +418,7 @@ static Obj *map_new(unsigned flags) {
 static long map_find(Obj *o, W key) {
     const Map *m = MAP(o);
     size_t mask, h;
-    int32_t e;
+    i32 e;
     if (m->len == 0) return -1;
     mask = m->ixcap - 1;
     h = (size_t)map_hash(m, key) & mask;
@@ -415,8 +438,8 @@ static long map_find(Obj *o, W key) {
     size_t i, c = 8, mask, h;
     while (c < m->cap * 2) c *= 2;
     if (c != m->ixcap) {
-        m->ix = (int32_t *)rt_realloc(m->ix, c * sizeof(int32_t));
-        gc_bytes += (c > m->ixcap ? c - m->ixcap : 0) * sizeof(int32_t);
+        m->ix = (i32 *)rt_realloc(m->ix, c * sizeof(i32));
+        gc_bytes += (c > m->ixcap ? c - m->ixcap : 0) * sizeof(i32);
         m->ixcap = c;
     }
     for (i = 0; i < c; i++) m->ix[i] = -1;
@@ -424,7 +447,7 @@ static long map_find(Obj *o, W key) {
     for (i = 0; i < m->len; i++) {
         h = (size_t)map_hash(m, m->k[i]) & mask;
         while (m->ix[h] >= 0) h = (h + 1) & mask;
-        m->ix[h] = (int32_t)i;
+        m->ix[h] = (i32)i;
     }
 }"##,
     },
@@ -455,7 +478,7 @@ static int map_put(Obj *o, W key, W val) {
     mask = m->ixcap - 1;
     h = (size_t)map_hash(m, key) & mask;
     while (m->ix[h] >= 0) h = (h + 1) & mask;
-    m->ix[h] = (int32_t)m->len;
+    m->ix[h] = (i32)m->len;
     m->len++;
     return 1;
 }"##,
@@ -523,12 +546,13 @@ static int map_del(Obj *o, W key) {
     },
     Piece {
         name: "map_keys",
-        deps: &["arr_new"],
+        deps: &["arr_alloc", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &["string.h"],
         kind: Funcs,
         src: r##"static Obj *map_keys(Obj *o) {
+    GC_POINT();
     const Map *m = MAP(o);
-    Obj *r = arr_new(m->len, (m->h.flags & MF_KREF) != 0);
+    Obj *r = arr_alloc(m->len, (m->h.flags & MF_KREF) != 0);
     if (m->len) memcpy(ARR(r)->a, m->k, m->len * sizeof(W));
     ARR(r)->len = m->len;
     return r;
@@ -536,12 +560,12 @@ static int map_del(Obj *o, W key) {
     },
     Piece {
         name: "map_values",
-        deps: &["arr_new"],
+        deps: &["arr_alloc"],
         hdrs: &["string.h"],
         kind: Funcs,
         src: r##"static Obj *map_values(Obj *o) {
     const Map *m = MAP(o);
-    Obj *r = arr_new(m->len, (m->h.flags & MF_VREF) != 0);
+    Obj *r = arr_alloc(m->len, (m->h.flags & MF_VREF) != 0);
     if (m->len) memcpy(ARR(r)->a, m->v, m->len * sizeof(W));
     ARR(r)->len = m->len;
     return r;
@@ -550,12 +574,13 @@ static int map_del(Obj *o, W key) {
     // ---- closures ---------------------------------------------------------------------------------
     Piece {
         name: "clo_new",
-        deps: &["obj_new"],
+        deps: &["obj_new", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"/* A closure: its code and the cells of the variables it captured. */
-static Obj *clo_new(void (*fn)(void), uint32_t n) {
-    uint32_t i;
+static Obj *clo_new(void (*fn)(void), u32 n) {
+    GC_POINT();
+    u32 i;
     Clo *c = (Clo *)obj_new(sizeof(Clo) + n * sizeof(Obj *), K_CLO, 0);
     c->h.n = n;
     c->fn = fn;
@@ -565,11 +590,12 @@ static Obj *clo_new(void (*fn)(void), uint32_t n) {
     },
     Piece {
         name: "cell_new",
-        deps: &["obj_new"],
+        deps: &["obj_new", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"/* A captured variable lives in a heap cell shared by the function and its closures. */
 static Obj *cell_new(int is_ref, W v) {
+    GC_POINT();
     Cell *c = (Cell *)obj_new(sizeof(Cell), K_CELL, is_ref ? 1u : 0u);
     c->v = v;
     return &c->h;

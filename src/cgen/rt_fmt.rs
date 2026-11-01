@@ -55,7 +55,7 @@ static SB rt_sb;"##,
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Appends a code point as UTF-8. */
-static void sb_cp(SB *b, uint32_t c) {
+static void sb_cp(SB *b, u32 c) {
     char buf[4];
     sb_put(b, buf, utf8_enc(c, buf));
 }"##,
@@ -77,7 +77,7 @@ static Obj *sb_take(void) {
         deps: &["sb_put"],
         hdrs: &["stdio.h"],
         kind: Funcs,
-        src: r##"static void sb_i64(SB *b, int64_t v) {
+        src: r##"static void sb_i64(SB *b, i64 v) {
     char buf[32];
     int n = snprintf(buf, sizeof buf, "%lld", (long long)v);
     sb_put(b, buf, (size_t)n);
@@ -88,7 +88,7 @@ static Obj *sb_take(void) {
         deps: &["sb_put"],
         hdrs: &["stdio.h"],
         kind: Funcs,
-        src: r##"static void sb_u64(SB *b, uint64_t v) {
+        src: r##"static void sb_u64(SB *b, u64 v) {
     char buf[32];
     int n = snprintf(buf, sizeof buf, "%llu", (unsigned long long)v);
     sb_put(b, buf, (size_t)n);
@@ -100,7 +100,7 @@ static Obj *sb_take(void) {
         hdrs: &["math.h", "stdio.h", "stdlib.h"],
         kind: Funcs,
         src: r##"/* The shortest text that reads back as the same number, laid out like `1.0`, `0.1`, `1e16`, `NaN`, `inf`. */
-static void sb_float(SB *b, double v, int single) {
+static void sb_float(SB *b, f64 v, int single) {
     char buf[48], digs[24];
     int nd = 0, e10, prec, i;
     const char *q;
@@ -111,7 +111,7 @@ static void sb_float(SB *b, double v, int single) {
     if (v == 0) { sb_puts(b, "0.0"); return; }
     for (prec = 1; prec <= (single ? 9 : 17); prec++) {
         snprintf(buf, sizeof buf, "%.*e", prec - 1, v);
-        if (single ? (strtof(buf, NULL) == (float)v) : (strtod(buf, NULL) == v)) break;
+        if (single ? (strtof(buf, NULL) == (f32)v) : (strtod(buf, NULL) == v)) break;
     }
     for (q = buf; *q != 'e'; q++)
         if (*q != '.') digs[nd++] = *q;
@@ -138,7 +138,7 @@ static void sb_float(SB *b, double v, int single) {
         hdrs: &["stdio.h"],
         kind: Funcs,
         src: r##"/* One character of a quoted string or character literal (`quote` is the delimiter being used). */
-static void sb_escaped(SB *b, uint32_t c, uint32_t quote) {
+static void sb_escaped(SB *b, u32 c, u32 quote) {
     char buf[16];
     switch (c) {
     case '\n': sb_puts(b, "\\n"); return;
@@ -165,7 +165,7 @@ static void sb_escaped(SB *b, uint32_t c, uint32_t quote) {
         src: r##"/* A string inside a collection: quoted and escaped. */
 static void sb_dbg_str(SB *b, Obj *o) {
     const char *p = STR(o)->s, *end = p + STR(o)->len;
-    uint32_t c;
+    u32 c;
     sb_putc(b, '"');
     while (p < end) {
         p += utf8_dec(p, end, &c);
@@ -179,7 +179,7 @@ static void sb_dbg_str(SB *b, Obj *o) {
         deps: &["sb_escaped", "sb_putc"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static void sb_dbg_char(SB *b, uint32_t c) {
+        src: r##"static void sb_dbg_char(SB *b, u32 c) {
     sb_putc(b, '\'');
     sb_escaped(b, c, '\'');
     sb_putc(b, '\'');
@@ -275,7 +275,7 @@ static char **rt_argv;"##,
         src: r##"/* sys.args: the command-line arguments without the program name. */
 static Obj *rt_args(void) {
     int i;
-    Obj *a = arr_new(rt_argc > 1 ? (size_t)rt_argc - 1 : 0, 1);
+    Obj *a = arr_alloc(rt_argc > 1 ? (size_t)rt_argc - 1 : 0, 1);
     for (i = 1; i < rt_argc; i++) arr_push(a, O2W(str_new(rt_argv[i], strlen(rt_argv[i]))));
     return a;
 }"##,
@@ -286,7 +286,7 @@ static Obj *rt_args(void) {
         deps: &["hint_const"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static CONST_FN int cp_is_digit(uint32_t c) {
+        src: r##"static CONST_FN int cp_is_digit(u32 c) {
     return c >= '0' && c <= '9';
 }"##,
     },
@@ -296,7 +296,7 @@ static Obj *rt_args(void) {
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Unicode White_Space. */
-static CONST_FN int cp_is_space(uint32_t c) {
+static CONST_FN int cp_is_space(u32 c) {
     return (c >= 9 && c <= 13) || c == 32 || c == 0x85 || c == 0xA0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200A) ||
            c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
 }"##,
@@ -307,7 +307,7 @@ static CONST_FN int cp_is_space(uint32_t c) {
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Letters of the common scripts (Latin, Greek, Cyrillic, Armenian, Hebrew, Arabic, Thai, kana, CJK, Hangul). */
-static CONST_FN int cp_is_alpha(uint32_t c) {
+static CONST_FN int cp_is_alpha(u32 c) {
     if (c < 0x80) return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
     return c == 0xAA || c == 0xB5 || c == 0xBA || (c >= 0xC0 && c <= 0x2C1 && c != 0xD7 && c != 0xF7) ||
            (c >= 0x370 && c <= 0x373) || (c >= 0x376 && c <= 0x377) || (c >= 0x37B && c <= 0x37D) || c == 0x386 ||
@@ -325,7 +325,7 @@ static CONST_FN int cp_is_alpha(uint32_t c) {
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Upper case of a code point: ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic. */
-static CONST_FN uint32_t cp_upper(uint32_t c) {
+static CONST_FN u32 cp_upper(u32 c) {
     if (c < 0x80) return (c >= 'a' && c <= 'z') ? c - 32 : c;
     if (c == 0xB5) return 0x39C;
     if (c == 0xFF) return 0x178;
@@ -349,7 +349,7 @@ static CONST_FN uint32_t cp_upper(uint32_t c) {
         deps: &["hint_const"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static CONST_FN uint32_t cp_lower(uint32_t c) {
+        src: r##"static CONST_FN u32 cp_lower(u32 c) {
     if (c < 0x80) return (c >= 'A' && c <= 'Z') ? c + 32 : c;
     if (c == 0x178) return 0xFF;
     if (c >= 0xC0 && c <= 0xDE && c != 0xD7) return c + 32;
@@ -369,13 +369,14 @@ static CONST_FN uint32_t cp_upper(uint32_t c) {
     // ---- more string operations --------------------------------------------------------------------
     Piece {
         name: "str_chars",
-        deps: &["arr_new", "utf8_dec"],
+        deps: &["arr_alloc", "utf8_dec", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *str_chars(Obj *o) {
+    GC_POINT();
     const char *p = STR(o)->s, *end = p + STR(o)->len;
-    Obj *r = arr_new(STR(o)->len, 0);
-    uint32_t c;
+    Obj *r = arr_alloc(STR(o)->len, 0);
+    u32 c;
     while (p < end) {
         p += utf8_dec(p, end, &c);
         ARR(r)->a[ARR(r)->len++] = c;
@@ -385,12 +386,13 @@ static CONST_FN uint32_t cp_upper(uint32_t c) {
     },
     Piece {
         name: "str_upper",
-        deps: &["sb_cp", "sb_puts", "sb_take", "utf8_dec", "cp_upper"],
+        deps: &["sb_cp", "sb_puts", "sb_take", "utf8_dec", "cp_upper", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *str_upper(Obj *o) {
+    GC_POINT();
     const char *p = STR(o)->s, *end = p + STR(o)->len;
-    uint32_t c;
+    u32 c;
     while (p < end) {
         p += utf8_dec(p, end, &c);
         if (c == 0xDF) sb_puts(&rt_sb, "SS"); else sb_cp(&rt_sb, cp_upper(c));
@@ -400,12 +402,13 @@ static CONST_FN uint32_t cp_upper(uint32_t c) {
     },
     Piece {
         name: "str_lower",
-        deps: &["sb_cp", "sb_take", "utf8_dec", "cp_lower"],
+        deps: &["sb_cp", "sb_take", "utf8_dec", "cp_lower", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *str_lower(Obj *o) {
+    GC_POINT();
     const char *p = STR(o)->s, *end = p + STR(o)->len;
-    uint32_t c;
+    u32 c;
     while (p < end) {
         p += utf8_dec(p, end, &c);
         sb_cp(&rt_sb, cp_lower(c));
@@ -421,7 +424,7 @@ static CONST_FN uint32_t cp_upper(uint32_t c) {
         src: r##"/* The part of the string without leading and trailing white space. */
 static void trim_span(const Str *s, const char **b, const char **e) {
     const char *p = s->s, *end = s->s + s->len, *q;
-    uint32_t c;
+    u32 c;
     size_t k;
     while (p < end) {
         k = utf8_dec(p, end, &c);
@@ -441,10 +444,11 @@ static void trim_span(const Str *s, const char **b, const char **e) {
     },
     Piece {
         name: "str_trim",
-        deps: &["trim_span", "str_new"],
+        deps: &["trim_span", "str_new", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *str_trim(Obj *o) {
+    GC_POINT();
     const char *b, *e;
     trim_span(STR(o), &b, &e);
     return str_new(b, (size_t)(e - b));
@@ -452,15 +456,16 @@ static void trim_span(const Str *s, const char **b, const char **e) {
     },
     Piece {
         name: "str_split",
-        deps: &["arr_push", "str_new", "utf8_dec"],
+        deps: &["arr_push", "str_new", "utf8_dec", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &["string.h"],
         kind: Funcs,
         src: r##"/* Pieces between separators; an empty separator splits into characters. */
 static Obj *str_split(Obj *o, Obj *sepo) {
+    GC_POINT();
     const Str *s = STR(o), *sep = STR(sepo);
     const char *p = s->s, *end = s->s + s->len, *q;
-    Obj *r = arr_new(4, 1);
-    uint32_t c;
+    Obj *r = arr_alloc(4, 1);
+    u32 c;
     size_t k;
     if (sep->len == 0) {
         while (p < end) {
@@ -484,10 +489,11 @@ static Obj *str_split(Obj *o, Obj *sepo) {
     },
     Piece {
         name: "str_join",
-        deps: &["sb_take", "sb_put", "sbtype"],
+        deps: &["sb_take", "sb_put", "sbtype", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *str_join(Obj *arr, Obj *sep) {
+    GC_POINT();
     const Arr *a = ARR(arr);
     size_t i;
     for (i = 0; i < a->len; i++) {
@@ -504,10 +510,10 @@ static Obj *str_split(Obj *o, Obj *sepo) {
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Decimal i64 with an optional sign; surrounding white space is ignored. 1 on success. */
-static int parse_i64_try(Obj *o, int64_t *out) {
+static int parse_i64_try(Obj *o, i64 *out) {
     const char *b, *e;
     int neg = 0;
-    uint64_t v = 0;
+    u64 v = 0;
     trim_span(STR(o), &b, &e);
     if (b < e && (*b == '+' || *b == '-')) { neg = *b == '-'; b++; }
     if (b == e) return 0;
@@ -516,8 +522,8 @@ static int parse_i64_try(Obj *o, int64_t *out) {
         if (d > 9 || v > (UINT64_MAX - d) / 10) return 0;
         v = v * 10 + d;
     }
-    if (neg ? v > (uint64_t)INT64_MAX + 1 : v > (uint64_t)INT64_MAX) return 0;
-    *out = neg ? (int64_t)(0 - v) : (int64_t)v;
+    if (neg ? v > (u64)INT64_MAX + 1 : v > (u64)INT64_MAX) return 0;
+    *out = neg ? (i64)(0 - v) : (i64)v;
     return 1;
 }"##,
     },
@@ -527,9 +533,9 @@ static int parse_i64_try(Obj *o, int64_t *out) {
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Decimal u64; a leading `+` is accepted, a `-` is not. */
-static int parse_u64_try(Obj *o, uint64_t *out) {
+static int parse_u64_try(Obj *o, u64 *out) {
     const char *b, *e;
-    uint64_t v = 0;
+    u64 v = 0;
     trim_span(STR(o), &b, &e);
     if (b < e && *b == '+') b++;
     if (b == e) return 0;
@@ -548,7 +554,7 @@ static int parse_u64_try(Obj *o, uint64_t *out) {
         hdrs: &["stdlib.h", "string.h"],
         kind: Funcs,
         src: r##"/* Decimal floating point (`1`, `-2.5`, `.5`, `1e9`, `inf`, `NaN`); no hex, no stray characters. */
-static int parse_f64_try(Obj *o, double *out) {
+static int parse_f64_try(Obj *o, f64 *out) {
     const char *b, *e, *p;
     char *buf, low[10];
     size_t n, i, d1 = 0, d2 = 0;
@@ -588,8 +594,8 @@ static int parse_f64_try(Obj *o, double *out) {
         deps: &["parse_i64_try", "trap_parse"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static int64_t parse_i64(Obj *o) {
-    int64_t v;
+        src: r##"static i64 parse_i64(Obj *o) {
+    i64 v;
     if (!parse_i64_try(o, &v)) trap_parse(o);
     return v;
 }"##,
@@ -599,8 +605,8 @@ static int parse_f64_try(Obj *o, double *out) {
         deps: &["parse_u64_try", "trap_parse"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static uint64_t parse_u64(Obj *o) {
-    uint64_t v;
+        src: r##"static u64 parse_u64(Obj *o) {
+    u64 v;
     if (!parse_u64_try(o, &v)) trap_parse(o);
     return v;
 }"##,
@@ -610,8 +616,8 @@ static int parse_f64_try(Obj *o, double *out) {
         deps: &["parse_f64_try", "trap_parse"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static double parse_f64(Obj *o) {
-    double v;
+        src: r##"static f64 parse_f64(Obj *o) {
+    f64 v;
     if (!parse_f64_try(o, &v)) trap_parse(o);
     return v;
 }"##,
@@ -636,7 +642,7 @@ static int parse_f64_try(Obj *o, double *out) {
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *try_parse_i64(Obj *o) {
-    int64_t v;
+    i64 v;
     return parse_i64_try(o, &v) ? res_ok((W)v, 0) : parse_err(o);
 }"##,
     },
@@ -646,7 +652,7 @@ static int parse_f64_try(Obj *o, double *out) {
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *try_parse_u64(Obj *o) {
-    uint64_t v;
+    u64 v;
     return parse_u64_try(o, &v) ? res_ok(v, 0) : parse_err(o);
 }"##,
     },
@@ -656,7 +662,7 @@ static int parse_f64_try(Obj *o, double *out) {
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *try_parse_f64(Obj *o) {
-    double v;
+    f64 v;
     return parse_f64_try(o, &v) ? res_ok(f64_bits(v), 0) : parse_err(o);
 }"##,
     },
@@ -665,11 +671,11 @@ static int parse_f64_try(Obj *o, double *out) {
         deps: &["utf8_count", "utf8_skip", "utf8_dec", "opt_some", "opt_none"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static Obj *str_get_char(Obj *o, int64_t i) {
+        src: r##"static Obj *str_get_char(Obj *o, i64 i) {
     const Str *s = STR(o);
     const char *end = s->s + s->len, *p;
-    uint32_t c;
-    if (i < 0 || (uint64_t)i >= utf8_count(s->s, s->len)) return opt_none();
+    u32 c;
+    if (i < 0 || (u64)i >= utf8_count(s->s, s->len)) return opt_none();
     p = utf8_skip(s->s, end, (size_t)i);
     utf8_dec(p, end, &c);
     return opt_some(c, 0);
@@ -680,10 +686,10 @@ static int parse_f64_try(Obj *o, double *out) {
         deps: &["utf8_count", "str_substring", "res_ok", "res_err"],
         hdrs: &["stdio.h"],
         kind: Funcs,
-        src: r##"static Obj *str_try_substring(Obj *o, int64_t lo, int64_t hi) {
+        src: r##"static Obj *str_try_substring(Obj *o, i64 lo, i64 hi) {
     size_t n = utf8_count(STR(o)->s, STR(o)->len);
     char msg[96];
-    if (lo < 0 || hi < lo || (uint64_t)hi > n) {
+    if (lo < 0 || hi < lo || (u64)hi > n) {
         snprintf(msg, sizeof msg, "index %lld out of bounds (length %zu)", (long long)(lo < 0 || hi < lo ? lo : hi), n);
         return res_err(msg);
     }
@@ -696,7 +702,7 @@ static int parse_f64_try(Obj *o, double *out) {
         hdrs: &[],
         kind: Funcs,
         src: r##"static Obj *str_index_of(Obj *a, Obj *b) {
-    int64_t at = str_find(a, b);
+    i64 at = str_find(a, b);
     return at < 0 ? opt_none() : opt_some((W)at, 0);
 }"##,
     },
@@ -707,7 +713,7 @@ static int parse_f64_try(Obj *o, double *out) {
         hdrs: &[],
         kind: Decl,
         src: r##"/* `[[fill]align][sign][#][0][width][,|_][.precision][type]` */
-typedef struct { uint32_t fill; int align, sign, alt, zero, grouping, ty; size_t width; long prec; } FSpec;
+typedef struct { u32 fill; int align, sign, alt, zero, grouping, ty; size_t width; long prec; } FSpec;
 enum { FK_SINT, FK_UINT, FK_F64, FK_F32, FK_STR, FK_BOOL, FK_CHAR };   /* what is being formatted */
 static SB fs_tmp;               /* the body, before padding */
 static char fs_err[160];        /* the last error message */"##,
@@ -717,7 +723,7 @@ static char fs_err[160];        /* the last error message */"##,
         deps: &["fmtspec_types"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static int fs_align(uint32_t c) {
+        src: r##"static int fs_align(u32 c) {
     return c == '<' || c == '>' || c == '^' || c == '=';
 }"##,
     },
@@ -727,7 +733,7 @@ static char fs_err[160];        /* the last error message */"##,
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Reads a run of decimal digits; -1 when there is none (saturates for absurd values). */
-static long fs_digits(const uint32_t *c, size_t len, size_t *i) {
+static long fs_digits(const u32 *c, size_t len, size_t *i) {
     size_t start = *i;
     unsigned long v = 0;
     while (*i < len && c[*i] >= '0' && c[*i] <= '9') {
@@ -746,7 +752,7 @@ static long fs_digits(const uint32_t *c, size_t len, size_t *i) {
         src: r##"/* Parses a specification; returns NULL, or a message saying what is wrong with it. */
 static const char *fs_read(FSpec *s, const char *p, size_t n) {
     const char *start = p, *end = p + n, *err = NULL;
-    uint32_t *c = (uint32_t *)rt_malloc((n + 1) * sizeof *c);
+    u32 *c = (u32 *)rt_malloc((n + 1) * sizeof *c);
     size_t len = 0, i = 0;
     long w;
     while (p < end) p += utf8_dec(p, end, &c[len++]);
@@ -787,7 +793,7 @@ static const char *fs_read(FSpec *s, const char *p, size_t n) {
         kind: Funcs,
         src: r##"static const char *fs_unknown(int code, const char *what) {
     char ch[5];
-    ch[utf8_enc((uint32_t)code, ch)] = 0;
+    ch[utf8_enc((u32)code, ch)] = 0;
     snprintf(fs_err, sizeof fs_err, "unknown format code `%s` for %s", ch, what);
     return fs_err;
 }"##,
@@ -799,7 +805,7 @@ static const char *fs_read(FSpec *s, const char *p, size_t n) {
         kind: Funcs,
         src: r##"/* Appends sign + prefix + body to the scratch buffer, padded to the width. */
 static void fs_pad(const char *sign, const char *prefix, const char *body, size_t blen, const FSpec *s, int dflt) {
-    uint32_t fill = s->fill;
+    u32 fill = s->fill;
     int align = s->align;
     size_t len, gap, left = 0, mid = 0, right = 0, i;
     if (s->zero && !align) { fill = '0'; align = '='; }
@@ -848,19 +854,19 @@ static void fs_group(const char *digits, size_t n, int sep, size_t size) {
         hdrs: &["stdio.h", "string.h"],
         kind: Funcs,
         src: r##"/* An integer given as a sign and a magnitude. */
-static const char *fs_int(int neg, uint64_t mag, const FSpec *s) {
+static const char *fs_int(int neg, u64 mag, const FSpec *s) {
     int code = s->ty ? s->ty : 'd';
     char digits[72], *d = digits + sizeof digits;
     const char *prefix = "";
     size_t base = 10, size = 3, n;
-    if (strchr("eEfFgG%", code)) return fs_float_spec(neg ? -(double)mag : (double)mag, s);
+    if (strchr("eEfFgG%", code)) return fs_float_spec(neg ? -(f64)mag : (f64)mag, s);
     if (!strchr("dnboxXc", code)) return fs_unknown(code, "an integer");
     if (s->prec >= 0) return "a precision is not allowed for integers";
     if (code == 'c') {
         char ch[5];
         if (s->sign != '-' || s->alt || s->grouping) return "sign, `#` and grouping are not allowed with the type `c`";
         if (neg || mag > 0x10FFFF || (mag >= 0xD800 && mag <= 0xDFFF)) return "value is not a valid character";
-        fs_pad("", "", ch, utf8_enc((uint32_t)mag, ch), s, '<');
+        fs_pad("", "", ch, utf8_enc((u32)mag, ch), s, '<');
         return NULL;
     }
     if (code == 'b') { base = 2; prefix = "0b"; size = 4; }
@@ -903,7 +909,7 @@ static void fs_zeros(char *t) {
         hdrs: &["stdio.h"],
         kind: Funcs,
         src: r##"/* snprintf("%.*<conv>") into a fresh buffer. */
-static char *fs_printf(const char *conv, int prec, double v) {
+static char *fs_printf(const char *conv, int prec, f64 v) {
     int n = snprintf(NULL, 0, conv, prec, v);
     char *buf = (char *)rt_malloc((size_t)n + 1);
     snprintf(buf, (size_t)n + 1, conv, prec, v);
@@ -916,10 +922,10 @@ static char *fs_printf(const char *conv, int prec, double v) {
         hdrs: &["math.h", "stdio.h", "stdlib.h", "string.h"],
         kind: Funcs,
         src: r##"/* A float formatted with an explicit type (or a precision). */
-static const char *fs_float_spec(double v, const FSpec *s) {
+static const char *fs_float_spec(f64 v, const FSpec *s) {
     int code = s->ty ? s->ty : 'g';
     int upper = code >= 'A' && code <= 'Z', neg;
-    double a;
+    f64 a;
     char *t, *ex;
     if (!strchr("eEfFgG%", code)) return fs_unknown(code, "a float");
     neg = signbit(v) && !isnan(v);
@@ -988,7 +994,7 @@ static const char *fs_float_spec(double v, const FSpec *s) {
         hdrs: &["string.h", "stdlib.h"],
         kind: Funcs,
         src: r##"/* A float formatted without type and precision prints like `print`, padded and grouped. */
-static const char *fs_float(double v, int single, const FSpec *s) {
+static const char *fs_float(f64 v, int single, const FSpec *s) {
     const char *body;
     int neg = 0;
     size_t end = 0, n;
@@ -1053,18 +1059,18 @@ static Obj *fmt_value(int kind, W bits, Obj *spec) {
     if (!err) {
         int intcode = s.ty == 'd' || s.ty == 'b' || s.ty == 'o' || s.ty == 'x' || s.ty == 'X' || s.ty == 'n';
         switch (kind) {
-        case FK_SINT: err = fs_int((int64_t)bits < 0, (int64_t)bits < 0 ? 0 - bits : bits, &s); break;
+        case FK_SINT: err = fs_int((i64)bits < 0, (i64)bits < 0 ? 0 - bits : bits, &s); break;
         case FK_UINT: err = fs_int(0, bits, &s); break;
         case FK_F64:  err = fs_float(bits_f64(bits), 0, &s); break;
-        case FK_F32:  err = fs_float((double)bits_f32(bits), 1, &s); break;
+        case FK_F32:  err = fs_float((f64)bits_f32(bits), 1, &s); break;
         case FK_STR:  err = fs_str(STR(W2O(bits))->s, STR(W2O(bits))->len, &s); break;
         case FK_BOOL:
             if (intcode) err = fs_int(0, bits != 0, &s);
             else err = fs_str(bits ? "true" : "false", bits ? 4 : 5, &s);
             break;
         default:
-            if (intcode) err = fs_int(0, (uint32_t)bits, &s);
-            else { err = fs_str(ch, utf8_enc((uint32_t)bits, ch), &s); }
+            if (intcode) err = fs_int(0, (u32)bits, &s);
+            else { err = fs_str(ch, utf8_enc((u32)bits, ch), &s); }
             break;
         }
     }

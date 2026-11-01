@@ -5,6 +5,29 @@ use super::rt::{Kind::*, Piece};
 
 pub static PIECES: &[Piece] = &[
     Piece {
+        name: "types",
+        deps: &[],
+        hdrs: &[],
+        kind: Decl,
+        src: r##"/* The type names of Neon. `chr` is a Unicode scalar value (`char` is C's own); `unit` is `void`, used
+ * for the result of functions that return nothing. */
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef float f32;
+typedef double f64;
+typedef u32 chr;
+typedef void unit;
+#if !(defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L)
+typedef u8 bool;   /* C23 has a `bool` of its own */
+#endif"##,
+    },
+    Piece {
         name: "checks",
         deps: &[],
         hdrs: &[],
@@ -88,18 +111,11 @@ pub static PIECES: &[Piece] = &[
     Piece { name: "hdr_math", deps: &[], hdrs: &["math.h"], kind: Decl, src: "" },
     Piece { name: "hdr_stdio", deps: &[], hdrs: &["stdio.h"], kind: Decl, src: "" },
     Piece {
-        name: "unit",
-        deps: &[],
-        hdrs: &[],
-        kind: Decl,
-        src: r##"typedef uint8_t unit_t;  /* the type `()`: always 0 */"##,
-    },
-    Piece {
         name: "word",
         deps: &[],
         hdrs: &[],
         kind: Decl,
-        src: r##"typedef uint64_t W;     /* a machine word: any value stored inside a container */"##,
+        src: r##"typedef u64 W;     /* a machine word: any value stored inside a container */"##,
     },
     Piece {
         name: "objects",
@@ -118,14 +134,14 @@ enum { MF_KREF = 1, MF_VREF = 2, MF_KSTR = 4, MF_SET = 8 };
 
 typedef struct Obj Obj;
 struct Obj {
-    uint8_t kind, mark;
-    uint16_t flags;
-    uint32_t n;
+    u8 kind, mark;
+    u16 flags;
+    u32 n;
 };
 typedef struct { Obj h; size_t len; char s[]; } Str;                       /* UTF-8, NUL-terminated */
 typedef struct { Obj h; size_t len, cap; W *a; } Arr;
-typedef struct { Obj h; uint64_t mask; W f[]; } Agg;                       /* mask: which fields are references */
-typedef struct { Obj h; size_t len, cap, ixcap; W *k, *v; int32_t *ix; } Map;  /* insertion ordered + hash index */
+typedef struct { Obj h; u64 mask; W f[]; } Agg;                       /* mask: which fields are references */
+typedef struct { Obj h; size_t len, cap, ixcap; W *k, *v; i32 *ix; } Map;  /* insertion ordered + hash index */
 typedef struct { Obj h; void (*fn)(void); Obj *c[]; } Clo;                 /* code + captured cells */
 typedef struct { Obj h; W v; } Cell;                                       /* a captured variable */
 
@@ -170,6 +186,9 @@ static Frame *gc_top;          /* innermost registered frame */
 static size_t gc_next = (size_t)4 << 20;   /* collect when gc_bytes reaches this */
 static Obj **gc_stack;         /* work list of the mark phase */
 static size_t gc_nstack, gc_capstack;
+/* FRAME(&a, &b, ...) at the top of a function registers its reference variables; FRAME_LEAVE() before every return. */
+#define FRAME(...) Obj **fr_roots[] = {__VA_ARGS__}; Frame fr = {gc_top, fr_roots, sizeof fr_roots / sizeof *fr_roots}; gc_top = &fr
+#define FRAME_LEAVE() (gc_top = fr.up)
 #ifdef NEON_GC_STRESS   /* -DNEON_GC_STRESS: collect at every safe-point, to test the collector */
 #define GC_POINT() gc_collect()
 #else
@@ -249,7 +268,7 @@ static unsigned rt_depth;
         deps: &["rt_fail"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static NORETURN COLD void trap_index(int64_t index, size_t len) {
+        src: r##"static NORETURN COLD void trap_index(i64 index, size_t len) {
     rt_fail("index %lld out of bounds (length %zu)", (long long)index, len);
 }"##,
     },
@@ -400,9 +419,9 @@ static unsigned rt_depth;
         o = (Obj *)(g + 1);
         gc_bytes += size;
     }
-    o->kind = (uint8_t)kind;
+    o->kind = (u8)kind;
     o->mark = 0;
-    o->flags = (uint16_t)flags;
+    o->flags = (u16)flags;
     o->n = 0;
     return o;
 }"##,
@@ -463,7 +482,7 @@ static unsigned rt_depth;
         src: r##"/* Bytes an object holds outside its cell (array and map buffers). */
 static size_t gc_extern(const Obj *o) {
     if (o->kind == K_ARR) return ((const Arr *)o)->cap * sizeof(W);
-    if (o->kind == K_MAP) return ((const Map *)o)->cap * 2 * sizeof(W) + ((const Map *)o)->ixcap * sizeof(int32_t);
+    if (o->kind == K_MAP) return ((const Map *)o)->cap * 2 * sizeof(W) + ((const Map *)o)->ixcap * sizeof(i32);
     return 0;
 }"##,
     },
@@ -552,7 +571,7 @@ static void gc_collect(void) {
         deps: &["hint_const"],
         hdrs: &["string.h"],
         kind: Funcs,
-        src: r##"static CONST_FN W f64_bits(double x) {
+        src: r##"static CONST_FN W f64_bits(f64 x) {
     W w;
     memcpy(&w, &x, sizeof w);
     return w;
@@ -563,8 +582,8 @@ static void gc_collect(void) {
         deps: &["hint_const"],
         hdrs: &["string.h"],
         kind: Funcs,
-        src: r##"static CONST_FN double bits_f64(W w) {
-    double x;
+        src: r##"static CONST_FN f64 bits_f64(W w) {
+    f64 x;
     memcpy(&x, &w, sizeof x);
     return x;
 }"##,
@@ -574,8 +593,8 @@ static void gc_collect(void) {
         deps: &["hint_const"],
         hdrs: &["string.h"],
         kind: Funcs,
-        src: r##"static CONST_FN W f32_bits(float x) {
-    uint32_t u;
+        src: r##"static CONST_FN W f32_bits(f32 x) {
+    u32 u;
     memcpy(&u, &x, sizeof u);
     return u;
 }"##,
@@ -585,9 +604,9 @@ static void gc_collect(void) {
         deps: &["hint_const"],
         hdrs: &["string.h"],
         kind: Funcs,
-        src: r##"static CONST_FN float bits_f32(W w) {
-    uint32_t u = (uint32_t)w;
-    float x;
+        src: r##"static CONST_FN f32 bits_f32(W w) {
+    u32 u = (u32)w;
+    f32 x;
     memcpy(&x, &u, sizeof x);
     return x;
 }"##,
@@ -599,7 +618,7 @@ static void gc_collect(void) {
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Decodes the code point at p; returns the number of bytes it takes (a stray byte counts as one). */
-static size_t utf8_dec(const char *p, const char *end, uint32_t *cp) {
+static size_t utf8_dec(const char *p, const char *end, u32 *cp) {
     unsigned b0 = (unsigned char)p[0];
     size_t left = (size_t)(end - p);
     if (b0 < 0x80) { *cp = b0; return 1; }
@@ -625,7 +644,7 @@ static size_t utf8_dec(const char *p, const char *end, uint32_t *cp) {
         deps: &[],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static size_t utf8_enc(uint32_t c, char *out) {
+        src: r##"static size_t utf8_enc(u32 c, char *out) {
     if (c < 0x80) { out[0] = (char)c; return 1; }
     if (c < 0x800) { out[0] = (char)(0xC0 | (c >> 6)); out[1] = (char)(0x80 | (c & 0x3F)); return 2; }
     if (c < 0x10000) {
@@ -660,7 +679,7 @@ static PURE_FN size_t utf8_count(const char *p, size_t n) {
         kind: Funcs,
         src: r##"/* The position after n code points (or the end). */
 static const char *utf8_skip(const char *p, const char *end, size_t n) {
-    uint32_t c;
+    u32 c;
     while (n > 0 && p < end) {
         p += utf8_dec(p, end, &c);
         n--;
@@ -684,10 +703,11 @@ static const char *utf8_skip(const char *p, const char *end, size_t n) {
     },
     Piece {
         name: "str_cat",
-        deps: &["obj_new"],
+        deps: &["obj_new", "gcstate", "gc_collect", "hint_expect"],
         hdrs: &["string.h"],
         kind: Funcs,
         src: r##"static Obj *str_cat(Obj *a, Obj *b) {
+    GC_POINT();
     size_t n = STR(a)->len, m = STR(b)->len;
     Str *o = (Str *)obj_new(sizeof(Str) + n + m + 1, K_STR, 0);
     o->len = n + m;
@@ -726,8 +746,8 @@ static PURE_FN int str_cmp(const Obj *a, const Obj *b) {
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Length in characters. */
-static int64_t str_len(Obj *o) {
-    return (int64_t)utf8_count(STR(o)->s, STR(o)->len);
+static i64 str_len(Obj *o) {
+    return (i64)utf8_count(STR(o)->s, STR(o)->len);
 }"##,
     },
     Piece {
@@ -751,9 +771,9 @@ static PURE_FN long str_pos(const Obj *a, const Obj *b) {
         hdrs: &[],
         kind: Funcs,
         src: r##"/* Character index of the first occurrence of `sub`, or -1. */
-static int64_t str_find(Obj *a, Obj *b) {
+static i64 str_find(Obj *a, Obj *b) {
     long at = str_pos(a, b);
-    return at < 0 ? -1 : (int64_t)utf8_count(STR(a)->s, (size_t)at);
+    return at < 0 ? -1 : (i64)utf8_count(STR(a)->s, (size_t)at);
 }"##,
     },
     Piece {
@@ -779,11 +799,11 @@ static int64_t str_find(Obj *a, Obj *b) {
         deps: &["str_new", "utf8_count", "utf8_skip", "trap_index"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static Obj *str_substring(Obj *o, int64_t lo, int64_t hi) {
+        src: r##"static Obj *str_substring(Obj *o, i64 lo, i64 hi) {
     const Str *s = STR(o);
     size_t n = utf8_count(s->s, s->len);
     const char *end = s->s + s->len, *b, *e;
-    if (lo < 0 || hi < lo || (uint64_t)hi > n) trap_index(lo < 0 || hi < lo ? lo : hi, n);
+    if (lo < 0 || hi < lo || (u64)hi > n) trap_index(lo < 0 || hi < lo ? lo : hi, n);
     b = utf8_skip(s->s, end, (size_t)lo);
     e = utf8_skip(b, end, (size_t)(hi - lo));
     return str_new(b, (size_t)(e - b));
@@ -794,11 +814,11 @@ static int64_t str_find(Obj *a, Obj *b) {
         deps: &["utf8_count", "utf8_skip", "utf8_dec", "trap_index"],
         hdrs: &[],
         kind: Funcs,
-        src: r##"static uint32_t str_char_at(Obj *o, int64_t i) {
+        src: r##"static u32 str_char_at(Obj *o, i64 i) {
     const Str *s = STR(o);
     const char *end = s->s + s->len, *p;
-    uint32_t c;
-    if (i < 0 || (uint64_t)i >= utf8_count(s->s, s->len)) trap_index(i, utf8_count(s->s, s->len));
+    u32 c;
+    if (i < 0 || (u64)i >= utf8_count(s->s, s->len)) trap_index(i, utf8_count(s->s, s->len));
     p = utf8_skip(s->s, end, (size_t)i);
     utf8_dec(p, end, &c);
     return c;
