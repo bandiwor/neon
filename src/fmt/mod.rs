@@ -563,18 +563,6 @@ fn split_line(line: &Line, toks: &[Token], cx: &Ctx<'_>, lay: &Layout) -> Option
     // breaks[j]: a new line starts at the j-th token
     let mut breaks: Vec<usize> = Vec::new();
 
-    // binary operators: before each of the loosest
-    let ops: Vec<usize> = (1..at.len()).filter(|&j| top(j) && cx.binary[at[j].1]).collect();
-    if let Some(class) = ops.iter().map(|&j| binary_class(kind(j))).min() {
-        breaks = ops.into_iter().filter(|&j| binary_class(kind(j)) == class).collect();
-    }
-    // method chains
-    if breaks.is_empty() {
-        let dots: Vec<usize> = (1..at.len()).filter(|&j| top(j) && kind(j) == TokenKind::Dot).collect();
-        if dots.len() >= 2 {
-            breaks = dots;
-        }
-    }
     // where the pair opened by the j-th token is broken open: after the opener, between the items, before the closer
     let pos_of = |ti: usize| at.iter().position(|&(_, t)| t == ti);
     let pair_in_line = |j: usize| -> Option<usize> {
@@ -600,14 +588,28 @@ fn split_line(line: &Line, toks: &[Token], cx: &Ctx<'_>, lay: &Layout) -> Option
         starts.push(c);
         starts
     };
-    // a block after a broken condition is opened up as well
-    if !breaks.is_empty() {
-        for j in 0..at.len() {
-            if kind(j) == TokenKind::LBrace {
-                if let Some(c) = pair_in_line(j) {
-                    breaks.extend(open_up(j, c));
-                }
+
+    // blocks and literals in braces first: `if a == 0 { x } elif a < 9 { y }` opens up where the braces
+    // are, instead of breaking the conditions in two
+    for j in 0..at.len() {
+        if kind(j) == TokenKind::LBrace {
+            if let Some(c) = pair_in_line(j) {
+                breaks.extend(open_up(j, c));
             }
+        }
+    }
+    // binary operators: before each of the loosest
+    if breaks.is_empty() {
+        let ops: Vec<usize> = (1..at.len()).filter(|&j| top(j) && cx.binary[at[j].1]).collect();
+        if let Some(class) = ops.iter().map(|&j| binary_class(kind(j))).min() {
+            breaks = ops.into_iter().filter(|&j| binary_class(kind(j)) == class).collect();
+        }
+    }
+    // method chains
+    if breaks.is_empty() {
+        let dots: Vec<usize> = (1..at.len()).filter(|&j| top(j) && kind(j) == TokenKind::Dot).collect();
+        if dots.len() >= 2 {
+            breaks = dots;
         }
     }
     // the last bracket pair that opens and closes on the line

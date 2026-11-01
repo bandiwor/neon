@@ -1,0 +1,85 @@
+// `term`: the terminal, and keys without Enter.
+//
+//     import "term" as term;
+//     term::raw(true);
+//     loop {
+//         match term::read_key() {
+//             Option::Some(key) => if key == "q" { break; },
+//             Option::None => break,
+//         }
+//     }
+//     term::raw(false);
+//
+// A key is a name: the character itself for a printable one ("a", "A", " ", "я"), otherwise
+// "enter", "esc", "tab", "backspace", "delete", "insert", "up", "down", "left", "right", "home",
+// "end", "pageup", "pagedown", "f1" .. "f12", with a modifier in front: "ctrl+c", "alt+x",
+// "shift+tab", "ctrl+up". When the input is not a terminal (a pipe, a file) the keys are read from
+// it, as the bytes a terminal would send, so a program driven by keys can be driven by a file.
+
+// Raw mode: keys arrive one at a time, without Enter and without being echoed. Switch it off before
+// the program ends (a terminal is restored in any case). In raw mode Ctrl+C is a key, "ctrl+c".
+// True if the terminal is in the requested mode afterwards.
+export fn raw(on: bool) -> bool;
+
+// The next key; None at the end of the input.
+export fn read_key() -> Option<string>;
+
+// The next key if one arrives within `ms` milliseconds, else None. When the input has ended it
+// answers "eof" at once, so a loop that polls does not spin for ever.
+export fn poll_key(ms: i64) -> Option<string>;
+
+// The size of the terminal in characters.
+export fn width() -> i64;
+
+export fn height() -> i64;
+
+// Are the input and the output a terminal?
+export fn is_tty() -> bool;
+
+// ---- drawing: ANSI escapes ---------------------------------------------------------------
+
+// Clears the screen and puts the cursor in the top left corner.
+export fn clear() {
+    print("\x1b[2J\x1b[H");
+}
+
+// Clears from the cursor to the end of the screen, or to the end of the line.
+export fn clear_below() {
+    print("\x1b[J");
+}
+
+export fn clear_line() {
+    print("\x1b[K");
+}
+
+// Puts the cursor at column `x`, row `y` (both from 0).
+export fn move_to(x: i64, y: i64) {
+    print(f"\x1b[{y + 1};{x + 1}H");
+}
+
+export fn hide_cursor() {
+    print("\x1b[?25l");
+}
+
+export fn show_cursor() {
+    print("\x1b[?25h");
+}
+
+// Another screen that is thrown away at the end, so the program does not scribble over the
+// terminal's history: `enter_screen()` first, `leave_screen()` last.
+export fn enter_screen() {
+    print("\x1b[?1049h\x1b[2J\x1b[H");
+}
+
+export fn leave_screen() {
+    print("\x1b[?1049l");
+}
+
+// The text in a color (0-255 of the 256-color palette), then back to normal.
+export fn paint(text: string, color: i64) -> string {
+    f"\x1b[38;5;{color}m{text}\x1b[0m"
+}
+
+export fn bold(text: string) -> string {
+    f"\x1b[1m{text}\x1b[0m"
+}

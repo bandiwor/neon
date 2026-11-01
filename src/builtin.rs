@@ -13,7 +13,8 @@ macro_rules! builtins {
         impl Builtin {
             pub const ALL: &'static [Builtin] = &[$(Builtin::$variant,)*];
 
-            /// Source-level name (method or function name).
+            /// Source-level name (method or function name); a native function of a standard module is
+            /// `module.function`.
             pub fn name(self) -> &'static str {
                 match self { $(Builtin::$variant => $name,)* }
             }
@@ -124,8 +125,30 @@ builtins! {
     CheckedShl = "checked_shl",
     CheckedShr = "checked_shr",
     ReadLine = "read_line",
-    // `sys.args`: the command-line arguments after the program, as an array of strings
-    Args = "args",
+    // the native functions of the standard modules (`import "sys" as sys;`): see `src/stdlib`
+    Args = "sys.args",
+    SysExit = "sys.exit",
+    SysEnv = "sys.env",
+    SysPlatform = "sys.platform",
+    SysNowMs = "sys.now_ms",
+    SysTicksMs = "sys.ticks_ms",
+    SysSleep = "sys.sleep",
+    FsRead = "fs.read_file",
+    FsWrite = "fs.write_file",
+    FsAppend = "fs.append_file",
+    FsExists = "fs.exists",
+    FsIsFile = "fs.is_file",
+    FsIsDir = "fs.is_dir",
+    FsList = "fs.list_dir",
+    FsCreateDir = "fs.create_dir",
+    FsRemove = "fs.remove",
+    FsRename = "fs.rename",
+    TermRaw = "term.raw",
+    TermReadKey = "term.read_key",
+    TermPollKey = "term.poll_key",
+    TermWidth = "term.width",
+    TermHeight = "term.height",
+    TermIsTty = "term.is_tty",
 }
 
 impl Builtin {
@@ -143,6 +166,11 @@ impl Builtin {
             Input | ReadLine => Effects::IO.union(T).union(A),
             // reads state of the host, builds a fresh array
             Args => Effects::IO.union(A),
+            // the host: nothing about it can be assumed, so none of it moves, merges or disappears
+            SysExit => Effects::IO.union(T),
+            SysEnv | SysPlatform | FsRead | FsList | TermReadKey | TermPollKey => Effects::IO.union(A),
+            SysNowMs | SysTicksMs | SysSleep | FsWrite | FsAppend | FsExists | FsIsFile | FsIsDir | FsCreateDir
+            | FsRemove | FsRename | TermRaw | TermWidth | TermHeight | TermIsTty => Effects::IO.union(A),
             Panic | Assert => T,
             ToString => R.union(A),
             Format => R.union(A).union(T),
@@ -170,7 +198,7 @@ impl Builtin {
     /// Builtins whose result is a brand new array, map or set that nothing else refers to.
     pub fn returns_fresh_container(self) -> bool {
         use Builtin::*;
-        matches!(self, ArrClone | StrSplit | StrChars | MapKeys | MapValues | SetToArray | Args)
+        matches!(self, ArrClone | StrSplit | StrChars | MapKeys | MapValues | SetToArray | Args | FsList)
     }
 
     /// Whether the object passed as argument `i` may outlive the call: stored in the heap or handed
@@ -194,7 +222,9 @@ impl Builtin {
             | CharIsWhitespace | CharToUpper | CharToLower | StrTryParseI64 | StrTryParseU64 | StrTryParseF64
             | StrGetChar | StrTrySubstring | StrIndexOf | ArrGet | ArrTryPop | ArrTryRemove | MapGet | CheckedAdd
             | CheckedSub | CheckedMul | CheckedDiv | CheckedRem | CheckedPow | CheckedNeg | CheckedShl | CheckedShr
-            | ReadLine | Args => false,
+            | ReadLine | Args | SysExit | SysEnv | SysPlatform | SysNowMs | SysTicksMs | SysSleep | FsRead
+            | FsWrite | FsAppend | FsExists | FsIsFile | FsIsDir | FsList | FsCreateDir | FsRemove | FsRename
+            | TermRaw | TermReadKey | TermPollKey | TermWidth | TermHeight | TermIsTty => false,
         }
     }
 
@@ -286,7 +316,22 @@ impl Builtin {
                 | CheckedShl
                 | CheckedShr
                 | ReadLine
+                | SysEnv
+                | FsRead
+                | FsWrite
+                | FsAppend
+                | FsList
+                | FsCreateDir
+                | FsRemove
+                | FsRename
+                | TermReadKey
+                | TermPollKey
         )
+    }
+
+    /// The native function `module.function` of a standard module.
+    pub fn native(qualified: &str) -> Option<Builtin> {
+        qualified.contains('.').then(|| Builtin::ALL.iter().copied().find(|b| b.name() == qualified)).flatten()
     }
 }
 
@@ -310,7 +355,7 @@ mod tests {
                 assert!(!e.traps(), "{b:?}");
             }
             // builtins returning Option/Result build it
-            if b.returns_adt() && !matches!(b, Builtin::ReadLine) {
+            if b.returns_adt() && !matches!(b, Builtin::ReadLine | Builtin::TermReadKey | Builtin::TermPollKey) {
                 assert!(e.allocates(), "{b:?}");
             }
             assert!(!e.diverges(), "{b:?}");

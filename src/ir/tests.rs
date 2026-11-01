@@ -1627,7 +1627,7 @@ fn run_ir_output_before_trap(src: &str) -> String {
 
 #[test]
 fn sys_args_reaches_the_program_with_and_without_optimization() {
-    let src = "fn main() { for a in sys.args { println(a); } println(sys.args.len()); }";
+    let src = "import \"sys\" as sys;\nfn main() { for a in sys::args() { println(a); } println(sys::args().len()); }";
     let ir = compile(src);
     let r = interp::run_with_args(&ir, &[], &["x", "y z"]);
     assert_eq!((r.trap, r.output.as_str()), (None, "x\ny z\n2\n"));

@@ -15,7 +15,7 @@ use std::time::Duration;
 
 use super::editor::Key;
 
-fn stty(args: &[&str]) -> io::Result<String> {
+pub(crate) fn stty(args: &[&str]) -> io::Result<String> {
     let out = Command::new("stty").args(args).stdin(Stdio::inherit()).stderr(Stdio::null()).output()?;
     if !out.status.success() {
         return Err(io::Error::other(format!("stty {} failed", args.join(" "))));

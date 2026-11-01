@@ -1,0 +1,90 @@
+// `fs`: files and directories.
+//
+//     import "fs" as fs;
+//     match fs::read_file("notes.txt") {
+//         Result::Ok(text) => println(text),
+//         Result::Err(e) => println(f"cannot read: {e}"),
+//     }
+//
+// An error is the text "path: reason", where the reason is one of `not found`, `permission denied`,
+// `already exists`, `not a directory`, `is a directory`, `directory not empty`, `not valid UTF-8 text`
+// or `i/o error`: the same on every platform. Paths are written with `/`.
+
+// The whole file as text.
+export fn read_file(path: string) -> Result<string, string>;
+
+// Creates the file, or replaces what it held.
+export fn write_file(path: string, text: string) -> Result<(), string>;
+
+// Adds to the end of the file; creates it if it is not there.
+export fn append_file(path: string, text: string) -> Result<(), string>;
+
+// Is there a file or a directory?
+export fn exists(path: string) -> bool;
+
+export fn is_file(path: string) -> bool;
+
+export fn is_dir(path: string) -> bool;
+
+// The names in a directory, sorted (without `.` and `..`).
+export fn list_dir(path: string) -> Result<[string], string>;
+
+// Creates one directory; its parent must exist.
+export fn create_dir(path: string) -> Result<(), string>;
+
+// Removes a file or an empty directory.
+export fn remove(path: string) -> Result<(), string>;
+
+export fn rename(from: string, to: string) -> Result<(), string>;
+
+// The lines of a file, without their line ends.
+export fn read_lines(path: string) -> Result<[string], string> {
+    let text = read_file(path)?;
+    var lines: [string] = [];
+    if text.is_empty() {
+        return Result::Ok(lines);
+    }
+    for line in text.split("\n") {
+        lines.push(if line.ends_with("\r") { line.substring(0, line.len() - 1) } else { line });
+    }
+    // a final line end does not start another line
+    if lines.last().unwrap_or("x").is_empty() {
+        lines.pop();
+    }
+    Result::Ok(lines)
+}
+
+// Writes the lines, each with a line end.
+export fn write_lines(path: string, lines: [string]) -> Result<(), string> {
+    var text = "";
+    for line in lines {
+        text = text + line + "\n";
+    }
+    write_file(path, text)
+}
+
+// Creates a directory and the ones above it that are missing.
+export fn create_dir_all(path: string) -> Result<(), string> {
+    var current = "";
+    var first = true;
+    for part in path.split("/") {
+        if first && part.is_empty() {
+            current = "/";
+        }
+        first = false;
+        if part.is_empty() {
+            continue;
+        }
+        current = if current.is_empty() || current.ends_with("/") { current + part } else { current + "/" + part };
+        if !is_dir(current) {
+            create_dir(current)?;
+        }
+    }
+    Result::Ok(())
+}
+
+// Copies a file.
+export fn copy(from: string, to: string) -> Result<(), string> {
+    let text = read_file(from)?;
+    write_file(to, text)
+}

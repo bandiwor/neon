@@ -64,6 +64,7 @@ pub(super) fn insert_item(
 
 fn new_fn(
     prog: &mut Program,
+    interner: &Interner,
     ast: &Ast,
     module: ModuleId,
     node: NodeId,
@@ -78,6 +79,12 @@ fn new_fn(
         NodeKind::FnDecl { body, .. } => body.get(),
         _ => None,
     };
+    // `export fn args() -> [string];` in the standard module `sys` is the builtin `sys.args`
+    let native = match (body, owner) {
+        (None, FnOwner::Free) => crate::stdlib::module_of(&prog.modules[module.index()].path)
+            .and_then(|m| crate::builtin::Builtin::native(&format!("{m}.{}", interner.resolve(name)))),
+        _ => None,
+    };
     prog.fns.push(FnDef {
         name,
         module,
@@ -90,6 +97,7 @@ fn new_fn(
         ret: prog.types.unit(),
         has_self: false,
         body,
+        native,
         exported,
         param_locals: Vec::new(),
     });
@@ -135,6 +143,7 @@ pub fn declare_module(prog: &mut Program, interner: &mut Interner, diags: &mut D
         ret: prog.types.unit(),
         has_self: false,
         body: Some(ast.root()),
+        native: None,
         exported: false,
         param_locals: Vec::new(),
     });
@@ -174,7 +183,7 @@ fn declare_item(
     let name_span = ast.name_span(node);
     match *ast.kind(node) {
         NodeKind::FnDecl { name, generics, .. } => {
-            let id = new_fn(prog, ast, module, node, name, FnOwner::Free, exported);
+            let id = new_fn(prog, interner, ast, module, node, name, FnOwner::Free, exported);
             prog.fns[id.index()].generics.params = declare_generics(prog, ast, module, generics);
             let _ = generics;
             insert_item(prog, interner, diags, module, name, Item::Fn(id), name_span, exported);
@@ -269,7 +278,7 @@ fn declare_item(
             let mut methods = Vec::new();
             for &m in ast.list(items) {
                 if let NodeKind::FnDecl { name: mname, generics: mgen, .. } = *ast.kind(m) {
-                    let fid = new_fn(prog, ast, module, m, mname, FnOwner::Trait(id), exported);
+                    let fid = new_fn(prog, interner, ast, module, m, mname, FnOwner::Trait(id), exported);
                     let mut params = gen.clone();
                     params.extend(declare_generics(prog, ast, module, mgen));
                     prog.fns[fid.index()].generics.params = params;
@@ -300,7 +309,7 @@ fn declare_item(
             let mut methods = Vec::new();
             for &m in ast.list(items) {
                 if let NodeKind::FnDecl { name: mname, generics: mgen, .. } = *ast.kind(m) {
-                    let fid = new_fn(prog, ast, module, m, mname, FnOwner::Impl(id), false);
+                    let fid = new_fn(prog, interner, ast, module, m, mname, FnOwner::Impl(id), false);
                     let mut params = gen.clone();
                     params.extend(declare_generics(prog, ast, module, mgen));
                     prog.fns[fid.index()].generics.params = params;

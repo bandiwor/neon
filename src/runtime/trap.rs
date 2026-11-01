@@ -25,6 +25,8 @@ pub enum Trap {
     StackOverflow,
     /// Input exhausted or an I/O error from the host.
     Io(String),
+    /// `sys.exit(code)`: not an error, the program ends with this status.
+    Exit(i64),
 }
 
 impl fmt::Display for Trap {
@@ -41,6 +43,7 @@ impl fmt::Display for Trap {
             Trap::OutOfMemory => write!(f, "out of memory"),
             Trap::StackOverflow => write!(f, "stack overflow"),
             Trap::Io(m) => write!(f, "i/o error: {m}"),
+            Trap::Exit(code) => write!(f, "exit {code}"),
         }
     }
 }

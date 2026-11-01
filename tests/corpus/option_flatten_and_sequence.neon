@@ -1,0 +1,20 @@
+fn main() {
+    let a: Option<Option<Option<i64>>> = Option::Some(Option::Some(Option::Some(7)));
+    println(a.flatten());
+    let b: Option<Option<Option<Option<i64>>>> = Option::Some(Option::Some(Option::None));
+    println(b.flatten());
+    let c: Option<Option<i64>> = Option::Some(Option::Some(3));
+    println(c.flatten().unwrap());
+    let ok = [Option::Some(1), Option::Some(2), Option::Some(3)];
+    println(ok.sequence());
+    let bad = [Option::Some(1), Option::None, Option::Some(3)];
+    println(bad.sequence());
+    println(bad.flatten());
+    let rs: [Result<i64, string>] = [Result::Ok(1), Result::Err("x"), Result::Ok(3)];
+    println(rs.sequence());
+    println(rs.flatten());
+    let nested = [[1, 2], [3], []];
+    println(nested.flatten());
+    let rr: Result<Result<i64, string>, string> = Result::Ok(Result::Ok(5));
+    println(rr.flatten());
+}

@@ -31,7 +31,7 @@ target/release/neon repl
 ```
 
 ```
-neon run <file> [-- args...]   compile and run (also: neon <file>); what follows `--` is `sys.args`
+neon run <file> [-- args...]   compile and run (also: neon <file>); what follows `--` is `sys::args()`
 neon check <file>     report errors without running
 neon disasm <file>    print the bytecode (-a / --annotate: a `# r1 = r1 + 4` note on every line)
 neon ir <file>        print the optimized intermediate representation (--effects: and the
@@ -84,11 +84,9 @@ Diagnostics (with source snippets) go to stderr, program output to stdout.
 * **Traits**: `trait`/`impl`, default methods, operator traits (`Add`, `Mul`,
   `Neg`, `Eq`, `Ord`, ...), `Display` used by `println`. Resolution is static
   (monomorphization), there are no trait objects.
-* **Command-line arguments**: `sys.args` is an `[string]` of the arguments after the program
-  (`neon run prog.neon -- a b`, or `./prog a b` for the C translation); it is read-only and a
-  variable, function or module alias named `sys` takes precedence. There is no `main(args)`.
-* **Modules**: `import { f } from "dir/file"`, `import "dir/file" as m`,
-  `export`. A module DAG is built through the virtual file system.
+* **Modules**: `import { f } from "dir/file"`, `import "dir/file" as m` (then `m::f()`),
+  `export`. A module DAG is built through the virtual file system. A bare name that belongs to the
+  standard library (`"sys"`, `"fs"`, `"term"`) is a [standard module](#the-standard-modules).
 * **Arithmetic is checked**: integer overflow, division by zero, bad shifts,
   out-of-range indexing and missing map keys are run-time errors, never
   undefined behavior. Float → int casts saturate; NaN casts to 0.
@@ -210,6 +208,33 @@ println([5, 3, 8].fold(0, |a, x| => a + x));
 a long chain is a few times slower than one hand-written loop; ranges are not values yet, so
 `(0..n).map(..)` is not available (use `for`).
 
+### Nested options and arrays of options
+
+`flatten()` peels every layer of a nested option: `Option<Option<Option<T>>>` becomes `Option<T>` (the same
+for `Result<Result<T, E>, E>` and `[[T]]`). An array of options turns into an option of an array when
+none is missing — `[Some(1), Some(2)].sequence()` is `Some([1, 2])`, a single `None` makes it `None`
+(`[Result<T, E>]` gives the first error) — and `flatten()` on `[Option<T>]` keeps the present values.
+
+### The standard modules
+
+`import "sys" as sys;` and the members are reached with `::`: `sys::args()`. The modules are Neon source
+carried by the compiler (`src/stdlib/*.neon`); a function declared without a body is native, bound by the
+name `module.function` to a builtin that the VM and the C translation implement, so the same program
+runs both ways. The bare names are reserved; your own files are imported with a path.
+
+| Module | What it has |
+| --- | --- |
+| `sys` | `args()` (what follows `--`), `exit(code)`, `env(name)` → `Option<string>`, `platform()`, `now_ms()`, `ticks_ms()`, `sleep(ms)` |
+| `fs` | `read_file`, `write_file`, `append_file`, `exists`, `is_file`, `is_dir`, `list_dir`, `create_dir`, `remove`, `rename`; and in Neon `read_lines`, `write_lines`, `create_dir_all`, `copy`. Failures are `Result::Err("path: reason")` with the same reasons everywhere (`not found`, `permission denied`, `already exists`, ...) |
+| `term` | keys without Enter: `raw(on)`, `read_key()`, `poll_key(ms)`, `width()`, `height()`, `is_tty()`; and drawing helpers `clear`, `move_to`, `hide_cursor`, `enter_screen`, `paint`, ... |
+
+A key is a name: the character itself (`"a"`, `" "`, `"я"`) or `"enter"`, `"esc"`, `"up"`, `"pagedown"`,
+`"f5"`, with a modifier in front (`"ctrl+c"`, `"alt+x"`, `"shift+tab"`). In raw mode a key arrives the moment
+it is pressed: `neon run` switches the terminal with `stty`, the C translation uses termios (POSIX) or
+`conio` (Windows, not tested). When the input is not a terminal the keys are read from it as the bytes a
+terminal would send, so a program driven by keys can be driven by a file, and `poll_key` says `"eof"` once
+it has ended. In the browser `fs` sees the project's files (writes last for one run).
+
 ### The REPL
 
 `neon repl` at a terminal is a small editor, not a bare line reader:
@@ -259,9 +284,11 @@ modules. See [web/README.md](web/README.md) (in Russian); the workflow
 ### Examples
 
 * `examples/scene.neon` — a small software renderer (compact enums, tuples, ranges, fused iterator chains).
-* `examples/paint.neon` — an interactive terminal paint program: `w a s d` move the brush, `t` changes the
-  tool, `+ -` the size, `c` the color, space stamps, `u` undoes, `q` quits (type keys and press Enter; several
-  per line work). `neon run examples/paint.neon`, or `neon c examples/paint.neon -o paint.c` for a native build.
+* `examples/paint.neon` — an interactive terminal paint program that reacts to every key press: arrows or
+  `w a s d` move the brush, space stamps, `p` holds the pen down, `t` changes the tool, `+ -` the size,
+  `1`-`5` the color, `u` undoes, `o` saves the picture to `paint.txt`, `q` quits; the brush blinks while you
+  think (`poll_key`). `neon run examples/paint.neon`, or `neon c examples/paint.neon -o paint.c` for a native
+  build; `-- --plain` prints every frame instead of redrawing in place.
 
 ### Format strings
 

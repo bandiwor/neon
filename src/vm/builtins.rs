@@ -331,6 +331,108 @@ impl Vm<'_, '_> {
                 }
                 self.heap.alloc_array(handles, true)?
             }
+            SysExit => return Err(Trap::Exit(a[0] as i64)),
+            SysEnv => {
+                let name = h.str_of(a[0]).to_string();
+                match self.io.env(&name) {
+                    Some(v) => {
+                        let s = self.heap.alloc_str(v)?;
+                        self.some(desc, s)?
+                    }
+                    None => self.none(desc)?,
+                }
+            }
+            SysPlatform => {
+                let p = self.io.platform();
+                self.heap.alloc_str(p)?
+            }
+            SysNowMs => self.io.now_ms() as u64,
+            SysTicksMs => self.io.ticks_ms() as u64,
+            SysSleep => {
+                self.io.sleep_ms((a[0] as i64).max(0) as u64);
+                0
+            }
+            FsRead => {
+                let path = h.str_of(a[0]).to_string();
+                match self.io.fs_read(&path) {
+                    Ok(text) => {
+                        let s = self.heap.alloc_str(text)?;
+                        self.ok(desc, s)?
+                    }
+                    Err(e) => self.err_str(desc, e)?,
+                }
+            }
+            FsWrite | FsAppend => {
+                let (path, text) = (h.str_of(a[0]).to_string(), h.str_of(a[1]).to_string());
+                let r = if b == FsWrite { self.io.fs_write(&path, &text) } else { self.io.fs_append(&path, &text) };
+                match r {
+                    Ok(()) => self.ok(desc, 0)?,
+                    Err(e) => self.err_str(desc, e)?,
+                }
+            }
+            FsExists => {
+                let path = h.str_of(a[0]).to_string();
+                self.io.fs_exists(&path) as u64
+            }
+            FsIsFile => {
+                let path = h.str_of(a[0]).to_string();
+                self.io.fs_is_file(&path) as u64
+            }
+            FsIsDir => {
+                let path = h.str_of(a[0]).to_string();
+                self.io.fs_is_dir(&path) as u64
+            }
+            FsList => {
+                let path = h.str_of(a[0]).to_string();
+                match self.io.fs_list(&path) {
+                    Ok(names) => {
+                        let mut handles = Vec::new();
+                        for n in names {
+                            handles.push(self.heap.alloc_str(n)?);
+                        }
+                        let arr = self.heap.alloc_array(handles, true)?;
+                        self.ok(desc, arr)?
+                    }
+                    Err(e) => self.err_str(desc, e)?,
+                }
+            }
+            FsCreateDir | FsRemove => {
+                let path = h.str_of(a[0]).to_string();
+                let r = if b == FsCreateDir { self.io.fs_create_dir(&path) } else { self.io.fs_remove(&path) };
+                match r {
+                    Ok(()) => self.ok(desc, 0)?,
+                    Err(e) => self.err_str(desc, e)?,
+                }
+            }
+            FsRename => {
+                let (from, to) = (h.str_of(a[0]).to_string(), h.str_of(a[1]).to_string());
+                match self.io.fs_rename(&from, &to) {
+                    Ok(()) => self.ok(desc, 0)?,
+                    Err(e) => self.err_str(desc, e)?,
+                }
+            }
+            TermRaw => self.io.term_raw(a[0] != 0) as u64,
+            TermReadKey | TermPollKey => {
+                use crate::term::Key;
+                let wait = (b == TermPollKey).then(|| std::time::Duration::from_millis((a[0] as i64).max(0) as u64));
+                match self.io.term_key(wait) {
+                    Key::Key(k) => {
+                        let s = self.heap.alloc_str(k)?;
+                        self.some(desc, s)?
+                    }
+                    Key::Timeout => self.none(desc)?,
+                    // `poll_key` says so, so a loop that polls does not spin on closed input
+                    Key::Eof if b == TermPollKey => {
+                        let s = self.heap.alloc_str("eof".to_string())?;
+                        self.some(desc, s)?
+                    }
+                    Key::Eof => self.none(desc)?,
+                    Key::Failed(message) => return Err(Trap::Io(message)),
+                }
+            }
+            TermWidth => self.io.term_size().0 as u64,
+            TermHeight => self.io.term_size().1 as u64,
+            TermIsTty => self.io.term_is_tty() as u64,
             ReadLine => {
                 let line = self.io.input().map_err(Trap::Io)?;
                 match line {

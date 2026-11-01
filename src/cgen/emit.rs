@@ -1799,6 +1799,36 @@ impl FnEmit<'_, '_> {
             Input => call!("rt_input", "rt_input()".into()),
             ReadLine => call!("rt_read_line", "rt_read_line()".into()),
             Args => call!("rt_args", "rt_args()".into()),
+            SysExit => {
+                self.g.need("rt_sys_exit");
+                self.line(format!("rt_sys_exit({});", a[0]));
+                unit_result(self);
+            }
+            SysEnv => call!("rt_sys_env", format!("rt_sys_env({})", a[0])),
+            SysPlatform => call!("rt_sys_platform", "rt_sys_platform()".into()),
+            SysNowMs => call!("rt_sys_now_ms", "rt_sys_now_ms()".into()),
+            SysTicksMs => call!("rt_sys_ticks_ms", "rt_sys_ticks_ms()".into()),
+            SysSleep => {
+                self.g.need("rt_sys_sleep");
+                self.line(format!("rt_sys_sleep({});", a[0]));
+                unit_result(self);
+            }
+            FsRead => call!("rt_fs_read", format!("rt_fs_read({})", a[0])),
+            FsWrite => call!("rt_fs_write", format!("rt_fs_write({}, {}, 0)", a[0], a[1])),
+            FsAppend => call!("rt_fs_write", format!("rt_fs_write({}, {}, 1)", a[0], a[1])),
+            FsExists => call!("rt_fs_exists", format!("rt_fs_exists({})", a[0])),
+            FsIsFile => call!("rt_fs_is_file", format!("rt_fs_is_file({})", a[0])),
+            FsIsDir => call!("rt_fs_is_dir", format!("rt_fs_is_dir({})", a[0])),
+            FsList => call!("rt_fs_list", format!("rt_fs_list({})", a[0])),
+            FsCreateDir => call!("rt_fs_create_dir", format!("rt_fs_create_dir({})", a[0])),
+            FsRemove => call!("rt_fs_remove", format!("rt_fs_remove({})", a[0])),
+            FsRename => call!("rt_fs_rename", format!("rt_fs_rename({}, {})", a[0], a[1])),
+            TermRaw => call!("rt_term_raw", format!("rt_term_raw({})", a[0])),
+            TermReadKey => call!("rt_term_key", "rt_term_key(-1, 0)".into()),
+            TermPollKey => call!("rt_term_key", format!("rt_term_key({}, 1)", a[0])),
+            TermWidth => call!("rt_term_width", "rt_term_width()".into()),
+            TermHeight => call!("rt_term_height", "rt_term_height()".into()),
+            TermIsTty => call!("rt_term_is_tty", "rt_term_is_tty()".into()),
             Panic => {
                 self.g.need("trap_panic");
                 self.line(format!("trap_panic({});", a[0]));

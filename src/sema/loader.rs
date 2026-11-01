@@ -173,6 +173,22 @@ impl<'a> Loader<'a> {
     }
 
     fn resolve_import(&mut self, importer: &str, spec: &str, span: Span) -> Option<ModuleId> {
+        // `import "sys" as sys;`: a standard module, which the compiler carries along
+        if let Some(src) = crate::stdlib::source(spec) {
+            let canon = crate::stdlib::display_name(spec);
+            if let Some(State::Done(id)) = self.states.get(&canon).copied() {
+                return Some(id);
+            }
+            return match self.map.add_file(&canon, src) {
+                Ok(file) => Some(self.visit(canon, file)),
+                Err(e) => {
+                    self.diags.report(
+                        Diagnostic::error(e.to_string()).with_code("E0301").with_label(span, "standard module"),
+                    );
+                    None
+                }
+            };
+        }
         let joined = self.vfs.resolve(importer, spec);
         let with_ext = path::with_default_extension(&joined, EXTENSION);
         if !self.vfs.is_file(&with_ext) {

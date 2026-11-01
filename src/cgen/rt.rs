@@ -24,7 +24,12 @@ pub struct Piece {
 
 /// Every piece, in an order where declarations come after the declarations they use.
 pub fn all() -> Vec<&'static Piece> {
-    super::rt_core::PIECES.iter().chain(super::rt_data::PIECES).chain(super::rt_fmt::PIECES).collect()
+    super::rt_core::PIECES
+        .iter()
+        .chain(super::rt_data::PIECES)
+        .chain(super::rt_fmt::PIECES)
+        .chain(super::rt_host::PIECES)
+        .collect()
 }
 
 /// The names in `names` and everything they depend on.

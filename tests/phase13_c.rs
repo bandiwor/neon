@@ -166,7 +166,11 @@ fn command_line_arguments_reach_the_program_like_in_the_vm() {
     let Some(cc) = c_compiler() else { return };
     let dir = scratch("args");
     let src = dir.join("p.neon");
-    std::fs::write(&src, "println(sys.args.len()); for a in sys.args { println(f\"[{a}]\"); }").unwrap();
+    std::fs::write(
+        &src,
+        "import \"sys\" as sys;\nprintln(sys::args().len()); for a in sys::args() { println(f\"[{a}]\"); }",
+    )
+    .unwrap();
     let c = translate(&src, &[]);
     assert!(c.contains("int main(int argc, char **argv)"));
     let exe = build(&cc, &dir, "p", &c, &[]);
@@ -259,20 +263,35 @@ fn output_is_deterministic_and_can_go_to_a_file() {
 fn the_interactive_paint_example_reacts_to_keys_the_same_in_c_and_the_vm() {
     let Some(cc) = c_compiler() else { return };
     let source = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/paint.neon")).unwrap();
-    // move, change tool and size, stamp, change color, stamp, undo, quit
-    let keys = "dd t\n++ \nssss\nc \nwwwa  \nt\nu\nq\n";
-    let (native, vm) = both(&cc, "paint", &source, keys);
+    // every key acts at once, no Enter: move, change tool and size, stamp, change color, stamp, undo, an arrow
+    // (an escape sequence), Ctrl+Down, quit. Not a terminal, so every frame is printed in full.
+    let keys = "ddt++ ssssc www a  tu\x1b[C\x1b[1;5Bq";
+    let dir = scratch("paint");
+    let src = dir.join("p.neon");
+    std::fs::write(&src, source).unwrap();
+    let c = translate(&src, &[]);
+    let exe = build(&cc, &dir, "p", &c, &[]);
+    let native = run(Command::new(exe).arg("--plain").current_dir(&dir), keys);
+    let vm = run(neon().arg("run").arg(&src).arg("--").arg("--plain").current_dir(&dir), keys);
     assert_eq!((native.code, vm.code), (0, 0), "{} {}", native.err, vm.err);
     assert_eq!(native.out, vm.out);
-    // a frame before every line, then the goodbye
-    assert_eq!(vm.out.matches("keys: w a s d move").count(), 8, "{}", vm.out);
+    // a frame at the start and after every key but the last
+    assert_eq!(vm.out.matches("arrows move").count(), 24, "{}", vm.out);
     assert!(
-        vm.out.contains("pos (26, 9)  tool dot  size 4  color rgb 250,240,200  brush covers 1  stamps 1"),
+        vm.out.contains("pos (26, 9)  tool dot  size 4  color rgb 250,240,200  brush covers 1  stamps 0"),
         "{}",
         vm.out
     );
-    assert!(vm.out.contains("pos (25, 10)  tool line  size 6  color eraser  brush covers 12  stamps 5"), "{}", vm.out);
-    // the last frame comes after the undo
-    assert!(vm.out.contains("brush covers 12  stamps 4"), "{}", vm.out);
-    assert!(vm.out.ends_with("> bye\n"), "{}", vm.out);
+    assert!(vm.out.contains("pos (25, 10)  tool dot  size 6  color eraser  brush covers 1  stamps 5"), "{}", vm.out);
+    // the undo, then the arrow and Ctrl+Down (four rows)
+    assert!(vm.out.contains("pos (25, 10)  tool line  size 6  color eraser  brush covers 12  stamps 4"), "{}", vm.out);
+    assert!(vm.out.contains("pos (26, 14)  tool line  size 6  color eraser  brush covers 12  stamps 4"), "{}", vm.out);
+    assert!(vm.out.ends_with("bye\n"), "{}", vm.out);
+    // saving writes the picture next to the program
+    let saved = run(neon().arg("run").arg(&src).arg("--").arg("--plain").current_dir(&dir), " o q");
+    assert_eq!(saved.code, 0, "{}", saved.err);
+    assert!(saved.out.contains("saved to paint.txt"), "{}", saved.out);
+    let picture = std::fs::read_to_string(dir.join("paint.txt")).unwrap();
+    assert_eq!(picture.lines().count(), 18);
+    assert!(picture.lines().any(|l| l.contains('#')), "{picture}");
 }

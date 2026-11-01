@@ -5,14 +5,51 @@
 #pragma GCC diagnostic ignored "-Wtype-limits"
 #endif
 
+#ifndef _WIN32
+#define _POSIX_C_SOURCE 200809L
+#endif
 #include <stddef.h>
 #include <stdint.h>
 #include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#include <direct.h>
+#include <io.h>
+#include <conio.h>
+#else
+#include <dirent.h>
+#include <sys/ioctl.h>
+#include <sys/select.h>
+#include <termios.h>
+#include <time.h>
+#include <unistd.h>
+#endif
 
 /* ---- Runtime: declarations -------------------------------------------------*/
+
+/* The type names of Neon. `chr` is a Unicode scalar value (`char` is C's own); `unit` is `void`, used
+ * for the result of functions that return nothing. */
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef float f32;
+typedef double f64;
+typedef u32 chr;
+typedef void unit;
+#if !(defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L)
+typedef u8 bool;   /* C23 has a `bool` of its own */
+#endif
 
 /* Debug or release. Checked (debug) builds trap on integer overflow, division by zero, bad shifts and
  * too deep recursion; with -DNDEBUG (or -DNEON_CHECKS=0) integers wrap around, division by zero is
@@ -67,9 +104,7 @@
 #endif
 #endif
 
-typedef uint8_t unit_t;  /* the type `()`: always 0 */
-
-typedef uint64_t W;     /* a machine word: any value stored inside a container */
+typedef u64 W;     /* a machine word: any value stored inside a container */
 
 /* Heap objects. Every object starts with the same 8-byte header; `flags` and `n` depend on `kind`:
  *   K_ARR  flags & 1: the elements are references
@@ -83,14 +118,14 @@ enum { MF_KREF = 1, MF_VREF = 2, MF_KSTR = 4, MF_SET = 8 };
 
 typedef struct Obj Obj;
 struct Obj {
-    uint8_t kind, mark;
-    uint16_t flags;
-    uint32_t n;
+    u8 kind, mark;
+    u16 flags;
+    u32 n;
 };
 typedef struct { Obj h; size_t len; char s[]; } Str;                       /* UTF-8, NUL-terminated */
 typedef struct { Obj h; size_t len, cap; W *a; } Arr;
-typedef struct { Obj h; uint64_t mask; W f[]; } Agg;                       /* mask: which fields are references */
-typedef struct { Obj h; size_t len, cap, ixcap; W *k, *v; int32_t *ix; } Map;  /* insertion ordered + hash index */
+typedef struct { Obj h; u64 mask; W f[]; } Agg;                       /* mask: which fields are references */
+typedef struct { Obj h; size_t len, cap, ixcap; W *k, *v; i32 *ix; } Map;  /* insertion ordered + hash index */
 typedef struct { Obj h; void (*fn)(void); Obj *c[]; } Clo;                 /* code + captured cells */
 typedef struct { Obj h; W v; } Cell;                                       /* a captured variable */
 
@@ -125,6 +160,9 @@ static Frame *gc_top;          /* innermost registered frame */
 static size_t gc_next = (size_t)4 << 20;   /* collect when gc_bytes reaches this */
 static Obj **gc_stack;         /* work list of the mark phase */
 static size_t gc_nstack, gc_capstack;
+/* FRAME(&a, &b, ...) at the top of a function registers its reference variables; FRAME_LEAVE() before every return. */
+#define FRAME(...) Obj **fr_roots[] = {__VA_ARGS__}; Frame fr = {gc_top, fr_roots, sizeof fr_roots / sizeof *fr_roots}; gc_top = &fr
+#define FRAME_LEAVE() (gc_top = fr.up)
 #ifdef NEON_GC_STRESS   /* -DNEON_GC_STRESS: collect at every safe-point, to test the collector */
 #define GC_POINT() gc_collect()
 #else
@@ -132,6 +170,18 @@ static size_t gc_nstack, gc_capstack;
 #endif
 
 static void user_roots(void);   /* defined with the program: marks globals and string constants */
+
+#if NEON_CHECKS
+#ifndef NEON_MAX_DEPTH
+#define NEON_MAX_DEPTH 20000   /* deeper recursion is reported as a stack overflow */
+#endif
+static unsigned rt_depth;
+#define DEPTH_ENTER() do { if (UNLIKELY(++rt_depth > NEON_MAX_DEPTH)) trap_stack(); } while (0)
+#define DEPTH_LEAVE() (rt_depth--)
+#else
+#define DEPTH_ENTER() ((void)0)
+#define DEPTH_LEAVE() ((void)0)
+#endif
 
 /* A growable text buffer. `rt_sb` is the scratch buffer shared by printing and formatting. */
 typedef struct { char *p; size_t len, cap; } SB;
@@ -150,10 +200,14 @@ static NORETURN COLD void trap_div0(void);
 #if NEON_CHECKS
 static NORETURN COLD void trap_shift(void);
 #endif
-static NORETURN COLD void trap_index(int64_t index, size_t len);
+static NORETURN COLD void trap_index(i64 index, size_t len);
 static NORETURN COLD void trap_empty(void);
 static NORETURN COLD void trap_oom(void);
+#if NEON_CHECKS
+static NORETURN COLD void trap_stack(void);
+#endif
 static NORETURN COLD void trap_unreach(const char *fn);
+static NORETURN COLD void trap_parse(Obj *s);
 static void *rt_malloc(size_t n);
 static void *rt_realloc(void *p, size_t n);
 static Block *gc_block(size_t cls);
@@ -164,52 +218,80 @@ static size_t gc_extern(const Obj *o);
 static void gc_finish(Obj *o);
 static void gc_sweep(void);
 static void gc_collect(void);
-static size_t utf8_dec(const char *p, const char *end, uint32_t *cp);
-static size_t utf8_enc(uint32_t c, char *out);
+static size_t utf8_dec(const char *p, const char *end, u32 *cp);
+static size_t utf8_enc(u32 c, char *out);
+static PURE_FN size_t utf8_count(const char *p, size_t n);
+static const char *utf8_skip(const char *p, const char *end, size_t n);
 static Obj *str_new(const char *s, size_t n);
 static Obj *str_cat(Obj *a, Obj *b);
 static PURE_FN int str_eq(const Obj *a, const Obj *b);
-static Obj *agg_new(uint32_t tag, uint32_t n, uint64_t mask);
-static Obj *agg1(uint32_t tag, W payload, int is_ref);
+static i64 str_len(Obj *o);
+static Obj *str_substring(Obj *o, i64 lo, i64 hi);
+static u32 str_char_at(Obj *o, i64 i);
+static Obj *agg_alloc(u32 tag, u32 n, u64 mask);
+static Obj *agg_new(u32 tag, u32 n, u64 mask);
+static Obj *agg1(u32 tag, W payload, int is_ref);
 static Obj *opt_some(W v, int is_ref);
 static Obj *opt_none(void);
+static Obj *res_ok(W v, int is_ref);
+static Obj *res_err(const char *msg);
+static Obj *arr_alloc(size_t cap, int is_ref);
 static Obj *arr_new(size_t cap, int is_ref);
 static void arr_push(Obj *o, W v);
-static W arr_get(Obj *o, int64_t i);
-static void arr_set(Obj *o, int64_t i, W v);
+static W arr_get(Obj *o, i64 i);
+static void arr_set(Obj *o, i64 i, W v);
 static W arr_pop(Obj *o);
+static Obj *clo_new(void (*fn)(void), u32 n);
 static void sb_put(SB *b, const char *s, size_t n);
-static void sb_putc(SB *b, char c);
-static void sb_cp(SB *b, uint32_t c);
+static void sb_cp(SB *b, u32 c);
 static Obj *sb_take(void);
-static void sb_i64(SB *b, int64_t v);
-static void sb_u64(SB *b, uint64_t v);
+static void sb_i64(SB *b, i64 v);
+static void sb_u64(SB *b, u64 v);
 static void out_sb(int newline);
 static void out_str(Obj *s, int newline);
-static int io_getline(void);
-static Obj *rt_read_line(void);
 static Obj *rt_args(void);
-static Obj *str_chars(Obj *o);
+static CONST_FN int cp_is_space(u32 c);
+static void trim_span(const Str *s, const char **b, const char **e);
 static Obj *str_join(Obj *arr, Obj *sep);
-static int64_t add_i64(int64_t a, int64_t b);
-static int64_t div_i64(int64_t a, int64_t b);
-static int64_t mul_i64(int64_t a, int64_t b);
-static uint8_t mul_u8(uint8_t a, uint8_t b);
-static int64_t rem_i64(int64_t a, int64_t b);
-static uint64_t shl_u64(uint64_t a, int64_t n);
-static uint64_t shr_u64(uint64_t a, int64_t n);
-static int64_t sub_i64(int64_t a, int64_t b);
+static int parse_i64_try(Obj *o, i64 *out);
+static i64 parse_i64(Obj *o);
+static const char *host_reason(int e);
+static Obj *host_fail(const char *path, const char *reason);
+static Obj *rt_fs_write(Obj *path, Obj *text, int append);
+static void term_restore(void);
+static int rt_term_is_tty(void);
+static int rt_term_raw(int on);
+static int tk_set(const char *s);
+static int tk_decode(i64 wait_ms);
+static int tk_next(i64 ms);
+static void tk_mods(int m, char *out);
+static int tk_csi(void);
+static int tk_escape(void);
+static int tk_decode(i64 wait_ms);
+static Obj *rt_term_key(i64 wait_ms, int poll);
+static i64 add_i64(i64 a, i64 b);
+static i64 div_i64(i64 a, i64 b);
+static i64 mul_i64(i64 a, i64 b);
+static u8 mul_u8(u8 a, u8 b);
+static i64 rem_i64(i64 a, i64 b);
+static u64 shl_u64(u64 a, i64 n);
+static u64 shr_u64(u64 a, i64 n);
+static i64 sub_i64(i64 a, i64 b);
 
 /* ---- Program: declarations -------------------------------------------------*/
 
-static const struct { const char *s; size_t n; } k_lit[24] = {
+typedef Obj * (*fp0)(Obj **, Obj *);
+static const struct { const char *s; size_t n; } k_lit[77] = {
     {"--plain", 7},
-    {"> ", 2},
+    {"\033[\?1049h\033[2J\033[H\033[\?25l", 21},
+    {"", 0},
+    {"\033[\?25h\033[\?1049l", 14},
     {"bye", 3},
     {"+", 1},
-    {"", 0},
     {"-", 1},
+    {"\033[K", 3},
     {"|", 1},
+    {"  pen DOWN", 10},
     {"pos (", 5},
     {", ", 2},
     {")  tool ", 8},
@@ -217,8 +299,53 @@ static const struct { const char *s; size_t n; } k_lit[24] = {
     {"  color ", 8},
     {"  brush covers ", 15},
     {"  stamps ", 9},
-    {"keys: w a s d move | t tool | + - size | c color | space stamp | u undo | x clear | q quit", 90},
-    {"\033[2J\033[H", 7},
+    {"arrows move | space stamp | p pen | t tool | +/- size | 1-5 color | u undo | x clear | o save | q quit", 102},
+    {"left", 4},
+    {"a", 1},
+    {"h", 1},
+    {"right", 5},
+    {"d", 1},
+    {"l", 1},
+    {"up", 2},
+    {"w", 1},
+    {"k", 1},
+    {"down", 4},
+    {"s", 1},
+    {"j", 1},
+    {"ctrl+left", 9},
+    {"A", 1},
+    {"H", 1},
+    {"ctrl+right", 10},
+    {"D", 1},
+    {"L", 1},
+    {"ctrl+up", 7},
+    {"W", 1},
+    {"K", 1},
+    {"ctrl+down", 9},
+    {"S", 1},
+    {"J", 1},
+    {"t", 1},
+    {"c", 1},
+    {"1", 1},
+    {"2", 1},
+    {"3", 1},
+    {"4", 1},
+    {"5", 1},
+    {"=", 1},
+    {"pageup", 6},
+    {"pagedown", 8},
+    {" ", 1},
+    {"enter", 5},
+    {"p", 1},
+    {"u", 1},
+    {"x", 1},
+    {"o", 1},
+    {"q", 1},
+    {"esc", 3},
+    {"ctrl+c", 6},
+    {"eof", 3},
+    {"\033[", 2},
+    {";", 1},
     {"dot", 3},
     {"line", 4},
     {"box", 3},
@@ -227,19 +354,32 @@ static const struct { const char *s; size_t n; } k_lit[24] = {
     {"rgb ", 4},
     {",", 1},
     {"eraser", 6},
+    {"\033[J", 3},
+    {"paint.txt", 9},
+    {"\n", 1},
+    {"saved to paint.txt", 18},
+    {"cannot save: ", 13},
 };
-static Obj *k_str[24];   /* string constants, created on first use */
+static Obj *k_str[77];   /* string constants, created on first use */
 static Obj *kstr(int i);
-static unit_t n_start(void);
-static unit_t n_main(void);
-static unit_t n_draw(Obj *v0, uint8_t v1);
-static unit_t n_press(Obj *v0, uint32_t v1);
+static unit n_start(void);
+static unit n_main(void);
+static unit n_draw(Obj *v0, bool v1);
+static unit n_press(Obj *v0, Obj *v1);
+static unit n_move_to(i64 v0, i64 v1);
 static Obj *n_canvas(Obj *v0);
-static uint64_t n_brush(Obj *v0);
-static uint8_t n_covers(uint64_t v0, Obj *v1);
+static u64 n_brush(Obj *v0);
+static bool n_covers(u64 v0, Obj *v1);
 static Obj *n_tool_name(Obj *v0);
-static uint64_t n_palette(int64_t v0);
-static Obj *n_to_string(uint64_t v0);
+static u64 n_palette(i64 v0);
+static Obj *n_to_string(u64 v0);
+static unit n_clear_below(void);
+static unit n_step(Obj *v0, i64 v1, i64 v2);
+static CONST_FN i64 n_clamp(i64 v0, i64 v1, i64 v2);
+static unit n_stamp(Obj *v0);
+static unit n_save(Obj *v0);
+static Obj *n_closure_962(Obj **up, Obj *v0);
+static Obj *n_closure_968(Obj **up, Obj *v0);
 
 /* ---- Program ---------------------------------------------------------------*/
 
@@ -252,913 +392,1490 @@ static Obj *kstr(int i) {
 static void user_roots(void) {
     {
         int i;
-        for (i = 0; i < 24; i++) gc_mark(k_str[i]);
+        for (i = 0; i < 77; i++) gc_mark(k_str[i]);
     }
 }
 
-static unit_t n_start(void) {
-    (void)(n_main());
-    return 0;
+static unit n_start(void) {
+    n_main();
+    return;
 }
 
-static unit_t n_main(void) {
-    Obj *v0 = NULL, *v7 = NULL, *v10 = NULL, *v19 = NULL, *v21 = NULL, *v23 = NULL, *v25 = NULL, *v34 = NULL, *v42 = NULL, *v46 = NULL, *v48 = NULL;
-    int64_t v3 = 0, v6 = 0, v26 = 0, v28 = 0;
-    uint32_t v30 = 0;
-    uint8_t v1 = 0, v5 = 0, v11 = 0, v17 = 0, v29 = 0;
-    Obj **fr_roots[11] = {&v0, &v7, &v10, &v19, &v21, &v23, &v25, &v34, &v42, &v46, &v48};
-    Frame fr = {NULL, fr_roots, 11};
-    fr.up = gc_top;
-    gc_top = &fr;
+static unit n_main(void) {
+    Obj *v0 = NULL, *v7 = NULL, *v10 = NULL, *v32 = NULL, *v35 = NULL, *v43 = NULL, *v54 = NULL, *v60 = NULL, *v61 = NULL, *v63 = NULL, *v73 = NULL, *v74 = NULL;
+    bool v1 = 0, v5 = 0, v11 = 0, v15 = 0, v16 = 0, v28 = 0, v29 = 0, v33 = 0, v34 = 0;
+    i64 v3 = 0, v6 = 0;
+    FRAME(&v0, &v7, &v10, &v32, &v35, &v43, &v54, &v60, &v61, &v63, &v73, &v74);
     GC_POINT();
     v0 = rt_args();
     v1 = 0;
     v3 = 0;
-    v6 = (int64_t)(ARR(v0)->len);
+    v6 = (i64)(ARR(v0)->len);
     v5 = v3 < v6;
-    if (!(v5)) goto B12;
+    if (!(v5)) goto B1;
+
     v10 = kstr(0);
-B1:
-    v7 = W2O(arr_get(v0, (int64_t)v3));
-    v11 = str_eq(v7, v10);
-    if (!(v11)) goto B2;
-    v1 = 1;
-B12:
-    GC_POINT();
-    v42 = agg_new(0, 2, 0);
-    AGG(v42)->f[0] = (W)(int64_t)24;
-    AGG(v42)->f[1] = (W)(int64_t)9;
-    GC_POINT();
-    v46 = arr_new(0, 1);
-    GC_POINT();
-    v48 = agg_new(0, 6, 17);
-    AGG(v48)->f[0] = O2W(v42);
-    AGG(v48)->f[1] = (W)(int64_t)3;
-    AGG(v48)->f[2] = (W)(int64_t)4;
-    AGG(v48)->f[3] = (W)(int64_t)3;
-    AGG(v48)->f[4] = O2W(v46);
-    AGG(v48)->f[5] = (W)1;
-    v19 = kstr(1);
-B4:
-    v17 = (uint8_t)(AGG(v48)->f[5]);
-    if (!(v17)) goto B6;
-    (void)(n_draw(v48, v1));
-    out_str(v19, 0);
-    GC_POINT();
-    v21 = rt_read_line();
-    if (TAG(v21) == 1) goto B6;
-    if (!(TAG(v21) == 0)) goto B8;
-    v23 = W2O(AGG(v21)->f[0]);
-    GC_POINT();
-    v25 = str_chars(v23);
-    v26 = 0;
-    v28 = (int64_t)(ARR(v25)->len);
-    v29 = v26 < v28;
-    if (!(v29)) goto B4;
-B10:
-    v30 = (uint32_t)(arr_get(v25, (int64_t)v26));
-    (void)(n_press(v48, v30));
-    v26 = add_i64(v26, 1);
-    v29 = v26 < v28;
-    if (v29) goto B10;
-    goto B4;
+
 B2:
+    v7 = W2O(arr_get(v0, (i64)v3));
+    v11 = str_eq(v7, v10);
+    if (!(v11)) goto B3;
+
+    v1 = 1;
+
+B1:
+    GC_POINT();
+    v16 = rt_term_is_tty();
+    if (!(v16)) goto B6;
+
+    v15 = !v1;
+
+B7:
+    GC_POINT();
+    (void)(rt_term_raw(1));
+    if (!(v15)) goto B20;
+
+    v73 = kstr(1);
+    out_str(v73, 0);
+
+B20:
+    v54 = agg_new(0, 2, 0);
+    AGG(v54)->f[0] = (W)(i64)24;
+    AGG(v54)->f[1] = (W)(i64)9;
+    v60 = kstr(2);
+    v61 = arr_new(0, 1);
+    v63 = agg_new(0, 9, 193);
+    AGG(v63)->f[0] = O2W(v54);
+    AGG(v63)->f[1] = (W)(i64)3;
+    AGG(v63)->f[2] = (W)(i64)4;
+    AGG(v63)->f[3] = (W)(i64)3;
+    AGG(v63)->f[4] = (W)0;
+    AGG(v63)->f[5] = (W)1;
+    AGG(v63)->f[6] = O2W(v60);
+    AGG(v63)->f[7] = O2W(v61);
+    AGG(v63)->f[8] = (W)1;
+    v28 = 1;
+    v29 = 1;
+
+B10:
+    n_draw(v63, v15);
+
+B11:
+    GC_POINT();
+    v32 = rt_term_key(500, 1);
+    if (!(TAG(v32) == 1)) goto B12;
+
+    v33 = (u8)(AGG(v63)->f[5]);
+    v34 = !v33;
+    AGG(v63)->f[5] = (W)v34;
+    v28 = v15;
+
+B17:
+    v29 = (u8)(AGG(v63)->f[8]);
+    if (!(v29)) goto B9;
+    if (v28) goto B10;
+    goto B11;
+
+B9:
+    if (!(v15)) goto B16;
+
+    v74 = kstr(3);
+    out_str(v74, 0);
+
+B16:
+    GC_POINT();
+    (void)(rt_term_raw(0));
+    v43 = kstr(4);
+    out_str(v43, 1);
+    FRAME_LEAVE();
+    return;
+
+B12:
+    if (!(TAG(v32) == 0)) goto B14;
+
+    v35 = W2O(AGG(v32)->f[0]);
+    n_press(v63, v35);
+    v28 = 1;
+    goto B17;
+
+B6:
+    v15 = 0;
+    goto B7;
+
+B3:
     v3 = add_i64(v3, 1);
     v5 = v3 < v6;
-    if (v5) goto B1;
-    goto B12;
-B6:
-    v34 = kstr(2);
-    out_str(v34, 1);
-    gc_top = fr.up;
-    return 0;
-B8:
+    if (v5) goto B2;
+    goto B1;
+
+B14:
     trap_unreach("main");
 }
 
-static unit_t n_draw(Obj *v0, uint8_t v1) {
-    Obj *v3 = NULL, *v6 = NULL, *v21 = NULL, *v24 = NULL, *v32 = NULL, *v38 = NULL, *v39 = NULL, *v42 = NULL, *v43 = NULL, *v49 = NULL, *v52 = NULL, *v62 = NULL, *v64 = NULL, *v66 = NULL, *v74 = NULL, *v77 = NULL, *v87 = NULL, *v96 = NULL, *v119 = NULL, *v125 = NULL, *v126 = NULL, *v127 = NULL, *v128 = NULL, *v129 = NULL, *v130 = NULL, *v131 = NULL, *v132 = NULL, *v133 = NULL, *v134 = NULL, *v135 = NULL, *v136 = NULL, *v137 = NULL, *v139 = NULL, *v140 = NULL, *v141 = NULL, *v142 = NULL, *v145 = NULL, *v147 = NULL, *v151 = NULL, *v153 = NULL, *v158 = NULL;
-    int64_t v12 = 0, v17 = 0, v33 = 0, v35 = 0, v44 = 0, v58 = 0, v60 = 0, v67 = 0, v70 = 0, v88 = 0, v103 = 0, v105 = 0, v112 = 0, v114 = 0, v138 = 0, v143 = 0, v154 = 0;
-    uint32_t v25 = 0, v71 = 0;
-    uint64_t v8 = 0, v144 = 0;
-    uint8_t v13 = 0, v18 = 0, v20 = 0, v22 = 0, v46 = 0, v61 = 0, v69 = 0, v90 = 0, v107 = 0, v116 = 0, v120 = 0;
-    Obj **fr_roots[42] = {&v0, &v3, &v6, &v21, &v24, &v32, &v38, &v39, &v42, &v43, &v49, &v52, &v62, &v64, &v66, &v74, &v77, &v87, &v96, &v119, &v125, &v126, &v127, &v128, &v129, &v130, &v131, &v132, &v133, &v134, &v135, &v136, &v137, &v139, &v140, &v141, &v142, &v145, &v147, &v151, &v153, &v158};
-    Frame fr = {NULL, fr_roots, 42};
-    fr.up = gc_top;
-    gc_top = &fr;
-    if (!(v1)) goto B1;
+static unit n_draw(Obj *v0, bool v1) {
+    Obj *v6 = NULL, *v21 = NULL, *v24 = NULL, *v32 = NULL, *v41 = NULL, *v42 = NULL, *v45 = NULL, *v46 = NULL, *v52 = NULL, *v55 = NULL, *v56 = NULL, *v58 = NULL, *v60 = NULL, *v70 = NULL, *v72 = NULL, *v74 = NULL, *v82 = NULL, *v85 = NULL, *v110 = NULL, *v116 = NULL, *v121 = NULL, *v122 = NULL, *v123 = NULL, *v124 = NULL, *v125 = NULL, *v126 = NULL, *v127 = NULL, *v128 = NULL, *v129 = NULL, *v130 = NULL, *v131 = NULL, *v132 = NULL, *v133 = NULL, *v135 = NULL, *v136 = NULL, *v137 = NULL, *v138 = NULL, *v141 = NULL, *v143 = NULL, *v147 = NULL, *v149 = NULL, *v155 = NULL, *v157 = NULL;
+    bool v13 = 0, v18 = 0, v20 = 0, v22 = 0, v38 = 0, v49 = 0, v69 = 0, v77 = 0, v98 = 0, v107 = 0, v111 = 0, v117 = 0;
+    chr v25 = 0, v37 = 0, v79 = 0;
+    i64 v12 = 0, v17 = 0, v33 = 0, v35 = 0, v47 = 0, v66 = 0, v68 = 0, v75 = 0, v78 = 0, v94 = 0, v96 = 0, v103 = 0, v105 = 0, v134 = 0, v139 = 0, v150 = 0;
+    u64 v8 = 0, v140 = 0;
+    FRAME(&v0, &v6, &v21, &v24, &v32, &v41, &v42, &v45, &v46, &v52, &v55, &v56, &v58, &v60, &v70, &v72, &v74, &v82, &v85, &v110, &v116, &v121, &v122, &v123, &v124, &v125, &v126, &v127, &v128, &v129, &v130, &v131, &v132, &v133, &v135, &v136, &v137, &v138, &v141, &v143, &v147, &v149, &v155, &v157);
+    if (!(v1)) goto B2;
+
+    n_move_to(0, 0);
+
 B2:
     v6 = n_canvas(v0);
     v8 = n_brush(v0);
     v12 = 0;
     v13 = 1;
+
 B3:
     v17 = 0;
     v18 = 1;
+
 B6:
-    GC_POINT();
     v21 = agg_new(0, 2, 0);
-    AGG(v21)->f[0] = (W)(int64_t)v17;
-    AGG(v21)->f[1] = (W)(int64_t)v12;
+    AGG(v21)->f[0] = (W)(i64)v17;
+    AGG(v21)->f[1] = (W)(i64)v12;
     v22 = n_covers(v8, v21);
     if (!(v22)) goto B9;
-    v24 = W2O(arr_get(v6, (int64_t)v12));
-    v25 = (uint32_t)(arr_get(v24, (int64_t)v17));
+
+    v24 = W2O(arr_get(v6, (i64)v12));
+    v25 = (u32)(arr_get(v24, (i64)v17));
     v20 = v25 == 32u;
     if (!(v20)) goto B7;
-    arr_set(v24, (int64_t)v17, (W)43u);
+
+    arr_set(v24, (i64)v17, (W)43u);
+
 B7:
     v17 = add_i64(v17, 1);
     v18 = v17 < 48;
     if (v18) goto B6;
+
     v12 = add_i64(v12, 1);
     v13 = v12 < 18;
     if (v13) goto B3;
+
     v32 = W2O(AGG(v0)->f[0]);
-    v33 = (int64_t)(int64_t)(AGG(v32)->f[0]);
-    v35 = (int64_t)(int64_t)(AGG(v32)->f[1]);
-    v38 = W2O(arr_get(v6, (int64_t)v35));
-    arr_set(v38, (int64_t)v33, (W)64u);
-    v39 = kstr(3);
-    v42 = kstr(4);
-    GC_POINT();
-    v43 = arr_new(0, 1);
-    v44 = 0;
-    v46 = 1;
-    v49 = kstr(5);
+    v33 = (i64)(i64)(AGG(v32)->f[0]);
+    v35 = (i64)(i64)(AGG(v32)->f[1]);
+    v38 = (u8)(AGG(v0)->f[5]);
+    if (!(v38)) goto B13;
+
+    v37 = 64u;
+
 B12:
-    arr_push(v43, O2W(v49));
-    v44 = add_i64(v44, 1);
-    v46 = v44 < 48;
-    if (v46) goto B12;
-    GC_POINT();
-    v52 = str_join(v43, v42);
-    out_str(v39, 0);
-    out_str(v52, 0);
-    out_str(v39, 1);
-    v58 = 0;
-    v60 = (int64_t)(ARR(v6)->len);
-    v61 = v58 < v60;
-    if (!(v61)) goto B14;
-    v64 = kstr(6);
-B13:
-    v62 = W2O(arr_get(v6, (int64_t)v58));
-    GC_POINT();
-    v66 = arr_new(0, 1);
-    v67 = 0;
-    v70 = (int64_t)(ARR(v62)->len);
-    v69 = v67 < v70;
-    if (!(v69)) goto B15;
-B16:
-    v71 = (uint32_t)(arr_get(v62, (int64_t)v67));
-    GC_POINT();
-    sb_cp(&rt_sb, v71);
-    v74 = sb_take();
-    arr_push(v66, O2W(v74));
-    v67 = add_i64(v67, 1);
-    v70 = (int64_t)(ARR(v62)->len);
-    v69 = v67 < v70;
-    if (v69) goto B16;
+    v41 = W2O(arr_get(v6, (i64)v35));
+    arr_set(v41, (i64)v33, (W)v37);
+    v42 = kstr(5);
+    v45 = kstr(2);
+    v46 = arr_new(0, 1);
+    v47 = 0;
+    v49 = 1;
+    v52 = kstr(6);
+
 B15:
+    arr_push(v46, O2W(v52));
+    v47 = add_i64(v47, 1);
+    v49 = v47 < 48;
+    if (v49) goto B15;
+
+    v55 = str_join(v46, v45);
+    v56 = str_cat(v42, v55);
+    v58 = str_cat(v56, v42);
+    if (!(v1)) goto B18;
+
+    v60 = kstr(7);
+
+B17:
+    out_str(v58, 0);
+    out_str(v60, 1);
+    v66 = 0;
+    v68 = (i64)(ARR(v6)->len);
+    v69 = v66 < v68;
+    if (!(v69)) goto B20;
+
+    v72 = kstr(8);
+
+B19:
+    v70 = W2O(arr_get(v6, (i64)v66));
+    v74 = arr_new(0, 1);
+    v75 = 0;
+    v78 = (i64)(ARR(v70)->len);
+    v77 = v75 < v78;
+    if (!(v77)) goto B21;
+
+B22:
+    v79 = (u32)(arr_get(v70, (i64)v75));
     GC_POINT();
-    v77 = str_join(v66, v42);
-    out_str(v64, 0);
-    out_str(v77, 0);
-    out_str(v64, 1);
-    v58 = add_i64(v58, 1);
-    v60 = (int64_t)(ARR(v6)->len);
-    v61 = v58 < v60;
-    if (v61) goto B13;
-B14:
-    GC_POINT();
-    v87 = arr_new(0, 1);
-    v88 = 0;
-    v90 = 1;
-B18:
-    arr_push(v87, O2W(v49));
-    v88 = add_i64(v88, 1);
-    v90 = v88 < 48;
-    if (v90) goto B18;
-    GC_POINT();
-    v96 = str_join(v87, v42);
-    out_str(v39, 0);
-    out_str(v96, 0);
-    out_str(v39, 1);
+    sb_cp(&rt_sb, v79);
+    v82 = sb_take();
+    arr_push(v74, O2W(v82));
+    v75 = add_i64(v75, 1);
+    v78 = (i64)(ARR(v70)->len);
+    v77 = v75 < v78;
+    if (v77) goto B22;
+
+B21:
+    v85 = str_join(v74, v45);
+    out_str(v72, 0);
+    out_str(v85, 0);
+    out_str(v72, 1);
+    v66 = add_i64(v66, 1);
+    v68 = (i64)(ARR(v6)->len);
+    v69 = v66 < v68;
+    if (v69) goto B19;
+
+B20:
+    out_str(v58, 1);
+    v94 = 0;
+    v96 = 0;
+    v98 = 1;
+
+B24:
     v103 = 0;
     v105 = 0;
     v107 = 1;
-B20:
-    v112 = 0;
-    v114 = 0;
-    v116 = 1;
-B22:
-    GC_POINT();
-    v119 = agg_new(0, 2, 0);
-    AGG(v119)->f[0] = (W)(int64_t)v114;
-    AGG(v119)->f[1] = (W)(int64_t)v105;
-    v120 = n_covers(v8, v119);
-    if (!(v120)) goto B23;
-    v112 = add_i64(v112, 1);
-B23:
-    v114 = add_i64(v114, 1);
-    v116 = v114 < 48;
-    if (v116) goto B22;
-    v103 = add_i64(v103, v112);
+
+B26:
+    v110 = agg_new(0, 2, 0);
+    AGG(v110)->f[0] = (W)(i64)v105;
+    AGG(v110)->f[1] = (W)(i64)v96;
+    v111 = n_covers(v8, v110);
+    if (!(v111)) goto B27;
+
+    v103 = add_i64(v103, 1);
+
+B27:
     v105 = add_i64(v105, 1);
-    v107 = v105 < 18;
-    if (v107) goto B20;
-    v125 = kstr(7);
+    v107 = v105 < 48;
+    if (v107) goto B26;
+
+    v94 = add_i64(v94, v103);
+    v96 = add_i64(v96, 1);
+    v98 = v96 < 18;
+    if (v98) goto B24;
+
+    v117 = (u8)(AGG(v0)->f[4]);
+    if (!(v117)) goto B31;
+
+    v116 = kstr(9);
+
+B30:
+    v121 = kstr(10);
     GC_POINT();
     sb_i64(&rt_sb, v33);
-    v126 = sb_take();
-    GC_POINT();
-    v127 = str_cat(v125, v126);
-    v128 = kstr(8);
-    GC_POINT();
-    v129 = str_cat(v127, v128);
+    v122 = sb_take();
+    v123 = str_cat(v121, v122);
+    v124 = kstr(11);
+    v125 = str_cat(v123, v124);
     GC_POINT();
     sb_i64(&rt_sb, v35);
-    v130 = sb_take();
-    GC_POINT();
+    v126 = sb_take();
+    v127 = str_cat(v125, v126);
+    v128 = kstr(12);
+    v129 = str_cat(v127, v128);
+    v130 = n_tool_name(v0);
     v131 = str_cat(v129, v130);
-    v132 = kstr(9);
-    GC_POINT();
+    v132 = kstr(13);
     v133 = str_cat(v131, v132);
-    v134 = n_tool_name(v0);
+    v134 = (i64)(i64)(AGG(v0)->f[2]);
     GC_POINT();
-    v135 = str_cat(v133, v134);
-    v136 = kstr(10);
-    GC_POINT();
-    v137 = str_cat(v135, v136);
-    v138 = (int64_t)(int64_t)(AGG(v0)->f[2]);
-    GC_POINT();
-    sb_i64(&rt_sb, v138);
-    v139 = sb_take();
-    GC_POINT();
-    v140 = str_cat(v137, v139);
-    v141 = kstr(11);
-    GC_POINT();
-    v142 = str_cat(v140, v141);
-    v143 = (int64_t)(int64_t)(AGG(v0)->f[3]);
-    v144 = n_palette(v143);
-    v145 = n_to_string(v144);
-    v147 = kstr(12);
-    v151 = kstr(13);
-    v153 = W2O(AGG(v0)->f[4]);
-    v154 = (int64_t)(ARR(v153)->len);
-    out_str(v142, 0);
-    out_str(v145, 0);
-    out_str(v147, 0);
-    sb_i64(&rt_sb, v103);
+    sb_i64(&rt_sb, v134);
+    v135 = sb_take();
+    v136 = str_cat(v133, v135);
+    v137 = kstr(14);
+    v138 = str_cat(v136, v137);
+    v139 = (i64)(i64)(AGG(v0)->f[3]);
+    v140 = n_palette(v139);
+    v141 = n_to_string(v140);
+    v143 = kstr(15);
+    v147 = kstr(16);
+    v149 = W2O(AGG(v0)->f[7]);
+    v150 = (i64)(ARR(v149)->len);
+    out_str(v138, 0);
+    out_str(v141, 0);
+    out_str(v143, 0);
+    sb_i64(&rt_sb, v94);
     out_sb(0);
-    out_str(v151, 0);
-    sb_i64(&rt_sb, v154);
-    out_sb(1);
-    v158 = kstr(14);
-    out_str(v158, 1);
-    gc_top = fr.up;
-    return 0;
+    out_str(v147, 0);
+    sb_i64(&rt_sb, v150);
+    out_sb(0);
+    out_str(v116, 1);
+    v155 = kstr(17);
+    out_str(v155, 1);
+    v157 = W2O(AGG(v0)->f[6]);
+    out_str(v157, 1);
+    if (v1) goto B32;
+    goto B33;
+
+B31:
+    v116 = kstr(2);
+    goto B30;
+
+B18:
+    v60 = kstr(2);
+    goto B17;
+
+B13:
+    v37 = 111u;
+    goto B12;
+
 B9:
     v20 = 0;
     goto B7;
-B1:
-    v3 = kstr(15);
-    out_str(v3, 0);
-    goto B2;
+
+B32:
+    n_clear_below();
+    FRAME_LEAVE();
+    return;
+
+B33:
+    FRAME_LEAVE();
+    return;
 }
 
-static unit_t n_press(Obj *v0, uint32_t v1) {
-    Obj *v2 = NULL, *v47 = NULL, *v77 = NULL, *v81 = NULL, *v85 = NULL, *v93 = NULL, *v94 = NULL;
-    int64_t v3 = 0, v5 = 0, v35 = 0, v40 = 0, v41 = 0, v46 = 0, v51 = 0, v53 = 0, v56 = 0, v58 = 0, v61 = 0, v63 = 0, v66 = 0, v69 = 0, v71 = 0, v74 = 0, v79 = 0, v86 = 0, v99 = 0, v100 = 0;
-    uint64_t v78 = 0, v80 = 0;
-    uint8_t v9 = 0, v14 = 0, v19 = 0, v24 = 0, v50 = 0, v55 = 0, v60 = 0, v68 = 0, v76 = 0, v84 = 0, v88 = 0, v92 = 0, v97 = 0, v121 = 0, v123 = 0, v128 = 0, v130 = 0, v135 = 0, v137 = 0, v142 = 0, v144 = 0;
-    Obj **fr_roots[8] = {&v0, &v2, &v47, &v77, &v81, &v85, &v93, &v94};
-    Frame fr = {NULL, fr_roots, 8};
-    fr.up = gc_top;
-    gc_top = &fr;
-    v2 = W2O(AGG(v0)->f[0]);
-    v3 = (int64_t)(int64_t)(AGG(v2)->f[0]);
-    v5 = (int64_t)(int64_t)(AGG(v2)->f[1]);
-    v9 = v1 == 97u;
-    if (!(v9)) goto B2;
-    v99 = (-1);
-    v100 = 0;
-B1:
-    v35 = add_i64(v3, v99);
-    v121 = v35 < 0;
-    if (!(v121)) goto B29;
-    v40 = 0;
-B32:
-    v41 = add_i64(v5, v100);
-    v142 = v41 < 0;
-    if (!(v142)) goto B44;
-    v46 = 0;
-B47:
-    GC_POINT();
-    v47 = agg_new(0, 2, 0);
-    AGG(v47)->f[0] = (W)(int64_t)v40;
-    AGG(v47)->f[1] = (W)(int64_t)v46;
-    AGG(v0)->f[0] = O2W(v47);
-    v50 = v1 == 116u;
-    if (!(v50)) goto B10;
-    v51 = (int64_t)(int64_t)(AGG(v0)->f[1]);
-    v53 = add_i64(v51, 1);
-    AGG(v0)->f[1] = (W)(int64_t)v53;
-    gc_top = fr.up;
-    return 0;
-B10:
-    v55 = v1 == 99u;
-    if (!(v55)) goto B12;
-    v56 = (int64_t)(int64_t)(AGG(v0)->f[3]);
-    v58 = add_i64(v56, 1);
-    AGG(v0)->f[3] = (W)(int64_t)v58;
-    gc_top = fr.up;
-    return 0;
-B12:
-    v60 = v1 == 43u;
-    if (!(v60)) goto B14;
-    v61 = (int64_t)(int64_t)(AGG(v0)->f[2]);
-    v63 = add_i64(v61, 1);
-    v128 = v63 < 1;
-    if (!(v128)) goto B34;
-    v66 = 1;
-B37:
-    AGG(v0)->f[2] = (W)(int64_t)v66;
-    gc_top = fr.up;
-    return 0;
-B34:
-    v130 = v63 > 12;
-    if (!(v130)) goto B36;
-    v66 = 12;
-    goto B37;
-B36:
-    v66 = v63;
-    goto B37;
-B14:
-    v68 = v1 == 45u;
-    if (!(v68)) goto B16;
-    v69 = (int64_t)(int64_t)(AGG(v0)->f[2]);
-    v71 = sub_i64(v69, 1);
-    v135 = v71 < 1;
-    if (!(v135)) goto B39;
-    v74 = 1;
-B42:
-    AGG(v0)->f[2] = (W)(int64_t)v74;
-    gc_top = fr.up;
-    return 0;
-B39:
-    v137 = v71 > 12;
-    if (!(v137)) goto B41;
-    v74 = 12;
-    goto B42;
-B41:
-    v74 = v71;
-    goto B42;
-B16:
-    v76 = v1 == 32u;
-    if (!(v76)) goto B18;
-    v77 = W2O(AGG(v0)->f[4]);
-    v78 = n_brush(v0);
-    v79 = (int64_t)(int64_t)(AGG(v0)->f[3]);
-    v80 = n_palette(v79);
-    GC_POINT();
-    v81 = agg_new(0, 2, 0);
-    AGG(v81)->f[0] = (W)v78;
-    AGG(v81)->f[1] = (W)v80;
-    arr_push(v77, O2W(v81));
-    gc_top = fr.up;
-    return 0;
-B18:
-    v84 = v1 == 117u;
-    if (!(v84)) goto B20;
-    v85 = W2O(AGG(v0)->f[4]);
-    v86 = (int64_t)(ARR(v85)->len);
-    v88 = v86 > 0;
-    if (v88) goto B22;
-    goto B23;
-B20:
-    v92 = v1 == 120u;
-    if (!(v92)) goto B24;
-    v93 = W2O(AGG(v0)->f[4]);
-    GC_POINT();
-    v94 = agg_new(1, 0, 0);
-    arr_push(v93, O2W(v94));
-    gc_top = fr.up;
-    return 0;
-B24:
-    v97 = v1 == 113u;
-    if (v97) goto B27;
-    goto B26;
-B44:
-    v144 = v41 > 17;
-    if (!(v144)) goto B46;
-    v46 = 17;
-    goto B47;
-B46:
-    v46 = v41;
-    goto B47;
-B29:
-    v123 = v35 > 47;
-    if (!(v123)) goto B31;
-    v40 = 47;
-    goto B32;
-B31:
-    v40 = v35;
-    goto B32;
+static unit n_press(Obj *v0, Obj *v1) {
+    Obj *v2 = NULL, *v4 = NULL, *v6 = NULL, *v8 = NULL, *v13 = NULL, *v15 = NULL, *v17 = NULL, *v22 = NULL, *v24 = NULL, *v26 = NULL, *v31 = NULL, *v33 = NULL, *v35 = NULL, *v40 = NULL, *v42 = NULL, *v44 = NULL, *v49 = NULL, *v51 = NULL, *v53 = NULL, *v58 = NULL, *v60 = NULL, *v62 = NULL, *v67 = NULL, *v69 = NULL, *v71 = NULL, *v76 = NULL, *v81 = NULL, *v86 = NULL, *v88 = NULL, *v90 = NULL, *v92 = NULL, *v94 = NULL, *v99 = NULL, *v101 = NULL, *v103 = NULL, *v111 = NULL, *v113 = NULL, *v121 = NULL, *v123 = NULL, *v126 = NULL, *v132 = NULL, *v134 = NULL, *v140 = NULL, *v142 = NULL, *v143 = NULL, *v145 = NULL, *v148 = NULL, *v150 = NULL, *v152 = NULL, *v154 = NULL;
+    bool v5 = 0, v7 = 0, v9 = 0, v14 = 0, v16 = 0, v18 = 0, v23 = 0, v25 = 0, v27 = 0, v32 = 0, v34 = 0, v36 = 0, v41 = 0, v43 = 0, v45 = 0, v50 = 0, v52 = 0, v54 = 0, v59 = 0, v61 = 0, v63 = 0, v68 = 0, v70 = 0, v72 = 0, v77 = 0, v82 = 0, v87 = 0, v89 = 0, v91 = 0, v93 = 0, v95 = 0, v100 = 0, v102 = 0, v104 = 0, v112 = 0, v114 = 0, v122 = 0, v124 = 0, v127 = 0, v128 = 0, v129 = 0, v133 = 0, v137 = 0, v141 = 0, v146 = 0, v149 = 0, v151 = 0, v153 = 0, v155 = 0;
+    i64 v78 = 0, v80 = 0, v83 = 0, v85 = 0, v96 = 0, v98 = 0, v105 = 0, v107 = 0, v110 = 0, v115 = 0, v117 = 0, v120 = 0, v135 = 0;
+    FRAME(&v0, &v1, &v2, &v4, &v6, &v8, &v13, &v15, &v17, &v22, &v24, &v26, &v31, &v33, &v35, &v40, &v42, &v44, &v49, &v51, &v53, &v58, &v60, &v62, &v67, &v69, &v71, &v76, &v81, &v86, &v88, &v90, &v92, &v94, &v99, &v101, &v103, &v111, &v113, &v121, &v123, &v126, &v132, &v134, &v140, &v142, &v143, &v145, &v148, &v150, &v152, &v154);
+    v2 = kstr(2);
+    AGG(v0)->f[6] = O2W(v2);
+    v4 = kstr(18);
+    v5 = str_eq(v1, v4);
+    if (!(v5)) goto B3;
+
 B2:
-    v14 = v1 == 100u;
-    if (!(v14)) goto B4;
-    v99 = 1;
-    v100 = 0;
-    goto B1;
-B4:
-    v19 = v1 == 119u;
-    if (!(v19)) goto B6;
-    v99 = 0;
-    v100 = (-1);
-    goto B1;
+    n_step(v0, (-1), 0);
+    FRAME_LEAVE();
+    return;
+
+B3:
+    v6 = kstr(19);
+    v7 = str_eq(v1, v6);
+    if (v7) goto B2;
+
+    v8 = kstr(20);
+    v9 = str_eq(v1, v8);
+    if (v9) goto B2;
+
+    v13 = kstr(21);
+    v14 = str_eq(v1, v13);
+    if (!(v14)) goto B7;
+
 B6:
-    v24 = v1 == 115u;
-    if (!(v24)) goto B8;
-    v99 = 0;
-    v100 = 1;
-    goto B1;
-B8:
-    v99 = 0;
-    v100 = 0;
-    goto B1;
+    n_step(v0, 1, 0);
+    FRAME_LEAVE();
+    return;
+
+B7:
+    v15 = kstr(22);
+    v16 = str_eq(v1, v15);
+    if (v16) goto B6;
+
+    v17 = kstr(23);
+    v18 = str_eq(v1, v17);
+    if (v18) goto B6;
+
+    v22 = kstr(24);
+    v23 = str_eq(v1, v22);
+    if (!(v23)) goto B11;
+
+B10:
+    n_step(v0, 0, (-1));
+    FRAME_LEAVE();
+    return;
+
+B11:
+    v24 = kstr(25);
+    v25 = str_eq(v1, v24);
+    if (v25) goto B10;
+
+    v26 = kstr(26);
+    v27 = str_eq(v1, v26);
+    if (v27) goto B10;
+
+    v31 = kstr(27);
+    v32 = str_eq(v1, v31);
+    if (!(v32)) goto B15;
+
+B14:
+    n_step(v0, 0, 1);
+    FRAME_LEAVE();
+    return;
+
+B15:
+    v33 = kstr(28);
+    v34 = str_eq(v1, v33);
+    if (v34) goto B14;
+
+    v35 = kstr(29);
+    v36 = str_eq(v1, v35);
+    if (v36) goto B14;
+
+    v40 = kstr(30);
+    v41 = str_eq(v1, v40);
+    if (!(v41)) goto B19;
+
+B18:
+    n_step(v0, (-4), 0);
+    FRAME_LEAVE();
+    return;
+
+B19:
+    v42 = kstr(31);
+    v43 = str_eq(v1, v42);
+    if (v43) goto B18;
+
+    v44 = kstr(32);
+    v45 = str_eq(v1, v44);
+    if (v45) goto B18;
+
+    v49 = kstr(33);
+    v50 = str_eq(v1, v49);
+    if (!(v50)) goto B23;
+
 B22:
-    (void)(W2O(arr_pop(v85)));
-    gc_top = fr.up;
-    return 0;
+    n_step(v0, 4, 0);
+    FRAME_LEAVE();
+    return;
+
 B23:
-    gc_top = fr.up;
-    return 0;
-B27:
-    AGG(v0)->f[5] = (W)0;
-    gc_top = fr.up;
-    return 0;
+    v51 = kstr(34);
+    v52 = str_eq(v1, v51);
+    if (v52) goto B22;
+
+    v53 = kstr(35);
+    v54 = str_eq(v1, v53);
+    if (v54) goto B22;
+
+    v58 = kstr(36);
+    v59 = str_eq(v1, v58);
+    if (!(v59)) goto B27;
+
 B26:
-    gc_top = fr.up;
-    return 0;
+    n_step(v0, 0, (-4));
+    FRAME_LEAVE();
+    return;
+
+B27:
+    v60 = kstr(37);
+    v61 = str_eq(v1, v60);
+    if (v61) goto B26;
+
+    v62 = kstr(38);
+    v63 = str_eq(v1, v62);
+    if (v63) goto B26;
+
+    v67 = kstr(39);
+    v68 = str_eq(v1, v67);
+    if (!(v68)) goto B31;
+
+B30:
+    n_step(v0, 0, 4);
+    FRAME_LEAVE();
+    return;
+
+B31:
+    v69 = kstr(40);
+    v70 = str_eq(v1, v69);
+    if (v70) goto B30;
+
+    v71 = kstr(41);
+    v72 = str_eq(v1, v71);
+    if (v72) goto B30;
+
+    v76 = kstr(42);
+    v77 = str_eq(v1, v76);
+    if (!(v77)) goto B33;
+
+    v78 = (i64)(i64)(AGG(v0)->f[1]);
+    v80 = add_i64(v78, 1);
+    AGG(v0)->f[1] = (W)(i64)v80;
+    FRAME_LEAVE();
+    return;
+
+B33:
+    v81 = kstr(43);
+    v82 = str_eq(v1, v81);
+    if (!(v82)) goto B35;
+
+    v83 = (i64)(i64)(AGG(v0)->f[3]);
+    v85 = add_i64(v83, 1);
+    AGG(v0)->f[3] = (W)(i64)v85;
+    FRAME_LEAVE();
+    return;
+
+B35:
+    v86 = kstr(44);
+    v87 = str_eq(v1, v86);
+    if (!(v87)) goto B39;
+
+B38:
+    v96 = parse_i64(v1);
+    v98 = sub_i64(v96, 1);
+    AGG(v0)->f[3] = (W)(i64)v98;
+    FRAME_LEAVE();
+    return;
+
+B39:
+    v88 = kstr(45);
+    v89 = str_eq(v1, v88);
+    if (v89) goto B38;
+
+    v90 = kstr(46);
+    v91 = str_eq(v1, v90);
+    if (v91) goto B38;
+
+    v92 = kstr(47);
+    v93 = str_eq(v1, v92);
+    if (v93) goto B38;
+
+    v94 = kstr(48);
+    v95 = str_eq(v1, v94);
+    if (v95) goto B38;
+
+    v99 = kstr(5);
+    v100 = str_eq(v1, v99);
+    if (!(v100)) goto B45;
+
+B44:
+    v105 = (i64)(i64)(AGG(v0)->f[2]);
+    v107 = add_i64(v105, 1);
+    v110 = n_clamp(v107, 1, 12);
+    AGG(v0)->f[2] = (W)(i64)v110;
+    FRAME_LEAVE();
+    return;
+
+B45:
+    v101 = kstr(49);
+    v102 = str_eq(v1, v101);
+    if (v102) goto B44;
+
+    v103 = kstr(50);
+    v104 = str_eq(v1, v103);
+    if (v104) goto B44;
+
+    v111 = kstr(6);
+    v112 = str_eq(v1, v111);
+    if (!(v112)) goto B49;
+
+B48:
+    v115 = (i64)(i64)(AGG(v0)->f[2]);
+    v117 = sub_i64(v115, 1);
+    v120 = n_clamp(v117, 1, 12);
+    AGG(v0)->f[2] = (W)(i64)v120;
+    FRAME_LEAVE();
+    return;
+
+B49:
+    v113 = kstr(51);
+    v114 = str_eq(v1, v113);
+    if (v114) goto B48;
+
+    v121 = kstr(52);
+    v122 = str_eq(v1, v121);
+    if (v122) goto B51;
+
+    v123 = kstr(53);
+    v124 = str_eq(v1, v123);
+    if (v124) goto B51;
+
+    v126 = kstr(54);
+    v127 = str_eq(v1, v126);
+    if (!(v127)) goto B53;
+
+    v128 = (u8)(AGG(v0)->f[4]);
+    v129 = !v128;
+    AGG(v0)->f[4] = (W)v129;
+    if (v129) goto B55;
+    goto B56;
+
+B53:
+    v132 = kstr(55);
+    v133 = str_eq(v1, v132);
+    if (!(v133)) goto B57;
+
+    v134 = W2O(AGG(v0)->f[7]);
+    v135 = (i64)(ARR(v134)->len);
+    v137 = v135 > 0;
+    if (v137) goto B59;
+    goto B60;
+
+B57:
+    v140 = kstr(56);
+    v141 = str_eq(v1, v140);
+    if (!(v141)) goto B61;
+
+    v142 = W2O(AGG(v0)->f[7]);
+    v143 = agg_new(1, 0, 0);
+    arr_push(v142, O2W(v143));
+    FRAME_LEAVE();
+    return;
+
+B61:
+    v145 = kstr(57);
+    v146 = str_eq(v1, v145);
+    if (v146) goto B64;
+
+    v148 = kstr(58);
+    v149 = str_eq(v1, v148);
+    if (v149) goto B66;
+
+    v150 = kstr(59);
+    v151 = str_eq(v1, v150);
+    if (v151) goto B66;
+
+    v152 = kstr(60);
+    v153 = str_eq(v1, v152);
+    if (v153) goto B66;
+
+    v154 = kstr(61);
+    v155 = str_eq(v1, v154);
+    if (v155) goto B66;
+    goto B65;
+
+B51:
+    n_stamp(v0);
+    FRAME_LEAVE();
+    return;
+
+B55:
+    n_stamp(v0);
+    FRAME_LEAVE();
+    return;
+
+B56:
+    FRAME_LEAVE();
+    return;
+
+B59:
+    (void)(W2O(arr_pop(v134)));
+    FRAME_LEAVE();
+    return;
+
+B60:
+    FRAME_LEAVE();
+    return;
+
+B64:
+    n_save(v0);
+    FRAME_LEAVE();
+    return;
+
+B66:
+    AGG(v0)->f[8] = (W)0;
+    FRAME_LEAVE();
+    return;
+
+B65:
+    FRAME_LEAVE();
+    return;
+}
+
+static unit n_move_to(i64 v0, i64 v1) {
+    Obj *v2 = NULL, *v7 = NULL, *v13 = NULL;
+    i64 v4 = 0, v10 = 0;
+    v2 = kstr(62);
+    v4 = add_i64(v1, 1);
+    v7 = kstr(63);
+    v10 = add_i64(v0, 1);
+    v13 = kstr(32);
+    out_str(v2, 0);
+    sb_i64(&rt_sb, v4);
+    out_sb(0);
+    out_str(v7, 0);
+    sb_i64(&rt_sb, v10);
+    out_sb(0);
+    out_str(v13, 0);
+    return;
 }
 
 static Obj *n_canvas(Obj *v0) {
     Obj *v1 = NULL, *v7 = NULL, *v19 = NULL, *v24 = NULL, *v37 = NULL, *v54 = NULL, *v57 = NULL;
-    int64_t v5 = 0, v11 = 0, v20 = 0, v22 = 0, v28 = 0, v33 = 0, v46 = 0, v51 = 0, v63 = 0, v83 = 0, v95 = 0, v96 = 0, v98 = 0, v99 = 0, v100 = 0, v101 = 0, v102 = 0;
-    uint32_t v56 = 0;
-    uint64_t v40 = 0, v42 = 0, v106 = 0, v118 = 0, v120 = 0, v122 = 0, v124 = 0;
-    uint8_t v6 = 0, v12 = 0, v23 = 0, v29 = 0, v34 = 0, v47 = 0, v52 = 0, v55 = 0, v67 = 0, v71 = 0, v75 = 0, v79 = 0, v85 = 0, v88 = 0, v90 = 0, v92 = 0, v108 = 0, v112 = 0, v116 = 0;
-    Obj **fr_roots[8] = {&v0, &v1, &v7, &v19, &v24, &v37, &v54, &v57};
-    Frame fr = {NULL, fr_roots, 8};
-    fr.up = gc_top;
-    gc_top = &fr;
-    GC_POINT();
+    bool v6 = 0, v12 = 0, v23 = 0, v29 = 0, v34 = 0, v47 = 0, v52 = 0, v55 = 0, v67 = 0, v71 = 0, v75 = 0, v79 = 0, v108 = 0, v112 = 0, v116 = 0;
+    chr v56 = 0;
+    i64 v5 = 0, v11 = 0, v20 = 0, v22 = 0, v28 = 0, v33 = 0, v46 = 0, v51 = 0, v63 = 0, v83 = 0, v95 = 0, v96 = 0, v98 = 0, v99 = 0, v100 = 0, v101 = 0, v102 = 0;
+    u64 v40 = 0, v42 = 0, v106 = 0, v118 = 0, v120 = 0, v122 = 0, v124 = 0;
+    u8 v85 = 0, v88 = 0, v90 = 0, v92 = 0;
+    FRAME(&v0, &v1, &v7, &v19, &v24, &v37, &v54, &v57);
     v1 = arr_new(0, 1);
     v5 = 0;
     v6 = 1;
+
 B1:
-    GC_POINT();
     v7 = arr_new(0, 0);
     v11 = 0;
     v12 = 1;
+
 B3:
     arr_push(v7, (W)32u);
     v11 = add_i64(v11, 1);
     v12 = v11 < 48;
     if (v12) goto B3;
+
     arr_push(v1, O2W(v7));
     v5 = add_i64(v5, 1);
     v6 = v5 < 18;
     if (v6) goto B1;
-    v19 = W2O(AGG(v0)->f[4]);
+
+    v19 = W2O(AGG(v0)->f[7]);
     v20 = 0;
-    v22 = (int64_t)(ARR(v19)->len);
+    v22 = (i64)(ARR(v19)->len);
     v23 = v20 < v22;
     if (!(v23)) goto B7;
+
 B5:
-    v24 = W2O(arr_get(v19, (int64_t)v20));
+    v24 = W2O(arr_get(v19, (i64)v20));
     if (!(TAG(v24) == 1)) goto B8;
+
     v28 = 0;
     v29 = 1;
+
 B10:
     v33 = 0;
     v34 = 1;
+
 B12:
-    v37 = W2O(arr_get(v1, (int64_t)v28));
-    arr_set(v37, (int64_t)v33, (W)32u);
+    v37 = W2O(arr_get(v1, (i64)v28));
+    arr_set(v37, (i64)v33, (W)32u);
     v33 = add_i64(v33, 1);
     v34 = v33 < 48;
     if (v34) goto B12;
+
     v28 = add_i64(v28, 1);
     v29 = v28 < 18;
     if (v29) goto B10;
+
 B6:
     v20 = add_i64(v20, 1);
-    v22 = (int64_t)(ARR(v19)->len);
+    v22 = (i64)(ARR(v19)->len);
     v23 = v20 < v22;
     if (v23) goto B5;
     goto B7;
+
 B8:
     if (!(TAG(v24) == 0)) goto B13;
-    v40 = (uint64_t)(AGG(v24)->f[0]);
-    v42 = (uint64_t)(AGG(v24)->f[1]);
+
+    v40 = (u64)(AGG(v24)->f[0]);
+    v42 = (u64)(AGG(v24)->f[1]);
     v46 = 0;
     v47 = 1;
-    v106 = (uint64_t)(v42 & 255u);
+    v106 = (u64)(v42 & 255u);
     v108 = v106 == 0u;
     v112 = v106 == 1u;
     v116 = v106 == 2u;
+
 B15:
     v51 = 0;
     v52 = 1;
+
 B17:
-    GC_POINT();
     v54 = agg_new(0, 2, 0);
-    AGG(v54)->f[0] = (W)(int64_t)v51;
-    AGG(v54)->f[1] = (W)(int64_t)v46;
+    AGG(v54)->f[0] = (W)(i64)v51;
+    AGG(v54)->f[1] = (W)(i64)v46;
     v55 = n_covers(v40, v54);
     if (!(v55)) goto B18;
     if (!(v108)) goto B29;
+
     v83 = 0;
     v63 = 0;
+
 B35:
     v67 = v63 == 0;
     if (!(v67)) goto B21;
+
     v56 = 32u;
+
 B28:
-    v57 = W2O(arr_get(v1, (int64_t)v46));
-    arr_set(v57, (int64_t)v51, (W)v56);
+    v57 = W2O(arr_get(v1, (i64)v46));
+    arr_set(v57, (i64)v51, (W)v56);
+
 B18:
     v51 = add_i64(v51, 1);
     v52 = v51 < 48;
     if (v52) goto B17;
+
     v46 = add_i64(v46, 1);
     v47 = v46 < 18;
     if (v47) goto B15;
     goto B6;
+
 B21:
     v71 = v63 < 100;
     if (!(v71)) goto B23;
+
     v56 = 46u;
     goto B28;
+
 B23:
     v75 = v63 < 160;
     if (!(v75)) goto B25;
+
     v56 = 58u;
     goto B28;
+
 B25:
     v79 = v63 < 220;
     if (!(v79)) goto B27;
+
     v56 = 111u;
     goto B28;
+
 B27:
     v56 = 35u;
     goto B28;
+
 B29:
     if (!(v112)) goto B31;
-    v118 = shr_u64(v42, (int64_t)8);
-    v85 = (uint8_t)v118;
-    v83 = (int64_t)v85;
+
+    v118 = shr_u64(v42, (i64)8);
+    v85 = (u8)v118;
+    v83 = (i64)v85;
     v63 = v83;
     goto B35;
+
 B31:
     if (!(v116)) goto B33;
-    v120 = shr_u64(v42, (int64_t)8);
-    v88 = (uint8_t)v120;
-    v122 = shr_u64(v42, (int64_t)16);
-    v90 = (uint8_t)v122;
-    v124 = shr_u64(v42, (int64_t)24);
-    v92 = (uint8_t)v124;
-    v95 = (int64_t)v88;
+
+    v120 = shr_u64(v42, (i64)8);
+    v88 = (u8)v120;
+    v122 = shr_u64(v42, (i64)16);
+    v90 = (u8)v122;
+    v124 = shr_u64(v42, (i64)24);
+    v92 = (u8)v124;
+    v95 = (i64)v88;
     v96 = mul_i64(2, v95);
-    v98 = (int64_t)v90;
+    v98 = (i64)v90;
     v99 = mul_i64(5, v98);
     v100 = add_i64(v96, v99);
-    v101 = (int64_t)v92;
+    v101 = (i64)v92;
     v102 = add_i64(v100, v101);
     v83 = div_i64(v102, 8);
     v63 = v83;
     goto B35;
+
 B7:
-    gc_top = fr.up;
+    FRAME_LEAVE();
     return v1;
+
 B13:
     trap_unreach("canvas");
+
 B33:
     trap_unreach("canvas");
 }
 
-static uint64_t n_brush(Obj *v0) {
+static u64 n_brush(Obj *v0) {
     Obj *v1 = NULL;
-    int64_t v2 = 0, v4 = 0, v6 = 0, v10 = 0, v12 = 0;
-    uint64_t v9 = 0, v35 = 0, v37 = 0, v38 = 0, v40 = 0, v41 = 0, v43 = 0, v44 = 0, v46 = 0, v47 = 0, v49 = 0, v51 = 0, v52 = 0, v53 = 0, v55 = 0, v56 = 0, v58 = 0, v59 = 0, v61 = 0, v63 = 0, v64 = 0, v65 = 0, v67 = 0, v68 = 0, v70 = 0, v71 = 0, v73 = 0, v74 = 0, v76 = 0, v78 = 0, v79 = 0, v80 = 0;
-    uint8_t v7 = 0, v14 = 0, v15 = 0, v16 = 0, v19 = 0, v20 = 0, v21 = 0, v23 = 0, v26 = 0, v27 = 0, v28 = 0, v30 = 0, v32 = 0, v33 = 0;
+    bool v14 = 0, v19 = 0, v26 = 0;
+    i64 v2 = 0, v4 = 0, v6 = 0, v10 = 0, v12 = 0;
+    u64 v9 = 0, v35 = 0, v37 = 0, v38 = 0, v40 = 0, v41 = 0, v43 = 0, v44 = 0, v46 = 0, v47 = 0, v49 = 0, v51 = 0, v52 = 0, v53 = 0, v55 = 0, v56 = 0, v58 = 0, v59 = 0, v61 = 0, v63 = 0, v64 = 0, v65 = 0, v67 = 0, v68 = 0, v70 = 0, v71 = 0, v73 = 0, v74 = 0, v76 = 0, v78 = 0, v79 = 0, v80 = 0;
+    u8 v7 = 0, v15 = 0, v16 = 0, v20 = 0, v21 = 0, v23 = 0, v27 = 0, v28 = 0, v30 = 0, v32 = 0, v33 = 0;
     v1 = W2O(AGG(v0)->f[0]);
-    v2 = (int64_t)(int64_t)(AGG(v1)->f[0]);
-    v4 = (int64_t)(int64_t)(AGG(v1)->f[1]);
-    v6 = (int64_t)(int64_t)(AGG(v0)->f[2]);
-    v7 = (uint8_t)v6;
-    v10 = (int64_t)(int64_t)(AGG(v0)->f[1]);
+    v2 = (i64)(i64)(AGG(v1)->f[0]);
+    v4 = (i64)(i64)(AGG(v1)->f[1]);
+    v6 = (i64)(i64)(AGG(v0)->f[2]);
+    v7 = (u8)v6;
+    v10 = (i64)(i64)(AGG(v0)->f[1]);
     v12 = rem_i64(v10, 4);
     v14 = v12 == 0;
     if (!(v14)) goto B1;
-    v15 = (uint8_t)v2;
-    v16 = (uint8_t)v4;
-    v35 = (uint64_t)v15;
-    v37 = shl_u64(v35, (int64_t)8);
-    v38 = (uint64_t)v16;
-    v40 = shl_u64(v38, (int64_t)16);
-    v9 = (uint64_t)(v37 | v40);
+
+    v15 = (u8)v2;
+    v16 = (u8)v4;
+    v35 = (u64)v15;
+    v37 = shl_u64(v35, (i64)8);
+    v38 = (u64)v16;
+    v40 = shl_u64(v38, (i64)16);
+    v9 = (u64)(v37 | v40);
     return v9;
+
 B1:
     v19 = v12 == 1;
     if (!(v19)) goto B3;
-    v20 = (uint8_t)v2;
-    v21 = (uint8_t)v4;
+
+    v20 = (u8)v2;
+    v21 = (u8)v4;
     v23 = mul_u8(v7, 2);
-    v41 = (uint64_t)v20;
-    v43 = shl_u64(v41, (int64_t)8);
-    v44 = (uint64_t)v21;
-    v46 = shl_u64(v44, (int64_t)16);
-    v47 = (uint64_t)v23;
-    v49 = shl_u64(v47, (int64_t)24);
-    v51 = (uint64_t)(v43 | 1u);
-    v52 = (uint64_t)(v51 | v46);
-    v9 = (uint64_t)(v52 | v49);
+    v41 = (u64)v20;
+    v43 = shl_u64(v41, (i64)8);
+    v44 = (u64)v21;
+    v46 = shl_u64(v44, (i64)16);
+    v47 = (u64)v23;
+    v49 = shl_u64(v47, (i64)24);
+    v51 = (u64)(v43 | 1u);
+    v52 = (u64)(v51 | v46);
+    v9 = (u64)(v52 | v49);
     return v9;
+
 B3:
     v26 = v12 == 2;
     if (!(v26)) goto B5;
-    v27 = (uint8_t)v2;
-    v28 = (uint8_t)v4;
+
+    v27 = (u8)v2;
+    v28 = (u8)v4;
     v30 = mul_u8(v7, 2);
-    v65 = (uint64_t)v27;
-    v67 = shl_u64(v65, (int64_t)8);
-    v68 = (uint64_t)v28;
-    v70 = shl_u64(v68, (int64_t)16);
-    v71 = (uint64_t)v30;
-    v73 = shl_u64(v71, (int64_t)24);
-    v74 = (uint64_t)v7;
-    v76 = shl_u64(v74, (int64_t)32);
-    v78 = (uint64_t)(v67 | 2u);
-    v79 = (uint64_t)(v78 | v70);
-    v80 = (uint64_t)(v79 | v73);
-    v9 = (uint64_t)(v80 | v76);
+    v65 = (u64)v27;
+    v67 = shl_u64(v65, (i64)8);
+    v68 = (u64)v28;
+    v70 = shl_u64(v68, (i64)16);
+    v71 = (u64)v30;
+    v73 = shl_u64(v71, (i64)24);
+    v74 = (u64)v7;
+    v76 = shl_u64(v74, (i64)32);
+    v78 = (u64)(v67 | 2u);
+    v79 = (u64)(v78 | v70);
+    v80 = (u64)(v79 | v73);
+    v9 = (u64)(v80 | v76);
     return v9;
+
 B5:
-    v32 = (uint8_t)v2;
-    v33 = (uint8_t)v4;
-    v53 = (uint64_t)v32;
-    v55 = shl_u64(v53, (int64_t)8);
-    v56 = (uint64_t)v33;
-    v58 = shl_u64(v56, (int64_t)16);
-    v59 = (uint64_t)v7;
-    v61 = shl_u64(v59, (int64_t)24);
-    v63 = (uint64_t)(v55 | 3u);
-    v64 = (uint64_t)(v63 | v58);
-    v9 = (uint64_t)(v64 | v61);
+    v32 = (u8)v2;
+    v33 = (u8)v4;
+    v53 = (u64)v32;
+    v55 = shl_u64(v53, (i64)8);
+    v56 = (u64)v33;
+    v58 = shl_u64(v56, (i64)16);
+    v59 = (u64)v7;
+    v61 = shl_u64(v59, (i64)24);
+    v63 = (u64)(v55 | 3u);
+    v64 = (u64)(v63 | v58);
+    v9 = (u64)(v64 | v61);
     return v9;
 }
 
-static uint8_t n_covers(uint64_t v0, Obj *v1) {
-    int64_t v2 = 0, v4 = 0, v12 = 0, v15 = 0, v25 = 0, v28 = 0, v32 = 0, v33 = 0, v43 = 0, v45 = 0, v49 = 0, v51 = 0, v65 = 0, v66 = 0, v68 = 0, v69 = 0, v71 = 0, v73 = 0, v74 = 0, v75 = 0, v76 = 0, v78 = 0, v97 = 0, v101 = 0;
-    uint64_t v105 = 0, v113 = 0, v115 = 0, v121 = 0, v123 = 0, v125 = 0, v131 = 0, v133 = 0, v135 = 0, v137 = 0, v139 = 0, v141 = 0, v143 = 0;
-    uint8_t v6 = 0, v7 = 0, v9 = 0, v11 = 0, v13 = 0, v17 = 0, v19 = 0, v21 = 0, v23 = 0, v24 = 0, v26 = 0, v35 = 0, v37 = 0, v39 = 0, v41 = 0, v55 = 0, v59 = 0, v61 = 0, v63 = 0, v82 = 0, v84 = 0, v90 = 0, v92 = 0, v107 = 0, v111 = 0, v119 = 0, v129 = 0;
-    v2 = (int64_t)(int64_t)(AGG(v1)->f[0]);
-    v4 = (int64_t)(int64_t)(AGG(v1)->f[1]);
-    v105 = (uint64_t)(v0 & 255u);
+static bool n_covers(u64 v0, Obj *v1) {
+    bool v6 = 0, v11 = 0, v13 = 0, v23 = 0, v24 = 0, v26 = 0, v55 = 0, v82 = 0, v84 = 0, v90 = 0, v92 = 0, v107 = 0, v111 = 0, v119 = 0, v129 = 0;
+    i64 v2 = 0, v4 = 0, v12 = 0, v15 = 0, v25 = 0, v28 = 0, v32 = 0, v33 = 0, v43 = 0, v45 = 0, v49 = 0, v51 = 0, v65 = 0, v66 = 0, v68 = 0, v69 = 0, v71 = 0, v73 = 0, v74 = 0, v75 = 0, v76 = 0, v78 = 0, v97 = 0, v101 = 0;
+    u64 v105 = 0, v113 = 0, v115 = 0, v121 = 0, v123 = 0, v125 = 0, v131 = 0, v133 = 0, v135 = 0, v137 = 0, v139 = 0, v141 = 0, v143 = 0;
+    u8 v7 = 0, v9 = 0, v17 = 0, v19 = 0, v21 = 0, v35 = 0, v37 = 0, v39 = 0, v41 = 0, v59 = 0, v61 = 0, v63 = 0;
+    v2 = (i64)(i64)(AGG(v1)->f[0]);
+    v4 = (i64)(i64)(AGG(v1)->f[1]);
+    v105 = (u64)(v0 & 255u);
     v107 = v105 == 0u;
     if (!(v107)) goto B1;
-    v113 = shr_u64(v0, (int64_t)8);
-    v7 = (uint8_t)v113;
-    v115 = shr_u64(v0, (int64_t)16);
-    v9 = (uint8_t)v115;
-    v12 = (int64_t)v7;
+
+    v113 = shr_u64(v0, (i64)8);
+    v7 = (u8)v113;
+    v115 = shr_u64(v0, (i64)16);
+    v9 = (u8)v115;
+    v12 = (i64)v7;
     v13 = v2 == v12;
     if (!(v13)) goto B4;
-    v15 = (int64_t)v9;
+
+    v15 = (i64)v9;
     v11 = v4 == v15;
     v6 = v11;
     return v11;
+
 B1:
     v111 = v105 == 1u;
     if (!(v111)) goto B5;
-    v121 = shr_u64(v0, (int64_t)8);
-    v17 = (uint8_t)v121;
-    v123 = shr_u64(v0, (int64_t)16);
-    v19 = (uint8_t)v123;
-    v125 = shr_u64(v0, (int64_t)24);
-    v21 = (uint8_t)v125;
-    v25 = (int64_t)v19;
+
+    v121 = shr_u64(v0, (i64)8);
+    v17 = (u8)v121;
+    v123 = shr_u64(v0, (i64)16);
+    v19 = (u8)v123;
+    v125 = shr_u64(v0, (i64)24);
+    v21 = (u8)v125;
+    v25 = (i64)v19;
     v26 = v4 == v25;
     if (!(v26)) goto B8;
-    v28 = (int64_t)v17;
+
+    v28 = (i64)v17;
     v24 = v2 >= v28;
     if (!(v24)) goto B10;
-    v32 = (int64_t)v21;
+
+    v32 = (i64)v21;
     v33 = add_i64(v28, v32);
     v23 = v2 < v33;
     v6 = v23;
     return v23;
+
 B8:
     v24 = 0;
     v23 = 0;
     v6 = 0;
     return v6;
+
 B5:
     v119 = v105 == 2u;
     if (!(v119)) goto B11;
-    v131 = shr_u64(v0, (int64_t)8);
-    v35 = (uint8_t)v131;
-    v133 = shr_u64(v0, (int64_t)16);
-    v37 = (uint8_t)v133;
-    v135 = shr_u64(v0, (int64_t)24);
-    v39 = (uint8_t)v135;
-    v137 = shr_u64(v0, (int64_t)32);
-    v41 = (uint8_t)v137;
-    v43 = (int64_t)v35;
-    v45 = (int64_t)v39;
+
+    v131 = shr_u64(v0, (i64)8);
+    v35 = (u8)v131;
+    v133 = shr_u64(v0, (i64)16);
+    v37 = (u8)v133;
+    v135 = shr_u64(v0, (i64)24);
+    v39 = (u8)v135;
+    v137 = shr_u64(v0, (i64)32);
+    v41 = (u8)v137;
+    v43 = (i64)v35;
+    v45 = (i64)v39;
     v97 = add_i64(v43, v45);
-    v49 = (int64_t)v37;
-    v51 = (int64_t)v41;
+    v49 = (i64)v37;
+    v51 = (i64)v41;
     v101 = add_i64(v49, v51);
     v84 = v2 >= v43;
     if (!(v84)) goto B18;
+
     v82 = v2 < v97;
     if (!(v82)) goto B14;
+
     v92 = v4 >= v49;
     if (!(v92)) goto B20;
+
     v90 = v4 < v101;
     v55 = v90;
     v6 = v90;
     return v90;
+
 B20:
     v90 = 0;
     v55 = 0;
     v6 = 0;
     return v55;
+
 B18:
     v82 = 0;
     v55 = 0;
     v6 = 0;
     return v6;
+
 B11:
     v129 = v105 == 3u;
     if (!(v129)) goto B15;
-    v139 = shr_u64(v0, (int64_t)8);
-    v59 = (uint8_t)v139;
-    v141 = shr_u64(v0, (int64_t)16);
-    v61 = (uint8_t)v141;
-    v143 = shr_u64(v0, (int64_t)24);
-    v63 = (uint8_t)v143;
-    v65 = (int64_t)v59;
+
+    v139 = shr_u64(v0, (i64)8);
+    v59 = (u8)v139;
+    v141 = shr_u64(v0, (i64)16);
+    v61 = (u8)v141;
+    v143 = shr_u64(v0, (i64)24);
+    v63 = (u8)v143;
+    v65 = (i64)v59;
     v66 = sub_i64(v2, v65);
-    v68 = (int64_t)v61;
+    v68 = (i64)v61;
     v69 = sub_i64(v4, v68);
     v71 = mul_i64(v69, 2);
     v73 = mul_i64(v66, v66);
     v74 = mul_i64(v71, v71);
     v75 = add_i64(v73, v74);
-    v76 = (int64_t)v63;
+    v76 = (i64)v63;
     v78 = mul_i64(v76, v76);
     v6 = v75 <= v78;
     return v6;
+
 B4:
     v11 = 0;
     v6 = 0;
     return v6;
+
 B10:
     v23 = 0;
     v6 = 0;
     return v6;
+
 B14:
     v55 = 0;
     v6 = 0;
     return v6;
+
 B15:
     trap_unreach("covers");
 }
 
 static Obj *n_tool_name(Obj *v0) {
     Obj *v1 = NULL;
-    int64_t v2 = 0, v4 = 0;
-    uint8_t v6 = 0, v9 = 0, v12 = 0;
-    v2 = (int64_t)(int64_t)(AGG(v0)->f[1]);
+    bool v6 = 0, v9 = 0, v12 = 0;
+    i64 v2 = 0, v4 = 0;
+    v2 = (i64)(i64)(AGG(v0)->f[1]);
     v4 = rem_i64(v2, 4);
     v6 = v4 == 0;
     if (v6) goto B2;
+
     v9 = v4 == 1;
     if (v9) goto B4;
+
     v12 = v4 == 2;
     if (v12) goto B6;
     goto B5;
+
 B2:
-    v1 = kstr(16);
+    v1 = kstr(64);
     return v1;
+
 B4:
-    v1 = kstr(17);
+    v1 = kstr(65);
     return v1;
+
 B6:
-    v1 = kstr(18);
+    v1 = kstr(66);
     return v1;
+
 B5:
-    v1 = kstr(19);
+    v1 = kstr(67);
     return v1;
 }
 
-static uint64_t n_palette(int64_t v0) {
-    int64_t v3 = 0;
-    uint64_t v1 = 0;
-    uint8_t v5 = 0, v9 = 0, v13 = 0, v19 = 0;
+static u64 n_palette(i64 v0) {
+    bool v5 = 0, v9 = 0, v13 = 0, v19 = 0;
+    i64 v3 = 0;
+    u64 v1 = 0;
     v3 = rem_i64(v0, 5);
     v5 = v3 == 0;
     if (v5) goto B2;
+
     v9 = v3 == 1;
     if (v9) goto B4;
+
     v13 = v3 == 2;
     if (v13) goto B6;
+
     v19 = v3 == 3;
     if (v19) goto B8;
     goto B7;
+
 B2:
     v1 = 17921u;
     return v1;
+
 B4:
     v1 = 33281u;
     return v1;
+
 B6:
     v1 = 1016514562u;
     return v1;
+
 B8:
     v1 = 3371235842u;
     return v1;
+
 B7:
     v1 = 0u;
     return v1;
 }
 
-static Obj *n_to_string(uint64_t v0) {
+static Obj *n_to_string(u64 v0) {
     Obj *v1 = NULL, *v5 = NULL, *v6 = NULL, *v14 = NULL, *v15 = NULL, *v16 = NULL, *v17 = NULL, *v18 = NULL, *v19 = NULL, *v20 = NULL, *v22 = NULL, *v23 = NULL;
-    uint64_t v26 = 0, v38 = 0, v40 = 0, v42 = 0, v44 = 0;
-    uint8_t v3 = 0, v8 = 0, v10 = 0, v12 = 0, v28 = 0, v32 = 0, v36 = 0;
-    Obj **fr_roots[12] = {&v1, &v5, &v6, &v14, &v15, &v16, &v17, &v18, &v19, &v20, &v22, &v23};
-    Frame fr = {NULL, fr_roots, 12};
-    fr.up = gc_top;
-    gc_top = &fr;
-    v26 = (uint64_t)(v0 & 255u);
+    bool v28 = 0, v32 = 0, v36 = 0;
+    u64 v26 = 0, v38 = 0, v40 = 0, v42 = 0, v44 = 0;
+    u8 v3 = 0, v8 = 0, v10 = 0, v12 = 0;
+    FRAME(&v1, &v5, &v6, &v14, &v15, &v16, &v17, &v18, &v19, &v20, &v22, &v23);
+    v26 = (u64)(v0 & 255u);
     v28 = v26 == 0u;
     if (v28) goto B2;
+
     v32 = v26 == 1u;
     if (!(v32)) goto B3;
-    v38 = shr_u64(v0, (int64_t)8);
-    v3 = (uint8_t)v38;
-    v5 = kstr(20);
+
+    v38 = shr_u64(v0, (i64)8);
+    v3 = (u8)v38;
+    v5 = kstr(68);
     GC_POINT();
     sb_u64(&rt_sb, v3);
     v6 = sb_take();
-    GC_POINT();
     v1 = str_cat(v5, v6);
-    gc_top = fr.up;
+    FRAME_LEAVE();
     return v1;
+
 B3:
     v36 = v26 == 2u;
     if (!(v36)) goto B5;
-    v40 = shr_u64(v0, (int64_t)8);
-    v8 = (uint8_t)v40;
-    v42 = shr_u64(v0, (int64_t)16);
-    v10 = (uint8_t)v42;
-    v44 = shr_u64(v0, (int64_t)24);
-    v12 = (uint8_t)v44;
-    v14 = kstr(21);
+
+    v40 = shr_u64(v0, (i64)8);
+    v8 = (u8)v40;
+    v42 = shr_u64(v0, (i64)16);
+    v10 = (u8)v42;
+    v44 = shr_u64(v0, (i64)24);
+    v12 = (u8)v44;
+    v14 = kstr(69);
     GC_POINT();
     sb_u64(&rt_sb, v8);
     v15 = sb_take();
-    GC_POINT();
     v16 = str_cat(v14, v15);
-    v17 = kstr(22);
-    GC_POINT();
+    v17 = kstr(70);
     v18 = str_cat(v16, v17);
     GC_POINT();
     sb_u64(&rt_sb, v10);
     v19 = sb_take();
-    GC_POINT();
     v20 = str_cat(v18, v19);
-    GC_POINT();
     v22 = str_cat(v20, v17);
     GC_POINT();
     sb_u64(&rt_sb, v12);
     v23 = sb_take();
-    GC_POINT();
     v1 = str_cat(v22, v23);
-    gc_top = fr.up;
+    FRAME_LEAVE();
     return v1;
+
 B2:
-    v1 = kstr(23);
-    gc_top = fr.up;
+    v1 = kstr(71);
+    FRAME_LEAVE();
     return v1;
+
 B5:
     trap_unreach("to_string");
+}
+
+static unit n_clear_below(void) {
+    Obj *v0 = NULL;
+    v0 = kstr(72);
+    out_str(v0, 0);
+    return;
+}
+
+static unit n_step(Obj *v0, i64 v1, i64 v2) {
+    Obj *v3 = NULL, *v20 = NULL, *v32 = NULL, *v36 = NULL;
+    bool v22 = 0, v28 = 0, v30 = 0, v43 = 0, v45 = 0;
+    i64 v4 = 0, v6 = 0, v8 = 0, v13 = 0, v14 = 0, v19 = 0, v34 = 0;
+    u64 v33 = 0, v35 = 0;
+    FRAME(&v0, &v3, &v20, &v32, &v36);
+    v3 = W2O(AGG(v0)->f[0]);
+    v4 = (i64)(i64)(AGG(v3)->f[0]);
+    v6 = (i64)(i64)(AGG(v3)->f[1]);
+    v8 = add_i64(v4, v1);
+    v28 = v8 < 0;
+    if (!(v28)) goto B4;
+
+    v13 = 0;
+
+B7:
+    v14 = add_i64(v6, v2);
+    v43 = v14 < 0;
+    if (!(v43)) goto B9;
+
+    v19 = 0;
+
+B12:
+    v20 = agg_new(0, 2, 0);
+    AGG(v20)->f[0] = (W)(i64)v13;
+    AGG(v20)->f[1] = (W)(i64)v19;
+    AGG(v0)->f[0] = O2W(v20);
+    v22 = (u8)(AGG(v0)->f[4]);
+    if (!(v22)) goto B2;
+
+    v32 = W2O(AGG(v0)->f[7]);
+    v33 = n_brush(v0);
+    v34 = (i64)(i64)(AGG(v0)->f[3]);
+    v35 = n_palette(v34);
+    v36 = agg_new(0, 2, 0);
+    AGG(v36)->f[0] = (W)v33;
+    AGG(v36)->f[1] = (W)v35;
+    arr_push(v32, O2W(v36));
+    FRAME_LEAVE();
+    return;
+
+B9:
+    v45 = v14 > 17;
+    if (!(v45)) goto B11;
+
+    v19 = 17;
+    goto B12;
+
+B11:
+    v19 = v14;
+    goto B12;
+
+B4:
+    v30 = v8 > 47;
+    if (!(v30)) goto B6;
+
+    v13 = 47;
+    goto B7;
+
+B6:
+    v13 = v8;
+    goto B7;
+
+B2:
+    FRAME_LEAVE();
+    return;
+}
+
+static CONST_FN i64 n_clamp(i64 v0, i64 v1, i64 v2) {
+    bool v4 = 0, v6 = 0;
+    v4 = v0 < v1;
+    if (v4) goto B1;
+
+    v6 = v0 > v2;
+    if (v6) goto B3;
+    goto B4;
+
+B1:
+    return v1;
+
+B3:
+    return v2;
+
+B4:
+    return v0;
+}
+
+static unit n_stamp(Obj *v0) {
+    Obj *v1 = NULL, *v5 = NULL;
+    i64 v3 = 0;
+    u64 v2 = 0, v4 = 0;
+    FRAME(&v0, &v1, &v5);
+    v1 = W2O(AGG(v0)->f[7]);
+    v2 = n_brush(v0);
+    v3 = (i64)(i64)(AGG(v0)->f[3]);
+    v4 = n_palette(v3);
+    v5 = agg_new(0, 2, 0);
+    AGG(v5)->f[0] = (W)v2;
+    AGG(v5)->f[1] = (W)v4;
+    arr_push(v1, O2W(v5));
+    FRAME_LEAVE();
+    return;
+}
+
+static unit n_save(Obj *v0) {
+    Obj *v1 = NULL, *v2 = NULL, *v6 = NULL, *v8 = NULL, *v12 = NULL, *v13 = NULL, *v15 = NULL, *v19 = NULL, *v25 = NULL, *v28 = NULL, *v36 = NULL, *v41 = NULL, *v43 = NULL, *v44 = NULL, *v48 = NULL, *v51 = NULL, *v57 = NULL, *v60 = NULL;
+    bool v24 = 0, v40 = 0, v56 = 0;
+    i64 v21 = 0, v23 = 0, v37 = 0, v39 = 0, v53 = 0, v55 = 0;
+    FRAME(&v0, &v1, &v2, &v6, &v8, &v12, &v13, &v15, &v19, &v25, &v28, &v36, &v41, &v43, &v44, &v48, &v51, &v57, &v60);
+    DEPTH_ENTER();
+    v2 = kstr(73);
+    v12 = n_canvas(v0);
+    v13 = clo_new((void (*)(void))n_closure_962, 0);
+    v19 = arr_new(0, 1);
+    v21 = 0;
+    v23 = (i64)(ARR(v12)->len);
+    v24 = v21 < v23;
+    if (!(v24)) goto B7;
+
+B6:
+    v25 = W2O(arr_get(v12, (i64)v21));
+    v28 = ((fp0)CLO(v13)->fn)(CLO(v13)->c, v25);
+    arr_push(v19, O2W(v28));
+    v21 = add_i64(v21, 1);
+    v23 = (i64)(ARR(v12)->len);
+    v24 = v21 < v23;
+    if (v24) goto B6;
+
+B7:
+    v15 = clo_new((void (*)(void))n_closure_968, 0);
+    v51 = arr_new(0, 1);
+    v53 = 0;
+    v55 = (i64)(ARR(v19)->len);
+    v56 = v53 < v55;
+    if (!(v56)) goto B12;
+
+B11:
+    v57 = W2O(arr_get(v19, (i64)v53));
+    v60 = ((fp0)CLO(v15)->fn)(CLO(v15)->c, v57);
+    arr_push(v51, O2W(v60));
+    v53 = add_i64(v53, 1);
+    v56 = v53 < v55;
+    if (v56) goto B11;
+
+B12:
+    v36 = kstr(2);
+    v37 = 0;
+    v39 = (i64)(ARR(v51)->len);
+    v40 = v37 < v39;
+    if (!(v40)) goto B9;
+
+    v44 = kstr(74);
+
+B8:
+    v41 = W2O(arr_get(v51, (i64)v37));
+    v43 = str_cat(v36, v41);
+    v36 = str_cat(v43, v44);
+    v37 = add_i64(v37, 1);
+    v40 = v37 < v39;
+    if (v40) goto B8;
+
+B9:
+    GC_POINT();
+    v48 = rt_fs_write(v2, v36, 0);
+    if (!(TAG(v48) == 0)) goto B2;
+
+    v1 = kstr(75);
+
+B1:
+    AGG(v0)->f[6] = O2W(v1);
+    DEPTH_LEAVE();
+    FRAME_LEAVE();
+    return;
+
+B2:
+    if (!(TAG(v48) == 1)) goto B4;
+
+    v6 = W2O(AGG(v48)->f[0]);
+    v8 = kstr(76);
+    v1 = str_cat(v8, v6);
+    goto B1;
+
+B4:
+    trap_unreach("save");
+}
+
+static Obj *n_closure_962(Obj **up, Obj *v0) {
+    Obj *v1 = NULL, *v2 = NULL, *v10 = NULL, *v13 = NULL;
+    bool v5 = 0;
+    chr v7 = 0;
+    i64 v3 = 0, v6 = 0;
+    FRAME(&v0, &v1, &v2, &v10, &v13);
+    DEPTH_ENTER();
+    (void)up;
+    v1 = kstr(2);
+    v2 = arr_new(0, 1);
+    v3 = 0;
+    v6 = (i64)(ARR(v0)->len);
+    v5 = v3 < v6;
+    if (!(v5)) goto B1;
+
+B2:
+    v7 = (u32)(arr_get(v0, (i64)v3));
+    GC_POINT();
+    sb_cp(&rt_sb, v7);
+    v10 = sb_take();
+    arr_push(v2, O2W(v10));
+    v3 = add_i64(v3, 1);
+    v6 = (i64)(ARR(v0)->len);
+    v5 = v3 < v6;
+    if (v5) goto B2;
+
+B1:
+    v13 = str_join(v2, v1);
+    DEPTH_LEAVE();
+    FRAME_LEAVE();
+    return v13;
+}
+
+static Obj *n_closure_968(Obj **up, Obj *v0) {
+    Obj *v18 = NULL;
+    bool v5 = 0, v7 = 0;
+    chr v11 = 0;
+    i64 v4 = 0, v10 = 0;
+    FRAME(&v0, &v18);
+    DEPTH_ENTER();
+    (void)up;
+    v4 = str_len(v0);
+    v7 = v4 > 0;
+    if (!(v7)) goto B4;
+
+B3:
+    v10 = sub_i64(v4, 1);
+    v11 = str_char_at(v0, (i64)v10);
+    v5 = v11 == 32u;
+    if (!(v5)) goto B2;
+
+    v4 = sub_i64(v4, 1);
+    v7 = v4 > 0;
+    if (v7) goto B3;
+
+B4:
+    v5 = 0;
+
+B2:
+    GC_POINT();
+    v18 = str_substring(v0, (i64)0, (i64)v4);
+    DEPTH_LEAVE();
+    FRAME_LEAVE();
+    return v18;
 }
 
 
@@ -1204,7 +1921,7 @@ static NORETURN COLD void trap_shift(void) {
 }
 #endif
 
-static NORETURN COLD void trap_index(int64_t index, size_t len) {
+static NORETURN COLD void trap_index(i64 index, size_t len) {
     rt_fail("index %lld out of bounds (length %zu)", (long long)index, len);
 }
 
@@ -1216,8 +1933,18 @@ static NORETURN COLD void trap_oom(void) {
     rt_fail("out of memory");
 }
 
+#if NEON_CHECKS
+static NORETURN COLD void trap_stack(void) {
+    rt_fail("stack overflow");
+}
+#endif
+
 static NORETURN COLD void trap_unreach(const char *fn) {
     rt_fail("panic: reached unreachable code in `%s`", fn);
+}
+
+static NORETURN COLD void trap_parse(Obj *s) {
+    rt_fail("cannot parse `%.*s`", (int)STR(s)->len, STR(s)->s);
 }
 
 static void *rt_malloc(size_t n) {
@@ -1264,9 +1991,9 @@ static Obj *obj_new(size_t size, unsigned kind, unsigned flags) {
         o = (Obj *)(g + 1);
         gc_bytes += size;
     }
-    o->kind = (uint8_t)kind;
+    o->kind = (u8)kind;
     o->mark = 0;
-    o->flags = (uint16_t)flags;
+    o->flags = (u16)flags;
     o->n = 0;
     return o;
 }
@@ -1311,7 +2038,7 @@ static void gc_scan(Obj *o) {
 /* Bytes an object holds outside its cell (array and map buffers). */
 static size_t gc_extern(const Obj *o) {
     if (o->kind == K_ARR) return ((const Arr *)o)->cap * sizeof(W);
-    if (o->kind == K_MAP) return ((const Map *)o)->cap * 2 * sizeof(W) + ((const Map *)o)->ixcap * sizeof(int32_t);
+    if (o->kind == K_MAP) return ((const Map *)o)->cap * 2 * sizeof(W) + ((const Map *)o)->ixcap * sizeof(i32);
     return 0;
 }
 
@@ -1380,7 +2107,7 @@ static void gc_collect(void) {
 }
 
 /* Decodes the code point at p; returns the number of bytes it takes (a stray byte counts as one). */
-static size_t utf8_dec(const char *p, const char *end, uint32_t *cp) {
+static size_t utf8_dec(const char *p, const char *end, u32 *cp) {
     unsigned b0 = (unsigned char)p[0];
     size_t left = (size_t)(end - p);
     if (b0 < 0x80) { *cp = b0; return 1; }
@@ -1401,7 +2128,7 @@ static size_t utf8_dec(const char *p, const char *end, uint32_t *cp) {
     return 1;
 }
 
-static size_t utf8_enc(uint32_t c, char *out) {
+static size_t utf8_enc(u32 c, char *out) {
     if (c < 0x80) { out[0] = (char)c; return 1; }
     if (c < 0x800) { out[0] = (char)(0xC0 | (c >> 6)); out[1] = (char)(0x80 | (c & 0x3F)); return 2; }
     if (c < 0x10000) {
@@ -1417,6 +2144,23 @@ static size_t utf8_enc(uint32_t c, char *out) {
     return 4;
 }
 
+/* Number of code points in n bytes. */
+static PURE_FN size_t utf8_count(const char *p, size_t n) {
+    size_t i, c = 0;
+    for (i = 0; i < n; i++) c += ((unsigned char)p[i] & 0xC0) != 0x80;
+    return c;
+}
+
+/* The position after n code points (or the end). */
+static const char *utf8_skip(const char *p, const char *end, size_t n) {
+    u32 c;
+    while (n > 0 && p < end) {
+        p += utf8_dec(p, end, &c);
+        n--;
+    }
+    return p;
+}
+
 static Obj *str_new(const char *s, size_t n) {
     Str *o = (Str *)obj_new(sizeof(Str) + n + 1, K_STR, 0);
     o->len = n;
@@ -1426,6 +2170,7 @@ static Obj *str_new(const char *s, size_t n) {
 }
 
 static Obj *str_cat(Obj *a, Obj *b) {
+    GC_POINT();
     size_t n = STR(a)->len, m = STR(b)->len;
     Str *o = (Str *)obj_new(sizeof(Str) + n + m + 1, K_STR, 0);
     o->len = n + m;
@@ -1440,19 +2185,50 @@ static PURE_FN int str_eq(const Obj *a, const Obj *b) {
            memcmp(((const Str *)a)->s, ((const Str *)b)->s, ((const Str *)a)->len) == 0;
 }
 
+/* Length in characters. */
+static i64 str_len(Obj *o) {
+    return (i64)utf8_count(STR(o)->s, STR(o)->len);
+}
+
+static Obj *str_substring(Obj *o, i64 lo, i64 hi) {
+    const Str *s = STR(o);
+    size_t n = utf8_count(s->s, s->len);
+    const char *end = s->s + s->len, *b, *e;
+    if (lo < 0 || hi < lo || (u64)hi > n) trap_index(lo < 0 || hi < lo ? lo : hi, n);
+    b = utf8_skip(s->s, end, (size_t)lo);
+    e = utf8_skip(b, end, (size_t)(hi - lo));
+    return str_new(b, (size_t)(e - b));
+}
+
+static u32 str_char_at(Obj *o, i64 i) {
+    const Str *s = STR(o);
+    const char *end = s->s + s->len, *p;
+    u32 c;
+    if (i < 0 || (u64)i >= utf8_count(s->s, s->len)) trap_index(i, utf8_count(s->s, s->len));
+    p = utf8_skip(s->s, end, (size_t)i);
+    utf8_dec(p, end, &c);
+    return c;
+}
+
 /* A struct or one variant of an enum: `n` word-sized fields, `mask` marks the references. */
-static Obj *agg_new(uint32_t tag, uint32_t n, uint64_t mask) {
-    uint32_t i;
+static Obj *agg_alloc(u32 tag, u32 n, u64 mask) {
+    u32 i;
     Agg *g = (Agg *)obj_new(sizeof(Agg) + n * sizeof(W), K_AGG, 0);
     g->h.n = n;
     g->mask = mask;
-    g->h.flags = (uint16_t)tag;
+    g->h.flags = (u16)tag;
     for (i = 0; i < n; i++) g->f[i] = 0;
     return &g->h;
 }
 
-static Obj *agg1(uint32_t tag, W payload, int is_ref) {
-    Obj *o = agg_new(tag, 1, is_ref ? 1u : 0u);
+/* What the program calls: the collector may run here, before the new object exists. */
+static Obj *agg_new(u32 tag, u32 n, u64 mask) {
+    GC_POINT();
+    return agg_alloc(tag, n, mask);
+}
+
+static Obj *agg1(u32 tag, W payload, int is_ref) {
+    Obj *o = agg_alloc(tag, 1, is_ref ? 1u : 0u);
     AGG(o)->f[0] = payload;
     return o;
 }
@@ -1463,16 +2239,31 @@ static Obj *opt_some(W v, int is_ref) {
 }
 
 static Obj *opt_none(void) {
-    return agg_new(1, 0, 0);
+    return agg_alloc(1, 0, 0);
 }
 
-static Obj *arr_new(size_t cap, int is_ref) {
+/* Result: Ok = 0, Err = 1. */
+static Obj *res_ok(W v, int is_ref) {
+    return agg1(0, v, is_ref);
+}
+
+static Obj *res_err(const char *msg) {
+    return agg1(1, O2W(str_new(msg, strlen(msg))), 1);
+}
+
+static Obj *arr_alloc(size_t cap, int is_ref) {
     Arr *a = (Arr *)obj_new(sizeof(Arr), K_ARR, is_ref ? 1u : 0u);
     a->len = 0;
     a->cap = cap;
     a->a = cap ? (W *)rt_malloc(cap * sizeof(W)) : NULL;
     gc_bytes += cap * sizeof(W);
     return &a->h;
+}
+
+/* What the program calls: the collector may run here, before the new object exists. */
+static Obj *arr_new(size_t cap, int is_ref) {
+    GC_POINT();
+    return arr_alloc(cap, is_ref);
 }
 
 static void arr_push(Obj *o, W v) {
@@ -1486,15 +2277,15 @@ static void arr_push(Obj *o, W v) {
     a->a[a->len++] = v;
 }
 
-static W arr_get(Obj *o, int64_t i) {
+static W arr_get(Obj *o, i64 i) {
     const Arr *a = ARR(o);
-    if (UNLIKELY((uint64_t)i >= a->len)) trap_index(i, a->len);
+    if (UNLIKELY((u64)i >= a->len)) trap_index(i, a->len);
     return a->a[i];
 }
 
-static void arr_set(Obj *o, int64_t i, W v) {
+static void arr_set(Obj *o, i64 i, W v) {
     Arr *a = ARR(o);
-    if (UNLIKELY((uint64_t)i >= a->len)) trap_index(i, a->len);
+    if (UNLIKELY((u64)i >= a->len)) trap_index(i, a->len);
     a->a[i] = v;
 }
 
@@ -1502,6 +2293,17 @@ static W arr_pop(Obj *o) {
     Arr *a = ARR(o);
     if (a->len == 0) trap_empty();
     return a->a[--a->len];
+}
+
+/* A closure: its code and the cells of the variables it captured. */
+static Obj *clo_new(void (*fn)(void), u32 n) {
+    GC_POINT();
+    u32 i;
+    Clo *c = (Clo *)obj_new(sizeof(Clo) + n * sizeof(Obj *), K_CLO, 0);
+    c->h.n = n;
+    c->fn = fn;
+    for (i = 0; i < n; i++) c->c[i] = NULL;
+    return &c->h;
 }
 
 static void sb_put(SB *b, const char *s, size_t n) {
@@ -1516,12 +2318,8 @@ static void sb_put(SB *b, const char *s, size_t n) {
     b->p[b->len] = 0;
 }
 
-static void sb_putc(SB *b, char c) {
-    sb_put(b, &c, 1);
-}
-
 /* Appends a code point as UTF-8. */
-static void sb_cp(SB *b, uint32_t c) {
+static void sb_cp(SB *b, u32 c) {
     char buf[4];
     sb_put(b, buf, utf8_enc(c, buf));
 }
@@ -1533,13 +2331,13 @@ static Obj *sb_take(void) {
     return s;
 }
 
-static void sb_i64(SB *b, int64_t v) {
+static void sb_i64(SB *b, i64 v) {
     char buf[32];
     int n = snprintf(buf, sizeof buf, "%lld", (long long)v);
     sb_put(b, buf, (size_t)n);
 }
 
-static void sb_u64(SB *b, uint64_t v) {
+static void sb_u64(SB *b, u64 v) {
     char buf[32];
     int n = snprintf(buf, sizeof buf, "%llu", (unsigned long long)v);
     sb_put(b, buf, (size_t)n);
@@ -1557,47 +2355,43 @@ static void out_str(Obj *s, int newline) {
     if (newline) putc('\n', stdout);
 }
 
-/* Reads a line into the scratch buffer without its line terminator; 0 at the end of the input. */
-static int io_getline(void) {
-    int c, any = 0;
-    fflush(stdout);
-    rt_sb.len = 0;
-    while ((c = getc(stdin)) != EOF) {
-        any = 1;
-        if (c == '\n') break;
-        sb_putc(&rt_sb, (char)c);
-    }
-    if (!any) return 0;
-    while (rt_sb.len > 0 && rt_sb.p[rt_sb.len - 1] == '\r') rt_sb.len--;
-    return 1;
-}
-
-/* read_line(): Some(line), or None at the end of the input. */
-static Obj *rt_read_line(void) {
-    if (!io_getline()) return opt_none();
-    return opt_some(O2W(sb_take()), 1);
-}
-
 /* sys.args: the command-line arguments without the program name. */
 static Obj *rt_args(void) {
     int i;
-    Obj *a = arr_new(rt_argc > 1 ? (size_t)rt_argc - 1 : 0, 1);
+    Obj *a = arr_alloc(rt_argc > 1 ? (size_t)rt_argc - 1 : 0, 1);
     for (i = 1; i < rt_argc; i++) arr_push(a, O2W(str_new(rt_argv[i], strlen(rt_argv[i]))));
     return a;
 }
 
-static Obj *str_chars(Obj *o) {
-    const char *p = STR(o)->s, *end = p + STR(o)->len;
-    Obj *r = arr_new(STR(o)->len, 0);
-    uint32_t c;
+/* Unicode White_Space. */
+static CONST_FN int cp_is_space(u32 c) {
+    return (c >= 9 && c <= 13) || c == 32 || c == 0x85 || c == 0xA0 || c == 0x1680 || (c >= 0x2000 && c <= 0x200A) ||
+           c == 0x2028 || c == 0x2029 || c == 0x202F || c == 0x205F || c == 0x3000;
+}
+
+/* The part of the string without leading and trailing white space. */
+static void trim_span(const Str *s, const char **b, const char **e) {
+    const char *p = s->s, *end = s->s + s->len, *q;
+    u32 c;
+    size_t k;
     while (p < end) {
-        p += utf8_dec(p, end, &c);
-        ARR(r)->a[ARR(r)->len++] = c;
+        k = utf8_dec(p, end, &c);
+        if (!cp_is_space(c)) break;
+        p += k;
     }
-    return r;
+    while (end > p) {
+        q = end - 1;
+        while (q > p && ((unsigned char)*q & 0xC0) == 0x80) q--;
+        utf8_dec(q, end, &c);
+        if (!cp_is_space(c)) break;
+        end = q;
+    }
+    *b = p;
+    *e = end;
 }
 
 static Obj *str_join(Obj *arr, Obj *sep) {
+    GC_POINT();
     const Arr *a = ARR(arr);
     size_t i;
     for (i = 0; i < a->len; i++) {
@@ -1607,72 +2401,407 @@ static Obj *str_join(Obj *arr, Obj *sep) {
     return sb_take();
 }
 
-static int64_t add_i64(int64_t a, int64_t b) {
-#if NEON_CHECKS
-    int64_t r;
-    if (UNLIKELY(OVF_ADD(a, b, &r))) trap_overflow();
+/* Decimal i64 with an optional sign; surrounding white space is ignored. 1 on success. */
+static int parse_i64_try(Obj *o, i64 *out) {
+    const char *b, *e;
+    int neg = 0;
+    u64 v = 0;
+    trim_span(STR(o), &b, &e);
+    if (b < e && (*b == '+' || *b == '-')) { neg = *b == '-'; b++; }
+    if (b == e) return 0;
+    for (; b < e; b++) {
+        unsigned d = (unsigned char)*b - '0';
+        if (d > 9 || v > (UINT64_MAX - d) / 10) return 0;
+        v = v * 10 + d;
+    }
+    if (neg ? v > (u64)INT64_MAX + 1 : v > (u64)INT64_MAX) return 0;
+    *out = neg ? (i64)(0 - v) : (i64)v;
+    return 1;
+}
+
+static i64 parse_i64(Obj *o) {
+    i64 v;
+    if (!parse_i64_try(o, &v)) trap_parse(o);
+    return v;
+}
+
+/* What an operating system error is called in a program's output: the same words on every platform. */
+static const char *host_reason(int e) {
+    switch (e) {
+    case ENOENT: return "not found";
+    case EACCES:
+    case EPERM: return "permission denied";
+    case EEXIST: return "already exists";
+    case ENOTDIR: return "not a directory";
+    case EISDIR: return "is a directory";
+    case ENOTEMPTY: return "directory not empty";
+    default: return "i/o error";
+    }
+}
+
+/* Err("path: reason") */
+static Obj *host_fail(const char *path, const char *reason) {
+    size_t n = strlen(path) + strlen(reason) + 3;
+    char *msg = (char *)rt_malloc(n);
+    Obj *r;
+    snprintf(msg, n, "%s: %s", path, reason);
+    r = res_err(msg);
+    free(msg);
     return r;
+}
+
+/* fs.write_file and fs.append_file: Ok(()) or Err("path: reason"). */
+static Obj *rt_fs_write(Obj *path, Obj *text, int append) {
+    const char *p = STR(path)->s;
+    FILE *f = fopen(p, append ? "ab" : "wb");
+    int e;
+    if (f == NULL) return host_fail(p, host_reason(errno));
+    fwrite(STR(text)->s, 1, STR(text)->len, f);
+    e = ferror(f) ? errno : 0;
+    if (fclose(f) != 0 && e == 0) e = errno;
+    return e != 0 ? host_fail(p, host_reason(e)) : res_ok(0, 0);
+}
+
+static int term_raw_on;        /* the keyboard is read directly */
+#ifndef _WIN32
+static struct termios term_saved;
+#endif
+
+static void term_restore(void) {
+#ifndef _WIN32
+    if (term_raw_on) tcsetattr(0, TCSANOW, &term_saved);
+#endif
+    term_raw_on = 0;
+}
+
+static int rt_term_is_tty(void) {
+#ifdef _WIN32
+    return _isatty(0) && _isatty(1);
 #else
-    return (int64_t)((uint64_t)a + (uint64_t)b);
+    return isatty(0) && isatty(1);
 #endif
 }
 
-static int64_t div_i64(int64_t a, int64_t b) {
+/* term.raw(on): keys arrive one at a time, unechoed. True if the terminal is as asked (a program whose
+   input is not a terminal is always fine: its keys come from the input). */
+static int rt_term_raw(int on) {
+#ifdef _WIN32
+    term_raw_on = on && _isatty(0);
+    return 1;
+#else
+    static int registered;
+    struct termios raw;
+    if (!isatty(0)) return 1;
+    fflush(stdout);
+    if (!on) {
+        term_restore();
+        return 1;
+    }
+    if (term_raw_on) return 1;
+    if (tcgetattr(0, &term_saved) != 0) return 0;
+    raw = term_saved;
+    raw.c_lflag &= (tcflag_t) ~(ICANON | ECHO | ISIG | IEXTEN);
+    raw.c_iflag &= (tcflag_t) ~(IXON | ICRNL | INLCR | IGNCR);
+    raw.c_cc[VMIN] = 1;
+    raw.c_cc[VTIME] = 0;
+    if (tcsetattr(0, TCSANOW, &raw) != 0) return 0;
+    term_raw_on = 1;
+    if (!registered) {
+        registered = 1;
+        atexit(term_restore);
+    }
+    return 1;
+#endif
+}
+
+/* The name of the last key (see src/term.rs for the names). */
+static char tk_name[40];
+
+static int tk_set(const char *s) {
+    size_t n = strlen(s);
+    if (n >= sizeof tk_name) n = sizeof tk_name - 1;
+    memcpy(tk_name, s, n);
+    tk_name[n] = 0;
+    return 1;
+}
+
+#ifdef _WIN32
+/* Windows: _getwch gives characters, and a 0 / 0xE0 prefix for the others. 1: a key, 0: timeout. */
+static int tk_decode(i64 wait_ms) {
+    i64 waited = 0;
+    int c, code;
+    while (!_kbhit()) {
+        if (wait_ms >= 0 && waited >= wait_ms) return 0;
+        Sleep(5);
+        waited += 5;
+    }
+    c = _getwch();
+    if (c == 0 || c == 0xE0) {
+        code = _getwch();
+        switch (code) {
+        case 72: return tk_set("up");
+        case 80: return tk_set("down");
+        case 75: return tk_set("left");
+        case 77: return tk_set("right");
+        case 71: return tk_set("home");
+        case 79: return tk_set("end");
+        case 73: return tk_set("pageup");
+        case 81: return tk_set("pagedown");
+        case 82: return tk_set("insert");
+        case 83: return tk_set("delete");
+        default:
+            if (code >= 59 && code <= 68) {
+                char f[8];
+                sprintf(f, "f%d", code - 58);
+                return tk_set(f);
+            }
+            return tk_decode(wait_ms);
+        }
+    }
+    if (c == 13) return tk_set("enter");
+    if (c == 27) return tk_set("esc");
+    if (c == 9) return tk_set("tab");
+    if (c == 8) return tk_set("backspace");
+    if (c >= 1 && c <= 26) {
+        char k[8];
+        sprintf(k, "ctrl+%c", 'a' + c - 1);
+        return tk_set(k);
+    }
+    if (c >= 32) {
+        char u[8];
+        int n = 0;
+        if (c < 0x80) u[n++] = (char)c;
+        else if (c < 0x800) { u[n++] = (char)(0xc0 | (c >> 6)); u[n++] = (char)(0x80 | (c & 0x3f)); }
+        else { u[n++] = (char)(0xe0 | (c >> 12)); u[n++] = (char)(0x80 | ((c >> 6) & 0x3f)); u[n++] = (char)(0x80 | (c & 0x3f)); }
+        u[n] = 0;
+        return tk_set(u);
+    }
+    return tk_decode(wait_ms);
+}
+#else
+/* The next byte of input within `ms` milliseconds (negative: as long as it takes): the byte, -1 for a
+   timeout, -2 at the end of the input. */
+static int tk_next(i64 ms) {
+    if (term_raw_on) {
+        fd_set fds;
+        struct timeval tv, *tp = NULL;
+        unsigned char c;
+        int r;
+        FD_ZERO(&fds);
+        FD_SET(0, &fds);
+        if (ms >= 0) {
+            tv.tv_sec = (time_t)(ms / 1000);
+            tv.tv_usec = (suseconds_t)(ms % 1000) * 1000;
+            tp = &tv;
+        }
+        r = select(1, &fds, NULL, NULL, tp);
+        if (r == 0) return -1;
+        if (r < 0) return errno == EINTR ? -1 : -2;
+        return read(0, &c, 1) == 1 ? c : -2;
+    }
+    {
+        int ch = getc(stdin);
+        return ch == EOF ? -2 : ch;
+    }
+}
+
+static void tk_mods(int m, char *out) {
+    out[0] = 0;
+    m = m > 0 ? m - 1 : 0;
+    if (m & 4) strcat(out, "ctrl+");
+    if (m & 2) strcat(out, "alt+");
+    if (m & 1) strcat(out, "shift+");
+}
+
+/* ESC [ params final */
+static int tk_csi(void) {
+    char params[24];
+    size_t np = 0;
+    int b, mods = 0, first = 0;
+    char prefix[24], name[16];
+    for (;;) {
+        b = tk_next(30);
+        if (b < 0) return 0;
+        if (b >= 0x20 && b <= 0x3f) {
+            if (np + 1 < sizeof params) params[np++] = (char)b;
+        } else break;
+    }
+    params[np] = 0;
+    if (np > 0 && strchr("<?>=", params[0])) return 0; /* a report from the terminal, not a key */
+    first = atoi(params);
+    if (strchr(params, ';')) mods = atoi(strchr(params, ';') + 1);
+    prefix[0] = 0;
+    if (mods > 1) tk_mods(mods, prefix);
+    name[0] = 0;
+    switch (b) {
+    case 'A': strcpy(name, "up"); break;
+    case 'B': strcpy(name, "down"); break;
+    case 'C': strcpy(name, "right"); break;
+    case 'D': strcpy(name, "left"); break;
+    case 'H': strcpy(name, "home"); break;
+    case 'F': strcpy(name, "end"); break;
+    case 'Z': return tk_set("shift+tab");
+    case 'P': case 'Q': case 'R': case 'S': sprintf(name, "f%d", b - 'P' + 1); break;
+    case '~':
+        switch (first) {
+        case 1: case 7: strcpy(name, "home"); break;
+        case 2: strcpy(name, "insert"); break;
+        case 3: strcpy(name, "delete"); break;
+        case 4: case 8: strcpy(name, "end"); break;
+        case 5: strcpy(name, "pageup"); break;
+        case 6: strcpy(name, "pagedown"); break;
+        default:
+            if (first >= 11 && first <= 15) sprintf(name, "f%d", first - 10);
+            else if (first >= 17 && first <= 21) sprintf(name, "f%d", first - 11);
+            else if (first == 23 || first == 24) sprintf(name, "f%d", first - 12);
+            break;
+        }
+        break;
+    default: break;
+    }
+    if (name[0] == 0) return 0;
+    strcat(prefix, name);
+    return tk_set(prefix);
+}
+
+static int tk_escape(void) {
+    int b = tk_next(30);
+    if (b < 0) return tk_set("esc");
+    if (b == '[') return tk_csi();
+    if (b == 'O') {
+        b = tk_next(30);
+        if (b >= 'P' && b <= 'S') {
+            char f[8];
+            sprintf(f, "f%d", b - 'P' + 1);
+            return tk_set(f);
+        }
+        switch (b) {
+        case 'A': return tk_set("up");
+        case 'B': return tk_set("down");
+        case 'C': return tk_set("right");
+        case 'D': return tk_set("left");
+        case 'H': return tk_set("home");
+        case 'F': return tk_set("end");
+        default: return 0;
+        }
+    }
+    if (b == 0x1b) return tk_set("esc");
+    if (b >= 0x20 && b <= 0x7e) {
+        char k[8];
+        sprintf(k, "alt+%c", b);
+        return tk_set(k);
+    }
+    return 0;
+}
+
+/* 1: a key (in tk_name), 0: a timeout, -1: the end of the input. */
+static int tk_decode(i64 wait_ms) {
+    for (;;) {
+        int b = tk_next(wait_ms), ok = 0;
+        char k[16];
+        if (b == -1) return 0;
+        if (b == -2) return -1;
+        if (b == 0x1b) ok = tk_escape();
+        else if (b == '\r' || b == '\n') ok = tk_set("enter");
+        else if (b == '\t') ok = tk_set("tab");
+        else if (b == 0x7f || b == 0x08) ok = tk_set("backspace");
+        else if (b == 0) ok = tk_set("ctrl+space");
+        else if (b >= 1 && b <= 26) { sprintf(k, "ctrl+%c", 'a' + b - 1); ok = tk_set(k); }
+        else if (b >= 0x1c && b <= 0x1f) { sprintf(k, "ctrl+%c", "\\]^_"[b - 0x1c]); ok = tk_set(k); }
+        else if (b >= 0x20 && b <= 0x7e) { k[0] = (char)b; k[1] = 0; ok = tk_set(k); }
+        else if (b >= 0x80) {
+            int len = b >= 0xf0 ? 4 : b >= 0xe0 ? 3 : b >= 0xc0 ? 2 : 1, i;
+            k[0] = (char)b;
+            for (i = 1; i < len; i++) {
+                int c = tk_next(30);
+                if (c < 0) break;
+                k[i] = (char)c;
+            }
+            k[i] = 0;
+            ok = tk_set(k);
+        }
+        if (ok) return 1;
+    }
+}
+#endif
+
+/* term.read_key() (poll = 0, waits for ever) and term.poll_key(ms) (poll = 1: None on a timeout, and
+   "eof" once the input has ended). */
+static Obj *rt_term_key(i64 wait_ms, int poll) {
+    int r;
+    fflush(stdout);
+    r = tk_decode(wait_ms);
+    if (r > 0) return opt_some(O2W(str_new(tk_name, strlen(tk_name))), 1);
+    if (r < 0 && poll) return opt_some(O2W(str_new("eof", 3)), 1);
+    return opt_none();
+}
+
+static i64 add_i64(i64 a, i64 b) {
+#if NEON_CHECKS
+    i64 r;
+    if (UNLIKELY(OVF_ADD(a, b, &r))) trap_overflow();
+    return r;
+#else
+    return (i64)((u64)a + (u64)b);
+#endif
+}
+
+static i64 div_i64(i64 a, i64 b) {
 #if NEON_CHECKS
     if (UNLIKELY(b == 0)) trap_div0();
     if (UNLIKELY(a == INT64_MIN && b == -1)) trap_overflow();
 #endif
-    return (int64_t)(a / b);
+    return (i64)(a / b);
 }
 
-static int64_t mul_i64(int64_t a, int64_t b) {
+static i64 mul_i64(i64 a, i64 b) {
 #if NEON_CHECKS
-    int64_t r;
+    i64 r;
     if (UNLIKELY(OVF_MUL(a, b, &r))) trap_overflow();
     return r;
 #else
-    return (int64_t)((uint64_t)a * (uint64_t)b);
+    return (i64)((u64)a * (u64)b);
 #endif
 }
 
-static uint8_t mul_u8(uint8_t a, uint8_t b) {
+static u8 mul_u8(u8 a, u8 b) {
 #if NEON_CHECKS
-    uint8_t r;
+    u8 r;
     if (UNLIKELY(OVF_MUL(a, b, &r))) trap_overflow();
     return r;
 #else
-    return (uint8_t)((uint32_t)a * (uint32_t)b);
+    return (u8)((u32)a * (u32)b);
 #endif
 }
 
-static int64_t rem_i64(int64_t a, int64_t b) {
+static i64 rem_i64(i64 a, i64 b) {
 #if NEON_CHECKS
     if (UNLIKELY(b == 0)) trap_div0();
     if (b == -1) return 0;  /* MIN % -1 is 0, not an overflow */
 #endif
-    return (int64_t)(a % b);
+    return (i64)(a % b);
 }
 
-static uint64_t shl_u64(uint64_t a, int64_t n) {
+static u64 shl_u64(u64 a, i64 n) {
 #if NEON_CHECKS
-    if (UNLIKELY((uint64_t)n >= 64)) trap_shift();
+    if (UNLIKELY((u64)n >= 64)) trap_shift();
 #endif
-    return (uint64_t)((uint64_t)a << (n & 63));
+    return (u64)((u64)a << (n & 63));
 }
 
-static uint64_t shr_u64(uint64_t a, int64_t n) {
+static u64 shr_u64(u64 a, i64 n) {
 #if NEON_CHECKS
-    if (UNLIKELY((uint64_t)n >= 64)) trap_shift();
+    if (UNLIKELY((u64)n >= 64)) trap_shift();
 #endif
-    return (uint64_t)(a >> (n & 63));
+    return (u64)(a >> (n & 63));
 }
 
-static int64_t sub_i64(int64_t a, int64_t b) {
+static i64 sub_i64(i64 a, i64 b) {
 #if NEON_CHECKS
-    int64_t r;
+    i64 r;
     if (UNLIKELY(OVF_SUB(a, b, &r))) trap_overflow();
     return r;
 #else
-    return (int64_t)((uint64_t)a - (uint64_t)b);
+    return (i64)((u64)a - (u64)b);
 #endif
 }

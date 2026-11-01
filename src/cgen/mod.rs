@@ -10,6 +10,7 @@ mod rt;
 mod rt_core;
 mod rt_data;
 mod rt_fmt;
+mod rt_host;
 
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
@@ -57,6 +58,11 @@ pub fn emit_c(prog: &IrProgram) -> Result<String, String> {
     s.push_str(
         "#if defined(__GNUC__) || defined(__clang__)\n#pragma GCC diagnostic ignored \"-Wtype-limits\"\n#endif\n\n",
     );
+    // the standard modules need POSIX (a feature macro before any include) or the Windows headers
+    let host = chosen.iter().any(|p| p.name == "host_headers");
+    if host {
+        s.push_str(rt_host::HOST_INCLUDES);
+    }
     // include order: the usual one, not alphabetical
     for h in ["stddef.h", "stdint.h", "stdarg.h", "stdio.h", "stdlib.h", "string.h", "math.h"] {
         if hdrs.remove(h) {
@@ -65,6 +71,9 @@ pub fn emit_c(prog: &IrProgram) -> Result<String, String> {
     }
     for h in hdrs {
         let _ = writeln!(s, "#include <{h}>");
+    }
+    if host {
+        s.push_str(rt_host::HOST_SYSTEM_HEADERS);
     }
 
     // ---- runtime declarations ----------------------------------------------------------------

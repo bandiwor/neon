@@ -1,17 +1,23 @@
-// An interactive terminal paint program.
+// An interactive terminal paint program: it reacts to every key press, no Enter needed.
 //
-// Type keys and press Enter - several keys per line work, and the picture is redrawn after each line:
+//   arrows, w a s d, h j k l   move the brush (Ctrl+arrow: four cells at a time)
+//   space, Enter               stamp the brush        p   pen down: stamp while moving
+//   t   next tool (dot / line / box / disc)           1-5 pick a color     c   next color
+//   + -  (or PageUp / PageDown) change the brush size
+//   u   undo the last stamp    x   clear the canvas   s   save the picture to paint.txt
+//   q, Esc, Ctrl+C   quit
 //
-//   w a s d   move the brush            t   next tool (dot / line / box / disc)
-//   + -       change the brush size     c   next color
-//   space     stamp the brush           u   undo the last stamp
-//   x         clear the canvas          q   quit
-//
-// `neon run examples/paint.neon` (add `-- --plain` to scroll instead of clearing the screen).
+// `neon run examples/paint.neon` (add `-- --plain` to print every frame instead of redrawing in place;
+// that is also what happens when the input is not a terminal, so keys can be piped in).
 // The same program translates to C with `neon c examples/paint.neon`.
 //
-// What it shows: compact enums (`Color`, `Shape`: one word each, no allocation), tuples (the brush
-// position, `(dx, dy)`, `(x, y)` pairs), ranges as values and fused lazy iterator chains.
+// What it shows: the `term` module (raw mode, `read_key`, `poll_key` for the blinking brush, the
+// screen helpers), `fs` (saving the picture) and `sys` (the arguments); compact enums (`Color`,
+// `Shape`: one word each, no allocation), tuples, ranges as values and fused lazy iterator chains.
+
+import "fs" as fs;
+import "sys" as sys;
+import "term" as term;
 
 enum Color { Black, Gray(u8), Rgb(u8, u8, u8) }
 
@@ -49,17 +55,13 @@ impl Color {
 
     fn glyph(self) -> char {
         let b = self.brightness();
-        if b
-            == 0 {
+        if b == 0 {
             ' '
-        } elif b
-            < 100 {
+        } elif b < 100 {
             '.'
-        } elif b
-            < 160 {
+        } elif b < 160 {
             ':'
-        } elif b
-            < 220 {
+        } elif b < 220 {
             'o'
         } else {
             '#'
@@ -98,6 +100,15 @@ fn covers(s: Shape, p: (i64, i64)) -> bool {
     }
 }
 
+// the line without its trailing spaces
+fn rstrip(s: string) -> string {
+    var n = s.len();
+    while n > 0 && s.char_at(n - 1) == ' ' {
+        n -= 1;
+    }
+    s.substring(0, n)
+}
+
 fn clamp(v: i64, lo: i64, hi: i64) -> i64 {
     if v < lo { lo } elif v > hi { hi } else { v }
 }
@@ -107,13 +118,26 @@ struct Editor {
     tool: i64,
     size: i64,
     color: i64,
+    pen: bool,
+    blink: bool,
+    message: string,
     ops: [Op],
     running: bool,
 }
 
 impl Editor {
     fn new() -> Editor {
-        Editor { pos: (W / 2, H / 2), tool: 3, size: 4, color: 3, ops: [], running: true }
+        Editor {
+            pos: (W / 2, H / 2),
+            tool: 3,
+            size: 4,
+            color: 3,
+            pen: false,
+            blink: true,
+            message: "",
+            ops: [],
+            running: true
+        }
     }
 
     // the shape the brush would stamp right now
@@ -137,29 +161,67 @@ impl Editor {
         }
     }
 
-    fn press(var self, key: char) {
+    fn stamp(var self) {
+        self.ops.push(Op::Draw(self.brush(), palette(self.color)));
+    }
+
+    fn step(var self, dx: i64, dy: i64) {
         let (x, y) = self.pos;
-        let (dx, dy) = match key {
-            'a' => (-1, 0),
-            'd' => (1, 0),
-            'w' => (0, -1),
-            's' => (0, 1),
-            _ => (0, 0),
-        };
         self.pos = (clamp(x + dx, 0, W - 1), clamp(y + dy, 0, H - 1));
+        if self.pen {
+            self.stamp();
+        }
+    }
+
+    // a key by name (see `term`): what it does
+    fn press(var self, key: string) {
+        self.message = "";
         match key {
-            't' => self.tool += 1,
-            'c' => self.color += 1,
-            '+' => self.size = clamp(self.size + 1, 1, 12),
-            '-' => self.size = clamp(self.size - 1, 1, 12),
-            ' ' => self.ops.push(Op::Draw(self.brush(), palette(self.color))),
-            'u' => {
-                if self.ops.len() > 0 { self.ops.pop(); }
+            "left" | "a" | "h" => self.step(-1, 0),
+            "right" | "d" | "l" => self.step(1, 0),
+            "up" | "w" | "k" => self.step(0, -1),
+            "down" | "s" | "j" => self.step(0, 1),
+            "ctrl+left" | "A" | "H" => self.step(-4, 0),
+            "ctrl+right" | "D" | "L" => self.step(4, 0),
+            "ctrl+up" | "W" | "K" => self.step(0, -4),
+            "ctrl+down" | "S" | "J" => self.step(0, 4),
+            "t" => self.tool += 1,
+            "c" => self.color += 1,
+            "1" | "2" | "3" | "4" | "5" => self.color = key.parse_i64() - 1,
+            "+" | "=" | "pageup" => self.size = clamp(self.size + 1, 1, 12),
+            "-" | "pagedown" => self.size = clamp(self.size - 1, 1, 12),
+            " " | "enter" => self.stamp(),
+            "p" => {
+                self.pen = !self.pen;
+                if self.pen {
+                    self.stamp();
+                }
             }
-            'x' => self.ops.push(Op::Clear),
-            'q' => self.running = false,
+            "u" => {
+                if self.ops.len() > 0 {
+                    self.ops.pop();
+                }
+            }
+            "x" => self.ops.push(Op::Clear),
+            "o" => self.save(),
+            "q" | "esc" | "ctrl+c" | "eof" => self.running = false,
             _ => {}
         }
+    }
+
+    // the picture as lines of text
+    fn lines(self) -> [string] {
+        self
+            .canvas()
+            .map(|row| => row.iter().map(|c| => f"{c}").join(""))
+            .map(|line| => rstrip(line))
+    }
+
+    fn save(var self) {
+        self.message = match fs::write_lines("paint.txt", self.lines()) {
+            Result::Ok(_) => "saved to paint.txt",
+            Result::Err(e) => f"cannot save: {e}",
+        };
     }
 
     // the stamped picture, row by row
@@ -167,18 +229,26 @@ impl Editor {
         var rows: [[char]] = [];
         for _ in 0..H {
             var row: [char] = [];
-            for _ in 0..W { row.push(' '); }
+            for _ in 0..W {
+                row.push(' ');
+            }
             rows.push(row);
         }
         for op in self.ops {
             match op {
                 Op::Clear => {
-                    for y in 0..H { for x in 0..W { rows[y][x] = ' '; } }
+                    for y in 0..H {
+                        for x in 0..W {
+                            rows[y][x] = ' ';
+                        }
+                    }
                 }
                 Op::Draw(shape, color) => {
                     for y in 0..H {
                         for x in 0..W {
-                            if covers(shape, (x, y)) { rows[y][x] = color.glyph(); }
+                            if covers(shape, (x, y)) {
+                                rows[y][x] = color.glyph();
+                            }
                         }
                     }
                 }
@@ -187,45 +257,73 @@ impl Editor {
         rows
     }
 
-    fn draw(self, plain: bool) {
-        if !plain { print("\x1b[2J\x1b[H"); }
+    fn draw(self, fancy: bool) {
+        if fancy {
+            term::move_to(0, 0);
+        }
         var rows = self.canvas();
-        // the brush outline is drawn over the picture, the brush center as an `@`
+        // the brush outline is drawn over the picture, the brush center as an `@` that blinks
         let b = self.brush();
         for y in 0..H {
             for x in 0..W {
-                if covers(b, (x, y)) && rows[y][x] == ' ' { rows[y][x] = '+'; }
+                if covers(b, (x, y)) && rows[y][x] == ' ' {
+                    rows[y][x] = '+';
+                }
             }
         }
         let (px, py) = self.pos;
-        rows[py][px] = '@';
-        println("+" + (0..W).map(|i| => "-").join("") + "+");
-        for row in rows { println("|" + row.iter().map(|c| => f"{c}").join("") + "|"); }
-        println("+" + (0..W).map(|i| => "-").join("") + "+");
+        rows[py][px] = if self.blink { '@' } else { 'o' };
+        let edge = "+" + (0..W).map(|i| => "-").join("") + "+";
+        println(edge + if fancy { "\x1b[K" } else { "" });
+        for row in rows {
+            println("|" + row.iter().map(|c| => f"{c}").join("") + "|");
+        }
+        println(edge);
         let covered = (0..H).map(|y| => (0..W).filter(|x| => covers(b, (x, y))).count()).sum();
+        let pen = if self.pen { "  pen DOWN" } else { "" };
         println(
-            f"pos ({px}, {py})  tool {self.tool_name()}  size {self.size}  color {palette(self.color)}  brush covers {covered}  stamps {self.ops.len()}"
+            f"pos ({px}, {py})  tool {self.tool_name()}  size {self.size}  color {palette(self.color)}  brush covers {covered}  stamps {self.ops.len()}{pen}"
         );
         println(
-            "keys: w a s d move | t tool | + - size | c color | space stamp | u undo | x clear | q quit"
+            "arrows move | space stamp | p pen | t tool | +/- size | 1-5 color | u undo | x clear | o save | q quit"
         );
+        println(self.message);
+        if fancy {
+            term::clear_below();
+        }
     }
 }
 
 fn main() {
-    let plain = sys.args.iter().any(|a| => a == "--plain");
+    let plain = sys::args().iter().any(|a| => a == "--plain");
+    let fancy = term::is_tty() && !plain;
+    term::raw(true);
+    if fancy {
+        term::enter_screen();
+        term::hide_cursor();
+    }
     var ed = Editor::new();
+    var redraw = true;
     while ed.running {
-        ed.draw(plain);
-        print("> ");
-        match read_line() {
-            Option::None => break,
-            Option::Some(line) => {
-                for key in line.chars() {
-                    ed.press(key);
-                }
-            }
+        if redraw {
+            ed.draw(fancy);
+        }
+        // a pause of half a second blinks the brush; a key does what it says
+        match term::poll_key(500) {
+            Option::None => {
+                ed.blink = !ed.blink;
+                redraw = fancy;
+            },
+            Option::Some(key) => {
+                ed.press(key);
+                redraw = true;
+            },
         }
     }
+    if fancy {
+        term::show_cursor();
+        term::leave_screen();
+    }
+    term::raw(false);
     println("bye");
 }

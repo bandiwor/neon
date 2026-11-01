@@ -71,6 +71,8 @@ pub struct FnDef {
     pub ret: Ty,
     pub has_self: bool,
     pub body: Option<NodeId>,
+    /// A function without a body in a standard module: the builtin that implements it.
+    pub native: Option<crate::builtin::Builtin>,
     pub exported: bool,
     /// Parameter locals, filled in when the body is checked.
     pub param_locals: Vec<LocalId>,
@@ -268,8 +270,6 @@ pub struct ModuleInfo {
     pub binding_locals: HashMap<NodeId, LocalId>,
     /// `Field`, `FieldInit` node to the field index.
     pub field_indices: HashMap<NodeId, u32>,
-    /// `sys.args` expressions (`Field` nodes whose base is the built-in `sys`).
-    pub sys_args: crate::fx::FxHashSet<NodeId>,
     /// `t.0` expressions: the `Field` node to the element index of the tuple.
     pub tuple_fields: HashMap<NodeId, u32>,
     /// Closure literals that are arguments of lazy iterator methods: their bodies are inlined into the

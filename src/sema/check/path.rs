@@ -99,6 +99,10 @@ impl Checker<'_> {
         self.use_def(self.name_only(seg), def);
         let (all, params, ret) = self.instantiate_fn(fid, Vec::new(), &explicit, seg.span);
         let n = params.len();
+        // a native function of a standard module is an intrinsic, not a call
+        if let Some(b) = self.prog.fns[fid.index()].native {
+            return ValueRes::Func { callee: Callee::Builtin(b, Vec::new()), params, ret, min_args: n };
+        }
         ValueRes::Func { callee: Callee::Fn(fid, all), params, ret, min_args: n }
     }
 

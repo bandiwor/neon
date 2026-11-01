@@ -830,6 +830,61 @@ impl Interp<'_> {
                 let handles: Vec<u64> = self.args.clone().into_iter().map(|a| self.alloc_str(a)).collect();
                 self.alloc(Obj::Array(handles))
             }
+            // the host services: the reference interpreter has the operating system and no keyboard
+            SysExit => return Err(Trap::Exit(a[0] as i64)),
+            SysEnv => {
+                let v = crate::host::env(self.str_of(a[0])).map(|v| self.alloc_str(v));
+                self.option(v)
+            }
+            SysPlatform => self.alloc_str(crate::host::platform().to_string()),
+            SysNowMs => crate::host::now_ms() as u64,
+            SysTicksMs => crate::host::ticks_ms() as u64,
+            SysSleep => 0,
+            FsRead => match crate::host::fs_read(self.str_of(a[0])) {
+                Ok(t) => {
+                    let s = self.alloc_str(t);
+                    self.ok(s)
+                }
+                Err(e) => self.err_str(e),
+            },
+            FsWrite | FsAppend => {
+                let (p, t) = (self.str_of(a[0]).to_string(), self.str_of(a[1]).to_string());
+                let r = if b == FsWrite { crate::host::fs_write(&p, &t) } else { crate::host::fs_append(&p, &t) };
+                match r {
+                    Ok(()) => self.ok(0),
+                    Err(e) => self.err_str(e),
+                }
+            }
+            FsExists => crate::host::fs_exists(self.str_of(a[0])) as u64,
+            FsIsFile => crate::host::fs_is_file(self.str_of(a[0])) as u64,
+            FsIsDir => crate::host::fs_is_dir(self.str_of(a[0])) as u64,
+            FsList => match crate::host::fs_list(self.str_of(a[0])) {
+                Ok(names) => {
+                    let handles: Vec<u64> = names.into_iter().map(|n| self.alloc_str(n)).collect();
+                    let arr = self.alloc(Obj::Array(handles));
+                    self.ok(arr)
+                }
+                Err(e) => self.err_str(e),
+            },
+            FsCreateDir | FsRemove => {
+                let p = self.str_of(a[0]).to_string();
+                match if b == FsCreateDir { crate::host::fs_create_dir(&p) } else { crate::host::fs_remove(&p) } {
+                    Ok(()) => self.ok(0),
+                    Err(e) => self.err_str(e),
+                }
+            }
+            FsRename => match crate::host::fs_rename(self.str_of(a[0]), self.str_of(a[1])) {
+                Ok(()) => self.ok(0),
+                Err(e) => self.err_str(e),
+            },
+            TermRaw | TermIsTty => 0,
+            TermReadKey => self.none(),
+            TermPollKey => {
+                let s = self.alloc_str("eof".to_string());
+                self.some(s)
+            }
+            TermWidth => 80,
+            TermHeight => 24,
             ReadLine => match self.input.pop_front() {
                 Some(l) => {
                     let s = self.alloc_str(l);

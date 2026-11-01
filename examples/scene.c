@@ -15,6 +15,24 @@
 
 /* ---- Runtime: declarations -------------------------------------------------*/
 
+/* The type names of Neon. `chr` is a Unicode scalar value (`char` is C's own); `unit` is `void`, used
+ * for the result of functions that return nothing. */
+typedef int8_t i8;
+typedef int16_t i16;
+typedef int32_t i32;
+typedef int64_t i64;
+typedef uint8_t u8;
+typedef uint16_t u16;
+typedef uint32_t u32;
+typedef uint64_t u64;
+typedef float f32;
+typedef double f64;
+typedef u32 chr;
+typedef void unit;
+#if !(defined(__STDC_VERSION__) && __STDC_VERSION__ >= 202311L)
+typedef u8 bool;   /* C23 has a `bool` of its own */
+#endif
+
 /* Debug or release. Checked (debug) builds trap on integer overflow, division by zero, bad shifts and
  * too deep recursion; with -DNDEBUG (or -DNEON_CHECKS=0) integers wrap around, division by zero is
  * left to C and the recursion is not counted. Array bounds, map keys, parsing and panics are always checked. */
@@ -59,9 +77,7 @@
 #endif
 #endif
 
-typedef uint8_t unit_t;  /* the type `()`: always 0 */
-
-typedef uint64_t W;     /* a machine word: any value stored inside a container */
+typedef u64 W;     /* a machine word: any value stored inside a container */
 
 /* Heap objects. Every object starts with the same 8-byte header; `flags` and `n` depend on `kind`:
  *   K_ARR  flags & 1: the elements are references
@@ -75,14 +91,14 @@ enum { MF_KREF = 1, MF_VREF = 2, MF_KSTR = 4, MF_SET = 8 };
 
 typedef struct Obj Obj;
 struct Obj {
-    uint8_t kind, mark;
-    uint16_t flags;
-    uint32_t n;
+    u8 kind, mark;
+    u16 flags;
+    u32 n;
 };
 typedef struct { Obj h; size_t len; char s[]; } Str;                       /* UTF-8, NUL-terminated */
 typedef struct { Obj h; size_t len, cap; W *a; } Arr;
-typedef struct { Obj h; uint64_t mask; W f[]; } Agg;                       /* mask: which fields are references */
-typedef struct { Obj h; size_t len, cap, ixcap; W *k, *v; int32_t *ix; } Map;  /* insertion ordered + hash index */
+typedef struct { Obj h; u64 mask; W f[]; } Agg;                       /* mask: which fields are references */
+typedef struct { Obj h; size_t len, cap, ixcap; W *k, *v; i32 *ix; } Map;  /* insertion ordered + hash index */
 typedef struct { Obj h; void (*fn)(void); Obj *c[]; } Clo;                 /* code + captured cells */
 typedef struct { Obj h; W v; } Cell;                                       /* a captured variable */
 
@@ -117,6 +133,9 @@ static Frame *gc_top;          /* innermost registered frame */
 static size_t gc_next = (size_t)4 << 20;   /* collect when gc_bytes reaches this */
 static Obj **gc_stack;         /* work list of the mark phase */
 static size_t gc_nstack, gc_capstack;
+/* FRAME(&a, &b, ...) at the top of a function registers its reference variables; FRAME_LEAVE() before every return. */
+#define FRAME(...) Obj **fr_roots[] = {__VA_ARGS__}; Frame fr = {gc_top, fr_roots, sizeof fr_roots / sizeof *fr_roots}; gc_top = &fr
+#define FRAME_LEAVE() (gc_top = fr.up)
 #ifdef NEON_GC_STRESS   /* -DNEON_GC_STRESS: collect at every safe-point, to test the collector */
 #define GC_POINT() gc_collect()
 #else
@@ -151,7 +170,7 @@ static NORETURN COLD void trap_div0(void);
 #if NEON_CHECKS
 static NORETURN COLD void trap_shift(void);
 #endif
-static NORETURN COLD void trap_index(int64_t index, size_t len);
+static NORETURN COLD void trap_index(i64 index, size_t len);
 static NORETURN COLD void trap_oom(void);
 #if NEON_CHECKS
 static NORETURN COLD void trap_stack(void);
@@ -168,30 +187,32 @@ static size_t gc_extern(const Obj *o);
 static void gc_finish(Obj *o);
 static void gc_sweep(void);
 static void gc_collect(void);
-static size_t utf8_enc(uint32_t c, char *out);
+static size_t utf8_enc(u32 c, char *out);
 static Obj *str_new(const char *s, size_t n);
 static Obj *str_cat(Obj *a, Obj *b);
-static Obj *agg_new(uint32_t tag, uint32_t n, uint64_t mask);
+static Obj *agg_alloc(u32 tag, u32 n, u64 mask);
+static Obj *agg_new(u32 tag, u32 n, u64 mask);
+static Obj *arr_alloc(size_t cap, int is_ref);
 static Obj *arr_new(size_t cap, int is_ref);
 static void arr_push(Obj *o, W v);
-static W arr_get(Obj *o, int64_t i);
-static void arr_set(Obj *o, int64_t i, W v);
-static Obj *clo_new(void (*fn)(void), uint32_t n);
+static W arr_get(Obj *o, i64 i);
+static void arr_set(Obj *o, i64 i, W v);
+static Obj *clo_new(void (*fn)(void), u32 n);
 static void sb_put(SB *b, const char *s, size_t n);
 static void sb_puts(SB *b, const char *s);
-static void sb_cp(SB *b, uint32_t c);
+static void sb_cp(SB *b, u32 c);
 static Obj *sb_take(void);
-static void sb_i64(SB *b, int64_t v);
-static void sb_u64(SB *b, uint64_t v);
+static void sb_i64(SB *b, i64 v);
+static void sb_u64(SB *b, u64 v);
 static void out_sb(int newline);
 static void out_str(Obj *s, int newline);
 static Obj *str_join(Obj *arr, Obj *sep);
-static int64_t add_i64(int64_t a, int64_t b);
-static int64_t div_i64(int64_t a, int64_t b);
-static int64_t mul_i64(int64_t a, int64_t b);
-static int64_t rem_i64(int64_t a, int64_t b);
-static uint64_t shr_u64(uint64_t a, int64_t n);
-static int64_t sub_i64(int64_t a, int64_t b);
+static i64 add_i64(i64 a, i64 b);
+static i64 div_i64(i64 a, i64 b);
+static i64 mul_i64(i64 a, i64 b);
+static i64 rem_i64(i64 a, i64 b);
+static u64 shr_u64(u64 a, i64 n);
+static i64 sub_i64(i64 a, i64 b);
 
 /* ---- Program: declarations -------------------------------------------------*/
 
@@ -215,14 +236,14 @@ static const struct { const char *s; size_t n; } k_lit[15] = {
 };
 static Obj *k_str[15];   /* string constants, created on first use */
 static Obj *kstr(int i);
-static unit_t n_start(void);
-static unit_t n_main(void);
+static unit n_start(void);
+static unit n_main(void);
 static Obj *n_render(Obj *v0);
-static int64_t n_area(uint64_t v0);
+static i64 n_area(u64 v0);
 static Obj *n_unwrap_Shape_i64(Obj *v0);
-static int64_t n_brightness(uint64_t v0);
-static Obj *n_to_string(uint64_t v0);
-static uint8_t n_covers(uint64_t v0, Obj *v1);
+static i64 n_brightness(u64 v0);
+static Obj *n_to_string(u64 v0);
+static bool n_covers(u64 v0, Obj *v1);
 static Obj *n_closure_506(Obj **up, Obj *v0);
 static void pr_2(W w);
 static void pr_4(W w);
@@ -260,9 +281,9 @@ static void pr_16(Obj *o) {
 static void pr_15(Obj *o) {
     const Agg *g = AGG(o);
     sb_puts(&rt_sb, "(");
-    sb_i64(&rt_sb, (int64_t)g->f[0]);
+    sb_i64(&rt_sb, (i64)g->f[0]);
     sb_puts(&rt_sb, ", ");
-    sb_i64(&rt_sb, (int64_t)g->f[1]);
+    sb_i64(&rt_sb, (i64)g->f[1]);
     sb_puts(&rt_sb, ")");
 }
 
@@ -272,7 +293,7 @@ static void pr_13(Obj *o) {
     sb_puts(&rt_sb, "[");
     for (i = 0; i < a->len; i++) {
         if (i) sb_puts(&rt_sb, ", ");
-        sb_i64(&rt_sb, (int64_t)a->a[i]);
+        sb_i64(&rt_sb, (i64)a->a[i]);
     }
     sb_puts(&rt_sb, "]");
 }
@@ -296,17 +317,17 @@ static void pr_4(W w) {
     case 1:
         sb_puts(&rt_sb, "Color::Gray");
         sb_puts(&rt_sb, "(");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 8));
+        sb_u64(&rt_sb, (W)(u8)(w >> 8));
         sb_puts(&rt_sb, ")");
         break;
     case 2:
         sb_puts(&rt_sb, "Color::Rgb");
         sb_puts(&rt_sb, "(");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 8));
+        sb_u64(&rt_sb, (W)(u8)(w >> 8));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 16));
+        sb_u64(&rt_sb, (W)(u8)(w >> 16));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 24));
+        sb_u64(&rt_sb, (W)(u8)(w >> 24));
         sb_puts(&rt_sb, ")");
         break;
     default:
@@ -319,41 +340,41 @@ static void pr_2(W w) {
     case 0:
         sb_puts(&rt_sb, "Shape::Dot");
         sb_puts(&rt_sb, "(");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 8));
+        sb_u64(&rt_sb, (W)(u8)(w >> 8));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 16));
+        sb_u64(&rt_sb, (W)(u8)(w >> 16));
         sb_puts(&rt_sb, ")");
         break;
     case 1:
         sb_puts(&rt_sb, "Shape::HLine");
         sb_puts(&rt_sb, "(");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 8));
+        sb_u64(&rt_sb, (W)(u8)(w >> 8));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 16));
+        sb_u64(&rt_sb, (W)(u8)(w >> 16));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 24));
+        sb_u64(&rt_sb, (W)(u8)(w >> 24));
         sb_puts(&rt_sb, ")");
         break;
     case 2:
         sb_puts(&rt_sb, "Shape::Rect");
         sb_puts(&rt_sb, "(");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 8));
+        sb_u64(&rt_sb, (W)(u8)(w >> 8));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 16));
+        sb_u64(&rt_sb, (W)(u8)(w >> 16));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 24));
+        sb_u64(&rt_sb, (W)(u8)(w >> 24));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 32));
+        sb_u64(&rt_sb, (W)(u8)(w >> 32));
         sb_puts(&rt_sb, ")");
         break;
     case 3:
         sb_puts(&rt_sb, "Shape::Circle");
         sb_puts(&rt_sb, "(");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 8));
+        sb_u64(&rt_sb, (W)(u8)(w >> 8));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 16));
+        sb_u64(&rt_sb, (W)(u8)(w >> 16));
         sb_puts(&rt_sb, ", ");
-        sb_u64(&rt_sb, (W)(uint8_t)(w >> 24));
+        sb_u64(&rt_sb, (W)(u8)(w >> 24));
         sb_puts(&rt_sb, ")");
         break;
     default:
@@ -361,41 +382,32 @@ static void pr_2(W w) {
     }
 }
 
-static unit_t n_start(void) {
-    (void)(n_main());
-    return 0;
+static unit n_start(void) {
+    n_main();
+    return;
 }
 
-static unit_t n_main(void) {
+static unit n_main(void) {
     Obj *v7 = NULL, *v16 = NULL, *v23 = NULL, *v32 = NULL, *v38 = NULL, *v39 = NULL, *v41 = NULL, *v46 = NULL, *v48 = NULL, *v71 = NULL, *v73 = NULL, *v89 = NULL, *v90 = NULL, *v91 = NULL, *v92 = NULL, *v93 = NULL, *v97 = NULL, *v103 = NULL, *v115 = NULL, *v122 = NULL, *v123 = NULL, *v128 = NULL, *v129 = NULL, *v131 = NULL, *v151 = NULL, *v154 = NULL, *v170 = NULL, *v171 = NULL, *v198 = NULL, *v199 = NULL, *v200 = NULL, *v201 = NULL, *v202 = NULL, *v205 = NULL, *v209 = NULL, *v216 = NULL, *v225 = NULL;
-    int64_t v42 = 0, v44 = 0, v75 = 0, v77 = 0, v80 = 0, v82 = 0, v94 = 0, v104 = 0, v107 = 0, v110 = 0, v114 = 0, v126 = 0, v155 = 0, v158 = 0, v162 = 0, v168 = 0, v173 = 0, v176 = 0, v179 = 0, v189 = 0, v210 = 0, v215 = 0, v224 = 0, v227 = 0, v230 = 0, v239 = 0, v241 = 0, v247 = 0, v252 = 0;
-    uint64_t v87 = 0, v111 = 0, v124 = 0, v159 = 0, v177 = 0;
-    uint8_t v45 = 0, v79 = 0, v101 = 0, v109 = 0, v120 = 0, v157 = 0, v169 = 0, v175 = 0, v178 = 0, v180 = 0, v191 = 0, v229 = 0, v232 = 0, v243 = 0, v249 = 0;
-    Obj **fr_roots[37] = {&v7, &v16, &v23, &v32, &v38, &v39, &v41, &v46, &v48, &v71, &v73, &v89, &v90, &v91, &v92, &v93, &v97, &v103, &v115, &v122, &v123, &v128, &v129, &v131, &v151, &v154, &v170, &v171, &v198, &v199, &v200, &v201, &v202, &v205, &v209, &v216, &v225};
-    Frame fr = {NULL, fr_roots, 37};
-    fr.up = gc_top;
-    gc_top = &fr;
-    GC_POINT();
+    bool v45 = 0, v79 = 0, v101 = 0, v109 = 0, v120 = 0, v157 = 0, v169 = 0, v175 = 0, v178 = 0, v180 = 0, v191 = 0, v229 = 0, v232 = 0, v243 = 0, v249 = 0;
+    i64 v42 = 0, v44 = 0, v75 = 0, v77 = 0, v80 = 0, v82 = 0, v94 = 0, v104 = 0, v107 = 0, v110 = 0, v114 = 0, v126 = 0, v155 = 0, v158 = 0, v162 = 0, v168 = 0, v173 = 0, v176 = 0, v179 = 0, v189 = 0, v210 = 0, v215 = 0, v224 = 0, v227 = 0, v230 = 0, v239 = 0, v241 = 0, v247 = 0, v252 = 0;
+    u64 v87 = 0, v111 = 0, v124 = 0, v159 = 0, v177 = 0;
+    FRAME(&v7, &v16, &v23, &v32, &v38, &v39, &v41, &v46, &v48, &v71, &v73, &v89, &v90, &v91, &v92, &v93, &v97, &v103, &v115, &v122, &v123, &v128, &v129, &v131, &v151, &v154, &v170, &v171, &v198, &v199, &v200, &v201, &v202, &v205, &v209, &v216, &v225);
     v7 = agg_new(0, 2, 0);
     AGG(v7)->f[0] = (W)(UINT64_C(21676229122));
     AGG(v7)->f[1] = (W)17921u;
-    GC_POINT();
     v16 = agg_new(0, 2, 0);
     AGG(v16)->f[0] = (W)117905923u;
     AGG(v16)->f[1] = (W)3371235842u;
-    GC_POINT();
     v23 = agg_new(0, 2, 0);
     AGG(v23)->f[0] = (W)672006145u;
     AGG(v23)->f[1] = (W)33281u;
-    GC_POINT();
     v32 = agg_new(0, 2, 0);
     AGG(v32)->f[0] = (W)50797059u;
     AGG(v32)->f[1] = (W)169093122u;
-    GC_POINT();
     v38 = agg_new(0, 2, 0);
     AGG(v38)->f[0] = (W)198400u;
     AGG(v38)->f[1] = (W)65281u;
-    GC_POINT();
     v39 = arr_new(5, 1);
     ARR(v39)->a[0] = O2W(v7);
     ARR(v39)->a[1] = O2W(v16);
@@ -405,21 +417,22 @@ static unit_t n_main(void) {
     ARR(v39)->len = 5;
     v41 = n_render(v39);
     v42 = 0;
-    v44 = (int64_t)(ARR(v41)->len);
+    v44 = (i64)(ARR(v41)->len);
     v45 = v42 < v44;
     if (!(v45)) goto B2;
+
 B1:
-    v46 = W2O(arr_get(v41, (int64_t)v42));
+    v46 = W2O(arr_get(v41, (i64)v42));
     v48 = kstr(0);
     out_str(v48, 0);
     out_str(v46, 0);
     out_str(v48, 1);
     v42 = add_i64(v42, 1);
-    v44 = (int64_t)(ARR(v41)->len);
+    v44 = (i64)(ARR(v41)->len);
     v45 = v42 < v44;
     if (v45) goto B1;
+
 B2:
-    GC_POINT();
     v71 = arr_new(4, 0);
     ARR(v71)->a[0] = (W)65792u;
     ARR(v71)->a[1] = (W)150994945u;
@@ -432,18 +445,17 @@ B2:
     v77 = 0;
     v80 = 4;
     v79 = 1;
+
 B4:
-    v87 = (uint64_t)(arr_get(v71, (int64_t)v77));
+    v87 = (u64)(arr_get(v71, (i64)v77));
     v82 = v75;
     v75 = add_i64(v75, 1);
     v89 = kstr(2);
     GC_POINT();
     sb_i64(&rt_sb, v82);
     v90 = sb_take();
-    GC_POINT();
     v91 = str_cat(v89, v90);
     v92 = kstr(3);
-    GC_POINT();
     v93 = str_cat(v91, v92);
     v94 = n_area(v87);
     v97 = kstr(4);
@@ -452,9 +464,10 @@ B4:
     out_sb(0);
     out_str(v97, 1);
     v77 = add_i64(v77, 1);
-    v80 = (int64_t)(ARR(v71)->len);
+    v80 = (i64)(ARR(v71)->len);
     v79 = v77 < v80;
     if (v79) goto B4;
+
     v101 = 0;
     v103 = kstr(5);
     v104 = 0;
@@ -462,33 +475,38 @@ B4:
     v110 = v80;
     v109 = v107 < v80;
     if (!(v109)) goto B5;
+
 B6:
-    v111 = (uint64_t)(arr_get(v71, (int64_t)v107));
+    v111 = (u64)(arr_get(v71, (i64)v107));
     v114 = n_area(v111);
-    GC_POINT();
     v115 = agg_new(0, 2, 0);
     AGG(v115)->f[0] = (W)v111;
-    AGG(v115)->f[1] = (W)(int64_t)v114;
+    AGG(v115)->f[1] = (W)(i64)v114;
     if (!(v101)) goto B8;
+
     v120 = v114 >= v104;
     if (!(v120)) goto B7;
+
 B10:
     v103 = v115;
     v104 = v114;
+
 B7:
     v107 = add_i64(v107, 1);
-    v110 = (int64_t)(ARR(v71)->len);
+    v110 = (i64)(ARR(v71)->len);
     v109 = v107 < v110;
     if (v109) goto B6;
+
 B5:
     if (!(v101)) goto B12;
-    GC_POINT();
+
     v122 = agg_new(0, 1, 1);
     AGG(v122)->f[0] = O2W(v103);
+
 B13:
     v123 = n_unwrap_Shape_i64(v122);
-    v124 = (uint64_t)(AGG(v123)->f[0]);
-    v126 = (int64_t)(int64_t)(AGG(v123)->f[1]);
+    v124 = (u64)(AGG(v123)->f[0]);
+    v126 = (i64)(i64)(AGG(v123)->f[1]);
     v128 = kstr(6);
     GC_POINT();
     pr_2((W)v124);
@@ -500,7 +518,6 @@ B13:
     sb_i64(&rt_sb, v126);
     out_sb(0);
     out_str(v97, 1);
-    GC_POINT();
     v151 = arr_new(5, 0);
     ARR(v151)->a[0] = (W)0u;
     ARR(v151)->a[1] = (W)10241u;
@@ -510,23 +527,23 @@ B13:
     ARR(v151)->len = 5;
     pr_12(W2O(O2W(v151)));
     out_sb(1);
-    GC_POINT();
     v154 = arr_new(0, 0);
     v155 = 0;
     v158 = 5;
     v157 = 1;
+
 B15:
-    v159 = (uint64_t)(arr_get(v151, (int64_t)v155));
+    v159 = (u64)(arr_get(v151, (i64)v155));
     v162 = n_brightness(v159);
-    arr_push(v154, (W)(int64_t)v162);
+    arr_push(v154, (W)(i64)v162);
     v155 = add_i64(v155, 1);
-    v158 = (int64_t)(ARR(v151)->len);
+    v158 = (i64)(ARR(v151)->len);
     v157 = v155 < v158;
     if (v157) goto B15;
+
     pr_13(W2O(O2W(v154)));
     out_sb(1);
     v170 = kstr(8);
-    GC_POINT();
     v171 = arr_new(0, 1);
     v169 = 0;
     v168 = 0;
@@ -534,322 +551,360 @@ B15:
     v176 = v158;
     v175 = v173 < v158;
     if (!(v175)) goto B16;
+
 B17:
-    v177 = (uint64_t)(arr_get(v151, (int64_t)v173));
+    v177 = (u64)(arr_get(v151, (i64)v173));
     if (!(v169)) goto B20;
+
 B16:
-    GC_POINT();
     v205 = str_join(v171, v170);
     out_str(v205, 1);
-    GC_POINT();
     v209 = arr_new(0, 1);
     v210 = 5;
     v215 = 25;
-    GC_POINT();
     v216 = agg_new(0, 2, 0);
-    AGG(v216)->f[0] = (W)(int64_t)v210;
-    AGG(v216)->f[1] = (W)(int64_t)v215;
+    AGG(v216)->f[0] = (W)(i64)v210;
+    AGG(v216)->f[1] = (W)(i64)v215;
     arr_push(v209, O2W(v216));
     v210 = 4;
     v215 = 16;
-    GC_POINT();
     v216 = agg_new(0, 2, 0);
-    AGG(v216)->f[0] = (W)(int64_t)v210;
-    AGG(v216)->f[1] = (W)(int64_t)v215;
+    AGG(v216)->f[0] = (W)(i64)v210;
+    AGG(v216)->f[1] = (W)(i64)v215;
     arr_push(v209, O2W(v216));
     v210 = 3;
     v215 = 9;
-    GC_POINT();
     v216 = agg_new(0, 2, 0);
-    AGG(v216)->f[0] = (W)(int64_t)v210;
-    AGG(v216)->f[1] = (W)(int64_t)v215;
+    AGG(v216)->f[0] = (W)(i64)v210;
+    AGG(v216)->f[1] = (W)(i64)v215;
     arr_push(v209, O2W(v216));
     v210 = 2;
     v215 = 4;
-    GC_POINT();
     v216 = agg_new(0, 2, 0);
-    AGG(v216)->f[0] = (W)(int64_t)v210;
-    AGG(v216)->f[1] = (W)(int64_t)v215;
+    AGG(v216)->f[0] = (W)(i64)v210;
+    AGG(v216)->f[1] = (W)(i64)v215;
     arr_push(v209, O2W(v216));
     v210 = 1;
     v215 = 1;
-    GC_POINT();
     v216 = agg_new(0, 2, 0);
-    AGG(v216)->f[0] = (W)(int64_t)v210;
-    AGG(v216)->f[1] = (W)(int64_t)v215;
+    AGG(v216)->f[0] = (W)(i64)v210;
+    AGG(v216)->f[1] = (W)(i64)v215;
     arr_push(v209, O2W(v216));
     pr_16(W2O(O2W(v209)));
     out_sb(1);
-    GC_POINT();
     v225 = arr_new(0, 0);
     v224 = 0;
     v227 = 0;
     v229 = 1;
+
 B25:
     v230 = rem_i64(v224, 8);
     v232 = v230 == 0;
     v224 = add_i64(v224, 1);
     if (!(v232)) goto B26;
-    arr_push(v225, (W)(int64_t)v227);
+
+    arr_push(v225, (W)(i64)v227);
+
 B26:
     v227 = add_i64(v227, 1);
     v229 = v227 < 40;
     if (v229) goto B25;
+
     pr_13(W2O(O2W(v225)));
     out_sb(1);
     v239 = 0;
     v241 = 0;
     v243 = 1;
+
 B29:
     v247 = rem_i64(v241, 3);
     v249 = v247 == 0;
     if (!(v249)) goto B30;
+
     v252 = mul_i64(v241, v241);
     v239 = add_i64(v239, v252);
+
 B30:
     v241 = add_i64(v241, 1);
     v243 = v241 < 20;
     if (v243) goto B29;
     goto B28;
+
 B20:
     v178 = v168 <= INT64_C(9223372036854775807);
     if (!(v178)) goto B16;
+
     v179 = v168;
     v180 = v168 == INT64_C(9223372036854775807);
     v169 = v180;
     if (!(v180)) goto B22;
+
 B21:
     v189 = n_brightness(v177);
     v191 = v189 > 50;
     if (!(v191)) goto B18;
+
     GC_POINT();
     sb_i64(&rt_sb, v179);
     v198 = sb_take();
     v199 = kstr(9);
-    GC_POINT();
     v200 = str_cat(v198, v199);
     v201 = n_to_string(v177);
-    GC_POINT();
     v202 = str_cat(v200, v201);
     arr_push(v171, O2W(v202));
+
 B18:
     v173 = add_i64(v173, 1);
-    v176 = (int64_t)(ARR(v151)->len);
+    v176 = (i64)(ARR(v151)->len);
     v175 = v173 < v176;
     if (v175) goto B17;
     goto B16;
+
 B22:
     v168 = add_i64(v168, 1);
     goto B21;
+
 B12:
-    GC_POINT();
     v122 = agg_new(1, 0, 0);
     goto B13;
+
 B8:
     v101 = 1;
     goto B10;
+
 B28:
     sb_i64(&rt_sb, v239);
     out_sb(1);
-    gc_top = fr.up;
-    return 0;
+    FRAME_LEAVE();
+    return;
 }
 
 static Obj *n_render(Obj *v0) {
     Obj *v1 = NULL, *v7 = NULL, *v23 = NULL, *v36 = NULL, *v53 = NULL, *v56 = NULL, *v61 = NULL, *v65 = NULL, *v71 = NULL, *v74 = NULL;
-    int64_t v5 = 0, v11 = 0, v19 = 0, v21 = 0, v27 = 0, v32 = 0, v45 = 0, v50 = 0, v67 = 0, v69 = 0, v80 = 0, v100 = 0, v112 = 0, v113 = 0, v115 = 0, v116 = 0, v117 = 0, v118 = 0, v119 = 0;
-    uint32_t v55 = 0;
-    uint64_t v39 = 0, v41 = 0, v123 = 0, v135 = 0, v137 = 0, v139 = 0, v141 = 0;
-    uint8_t v6 = 0, v12 = 0, v22 = 0, v28 = 0, v33 = 0, v46 = 0, v51 = 0, v54 = 0, v70 = 0, v84 = 0, v88 = 0, v92 = 0, v96 = 0, v102 = 0, v105 = 0, v107 = 0, v109 = 0, v125 = 0, v129 = 0, v133 = 0;
-    Obj **fr_roots[11] = {&v0, &v1, &v7, &v23, &v36, &v53, &v56, &v61, &v65, &v71, &v74};
-    Frame fr = {NULL, fr_roots, 11};
+    bool v6 = 0, v12 = 0, v22 = 0, v28 = 0, v33 = 0, v46 = 0, v51 = 0, v54 = 0, v70 = 0, v84 = 0, v88 = 0, v92 = 0, v96 = 0, v125 = 0, v129 = 0, v133 = 0;
+    chr v55 = 0;
+    i64 v5 = 0, v11 = 0, v19 = 0, v21 = 0, v27 = 0, v32 = 0, v45 = 0, v50 = 0, v67 = 0, v69 = 0, v80 = 0, v100 = 0, v112 = 0, v113 = 0, v115 = 0, v116 = 0, v117 = 0, v118 = 0, v119 = 0;
+    u64 v39 = 0, v41 = 0, v123 = 0, v135 = 0, v137 = 0, v139 = 0, v141 = 0;
+    u8 v102 = 0, v105 = 0, v107 = 0, v109 = 0;
+    FRAME(&v0, &v1, &v7, &v23, &v36, &v53, &v56, &v61, &v65, &v71, &v74);
     DEPTH_ENTER();
-    fr.up = gc_top;
-    gc_top = &fr;
-    GC_POINT();
     v1 = arr_new(0, 1);
     v5 = 0;
     v6 = 1;
+
 B1:
-    GC_POINT();
     v7 = arr_new(0, 0);
     v11 = 0;
     v12 = 1;
+
 B3:
     arr_push(v7, (W)32u);
     v11 = add_i64(v11, 1);
     v12 = v11 < 40;
     if (v12) goto B3;
+
     arr_push(v1, O2W(v7));
     v5 = add_i64(v5, 1);
     v6 = v5 < 16;
     if (v6) goto B1;
+
     v19 = 0;
-    v21 = (int64_t)(ARR(v0)->len);
+    v21 = (i64)(ARR(v0)->len);
     v22 = v19 < v21;
     if (!(v22)) goto B7;
+
 B5:
-    v23 = W2O(arr_get(v0, (int64_t)v19));
+    v23 = W2O(arr_get(v0, (i64)v19));
     if (!(TAG(v23) == 1)) goto B8;
+
     v27 = 0;
     v28 = 1;
+
 B10:
     v32 = 0;
     v33 = 1;
-    v36 = W2O(arr_get(v1, (int64_t)v27));
+    v36 = W2O(arr_get(v1, (i64)v27));
+
 B12:
-    arr_set(v36, (int64_t)v32, (W)32u);
+    arr_set(v36, (i64)v32, (W)32u);
     v32 = add_i64(v32, 1);
     v33 = v32 < 40;
     if (v33) goto B12;
+
     v27 = add_i64(v27, 1);
     v28 = v27 < 16;
     if (v28) goto B10;
+
 B6:
     v19 = add_i64(v19, 1);
-    v21 = (int64_t)(ARR(v0)->len);
+    v21 = (i64)(ARR(v0)->len);
     v22 = v19 < v21;
     if (v22) goto B5;
+
 B7:
-    GC_POINT();
     v61 = clo_new((void (*)(void))n_closure_506, 0);
-    GC_POINT();
     v65 = arr_new(0, 1);
     v67 = 0;
-    v69 = (int64_t)(ARR(v1)->len);
+    v69 = (i64)(ARR(v1)->len);
     v70 = v67 < v69;
     if (!(v70)) goto B21;
+
 B20:
-    v71 = W2O(arr_get(v1, (int64_t)v67));
+    v71 = W2O(arr_get(v1, (i64)v67));
     v74 = ((fp0)CLO(v61)->fn)(CLO(v61)->c, v71);
     arr_push(v65, O2W(v74));
     v67 = add_i64(v67, 1);
     v70 = v67 < v69;
     if (v70) goto B20;
     goto B21;
+
 B8:
     if (!(TAG(v23) == 0)) goto B13;
-    v39 = (uint64_t)(AGG(v23)->f[0]);
-    v41 = (uint64_t)(AGG(v23)->f[1]);
+
+    v39 = (u64)(AGG(v23)->f[0]);
+    v41 = (u64)(AGG(v23)->f[1]);
     v45 = 0;
     v46 = 1;
-    v123 = (uint64_t)(v41 & 255u);
+    v123 = (u64)(v41 & 255u);
     v125 = v123 == 0u;
     v129 = v123 == 1u;
     v133 = v123 == 2u;
+
 B15:
     v50 = 0;
     v51 = 1;
+
 B17:
-    GC_POINT();
     v53 = agg_new(0, 2, 0);
-    AGG(v53)->f[0] = (W)(int64_t)v50;
-    AGG(v53)->f[1] = (W)(int64_t)v45;
+    AGG(v53)->f[0] = (W)(i64)v50;
+    AGG(v53)->f[1] = (W)(i64)v45;
     v54 = n_covers(v39, v53);
     if (!(v54)) goto B18;
     if (!(v125)) goto B31;
+
     v100 = 0;
     v80 = 0;
+
 B37:
     v84 = v80 == 0;
     if (!(v84)) goto B23;
+
     v55 = 32u;
+
 B30:
-    v56 = W2O(arr_get(v1, (int64_t)v45));
-    arr_set(v56, (int64_t)v50, (W)v55);
+    v56 = W2O(arr_get(v1, (i64)v45));
+    arr_set(v56, (i64)v50, (W)v55);
+
 B18:
     v50 = add_i64(v50, 1);
     v51 = v50 < 40;
     if (v51) goto B17;
+
     v45 = add_i64(v45, 1);
     v46 = v45 < 16;
     if (v46) goto B15;
     goto B6;
+
 B23:
     v88 = v80 < 64;
     if (!(v88)) goto B25;
+
     v55 = 46u;
     goto B30;
+
 B25:
     v92 = v80 < 128;
     if (!(v92)) goto B27;
+
     v55 = 58u;
     goto B30;
+
 B27:
     v96 = v80 < 192;
     if (!(v96)) goto B29;
+
     v55 = 111u;
     goto B30;
+
 B29:
     v55 = 35u;
     goto B30;
+
 B31:
     if (!(v129)) goto B33;
-    v135 = shr_u64(v41, (int64_t)8);
-    v102 = (uint8_t)v135;
-    v100 = (int64_t)v102;
+
+    v135 = shr_u64(v41, (i64)8);
+    v102 = (u8)v135;
+    v100 = (i64)v102;
     v80 = v100;
     goto B37;
+
 B33:
     if (!(v133)) goto B35;
-    v137 = shr_u64(v41, (int64_t)8);
-    v105 = (uint8_t)v137;
-    v139 = shr_u64(v41, (int64_t)16);
-    v107 = (uint8_t)v139;
-    v141 = shr_u64(v41, (int64_t)24);
-    v109 = (uint8_t)v141;
-    v112 = (int64_t)v105;
+
+    v137 = shr_u64(v41, (i64)8);
+    v105 = (u8)v137;
+    v139 = shr_u64(v41, (i64)16);
+    v107 = (u8)v139;
+    v141 = shr_u64(v41, (i64)24);
+    v109 = (u8)v141;
+    v112 = (i64)v105;
     v113 = mul_i64(2, v112);
-    v115 = (int64_t)v107;
+    v115 = (i64)v107;
     v116 = mul_i64(5, v115);
     v117 = add_i64(v113, v116);
-    v118 = (int64_t)v109;
+    v118 = (i64)v109;
     v119 = add_i64(v117, v118);
     v100 = div_i64(v119, 8);
     v80 = v100;
     goto B37;
+
 B21:
     DEPTH_LEAVE();
-    gc_top = fr.up;
+    FRAME_LEAVE();
     return v65;
+
 B13:
     trap_unreach("render");
+
 B35:
     trap_unreach("render");
 }
 
-static int64_t n_area(uint64_t v0) {
+static i64 n_area(u64 v0) {
     Obj *v19 = NULL;
-    int64_t v3 = 0, v5 = 0, v12 = 0, v14 = 0;
-    uint8_t v7 = 0, v16 = 0, v20 = 0;
-    Obj **fr_roots[1] = {&v19};
-    Frame fr = {NULL, fr_roots, 1};
-    fr.up = gc_top;
-    gc_top = &fr;
+    bool v7 = 0, v16 = 0, v20 = 0;
+    i64 v3 = 0, v5 = 0, v12 = 0, v14 = 0;
+    FRAME(&v19);
     v3 = 0;
     v5 = 0;
     v7 = 1;
+
 B2:
     v12 = 0;
     v14 = 0;
     v16 = 1;
+
 B4:
-    GC_POINT();
     v19 = agg_new(0, 2, 0);
-    AGG(v19)->f[0] = (W)(int64_t)v14;
-    AGG(v19)->f[1] = (W)(int64_t)v5;
+    AGG(v19)->f[0] = (W)(i64)v14;
+    AGG(v19)->f[1] = (W)(i64)v5;
     v20 = n_covers(v0, v19);
     if (!(v20)) goto B5;
+
     v12 = add_i64(v12, 1);
+
 B5:
     v14 = add_i64(v14, 1);
     v16 = v14 < 40;
     if (v16) goto B4;
+
     v3 = add_i64(v3, v12);
     v5 = add_i64(v5, 1);
     v7 = v5 < 16;
     if (v7) goto B2;
-    gc_top = fr.up;
+
+    FRAME_LEAVE();
     return v3;
 }
 
@@ -858,276 +913,300 @@ static Obj *n_unwrap_Shape_i64(Obj *v0) {
     if (TAG(v0) == 0) goto B2;
     if (TAG(v0) == 1) goto B4;
     goto B3;
+
 B2:
     v2 = W2O(AGG(v0)->f[0]);
     return v2;
+
 B4:
     v4 = kstr(10);
     trap_panic(v4);
     trap_unreach("unwrap<(Shape, i64)>");
+
 B3:
     trap_unreach("unwrap<(Shape, i64)>");
 }
 
-static int64_t n_brightness(uint64_t v0) {
-    int64_t v1 = 0, v13 = 0, v14 = 0, v16 = 0, v17 = 0, v18 = 0, v19 = 0, v20 = 0;
-    uint64_t v24 = 0, v36 = 0, v38 = 0, v40 = 0, v42 = 0;
-    uint8_t v3 = 0, v6 = 0, v8 = 0, v10 = 0, v26 = 0, v30 = 0, v34 = 0;
-    v24 = (uint64_t)(v0 & 255u);
+static i64 n_brightness(u64 v0) {
+    bool v26 = 0, v30 = 0, v34 = 0;
+    i64 v1 = 0, v13 = 0, v14 = 0, v16 = 0, v17 = 0, v18 = 0, v19 = 0, v20 = 0;
+    u64 v24 = 0, v36 = 0, v38 = 0, v40 = 0, v42 = 0;
+    u8 v3 = 0, v6 = 0, v8 = 0, v10 = 0;
+    v24 = (u64)(v0 & 255u);
     v26 = v24 == 0u;
     if (v26) goto B2;
+
     v30 = v24 == 1u;
     if (!(v30)) goto B3;
-    v36 = shr_u64(v0, (int64_t)8);
-    v3 = (uint8_t)v36;
-    v1 = (int64_t)v3;
+
+    v36 = shr_u64(v0, (i64)8);
+    v3 = (u8)v36;
+    v1 = (i64)v3;
     return v1;
+
 B3:
     v34 = v24 == 2u;
     if (!(v34)) goto B5;
-    v38 = shr_u64(v0, (int64_t)8);
-    v6 = (uint8_t)v38;
-    v40 = shr_u64(v0, (int64_t)16);
-    v8 = (uint8_t)v40;
-    v42 = shr_u64(v0, (int64_t)24);
-    v10 = (uint8_t)v42;
-    v13 = (int64_t)v6;
+
+    v38 = shr_u64(v0, (i64)8);
+    v6 = (u8)v38;
+    v40 = shr_u64(v0, (i64)16);
+    v8 = (u8)v40;
+    v42 = shr_u64(v0, (i64)24);
+    v10 = (u8)v42;
+    v13 = (i64)v6;
     v14 = mul_i64(2, v13);
-    v16 = (int64_t)v8;
+    v16 = (i64)v8;
     v17 = mul_i64(5, v16);
     v18 = add_i64(v14, v17);
-    v19 = (int64_t)v10;
+    v19 = (i64)v10;
     v20 = add_i64(v18, v19);
     v1 = div_i64(v20, 8);
     return v1;
+
 B2:
     v1 = 0;
     return v1;
+
 B5:
     trap_unreach("brightness");
 }
 
-static Obj *n_to_string(uint64_t v0) {
+static Obj *n_to_string(u64 v0) {
     Obj *v1 = NULL, *v5 = NULL, *v6 = NULL, *v7 = NULL, *v8 = NULL, *v16 = NULL, *v17 = NULL, *v18 = NULL, *v19 = NULL, *v20 = NULL, *v21 = NULL, *v22 = NULL, *v24 = NULL, *v25 = NULL, *v26 = NULL, *v27 = NULL;
-    uint64_t v30 = 0, v42 = 0, v44 = 0, v46 = 0, v48 = 0;
-    uint8_t v3 = 0, v10 = 0, v12 = 0, v14 = 0, v32 = 0, v36 = 0, v40 = 0;
-    Obj **fr_roots[16] = {&v1, &v5, &v6, &v7, &v8, &v16, &v17, &v18, &v19, &v20, &v21, &v22, &v24, &v25, &v26, &v27};
-    Frame fr = {NULL, fr_roots, 16};
-    fr.up = gc_top;
-    gc_top = &fr;
-    v30 = (uint64_t)(v0 & 255u);
+    bool v32 = 0, v36 = 0, v40 = 0;
+    u64 v30 = 0, v42 = 0, v44 = 0, v46 = 0, v48 = 0;
+    u8 v3 = 0, v10 = 0, v12 = 0, v14 = 0;
+    FRAME(&v1, &v5, &v6, &v7, &v8, &v16, &v17, &v18, &v19, &v20, &v21, &v22, &v24, &v25, &v26, &v27);
+    v30 = (u64)(v0 & 255u);
     v32 = v30 == 0u;
     if (v32) goto B2;
+
     v36 = v30 == 1u;
     if (!(v36)) goto B3;
-    v42 = shr_u64(v0, (int64_t)8);
-    v3 = (uint8_t)v42;
+
+    v42 = shr_u64(v0, (i64)8);
+    v3 = (u8)v42;
     v5 = kstr(11);
     GC_POINT();
     sb_u64(&rt_sb, v3);
     v6 = sb_take();
-    GC_POINT();
     v7 = str_cat(v5, v6);
     v8 = kstr(12);
-    GC_POINT();
     v1 = str_cat(v7, v8);
-    gc_top = fr.up;
+    FRAME_LEAVE();
     return v1;
+
 B3:
     v40 = v30 == 2u;
     if (!(v40)) goto B5;
-    v44 = shr_u64(v0, (int64_t)8);
-    v10 = (uint8_t)v44;
-    v46 = shr_u64(v0, (int64_t)16);
-    v12 = (uint8_t)v46;
-    v48 = shr_u64(v0, (int64_t)24);
-    v14 = (uint8_t)v48;
+
+    v44 = shr_u64(v0, (i64)8);
+    v10 = (u8)v44;
+    v46 = shr_u64(v0, (i64)16);
+    v12 = (u8)v46;
+    v48 = shr_u64(v0, (i64)24);
+    v14 = (u8)v48;
     v16 = kstr(13);
     GC_POINT();
     sb_u64(&rt_sb, v10);
     v17 = sb_take();
-    GC_POINT();
     v18 = str_cat(v16, v17);
     v19 = kstr(8);
-    GC_POINT();
     v20 = str_cat(v18, v19);
     GC_POINT();
     sb_u64(&rt_sb, v12);
     v21 = sb_take();
-    GC_POINT();
     v22 = str_cat(v20, v21);
-    GC_POINT();
     v24 = str_cat(v22, v19);
     GC_POINT();
     sb_u64(&rt_sb, v14);
     v25 = sb_take();
-    GC_POINT();
     v26 = str_cat(v24, v25);
     v27 = kstr(12);
-    GC_POINT();
     v1 = str_cat(v26, v27);
-    gc_top = fr.up;
+    FRAME_LEAVE();
     return v1;
+
 B2:
     v1 = kstr(14);
-    gc_top = fr.up;
+    FRAME_LEAVE();
     return v1;
+
 B5:
     trap_unreach("to_string");
 }
 
-static uint8_t n_covers(uint64_t v0, Obj *v1) {
-    int64_t v2 = 0, v4 = 0, v12 = 0, v15 = 0, v25 = 0, v28 = 0, v32 = 0, v33 = 0, v43 = 0, v45 = 0, v49 = 0, v51 = 0, v65 = 0, v66 = 0, v68 = 0, v69 = 0, v71 = 0, v73 = 0, v74 = 0, v75 = 0, v76 = 0, v78 = 0, v97 = 0, v101 = 0;
-    uint64_t v105 = 0, v113 = 0, v115 = 0, v121 = 0, v123 = 0, v125 = 0, v131 = 0, v133 = 0, v135 = 0, v137 = 0, v139 = 0, v141 = 0, v143 = 0;
-    uint8_t v6 = 0, v7 = 0, v9 = 0, v11 = 0, v13 = 0, v17 = 0, v19 = 0, v21 = 0, v23 = 0, v24 = 0, v26 = 0, v35 = 0, v37 = 0, v39 = 0, v41 = 0, v55 = 0, v59 = 0, v61 = 0, v63 = 0, v82 = 0, v84 = 0, v90 = 0, v92 = 0, v107 = 0, v111 = 0, v119 = 0, v129 = 0;
-    v2 = (int64_t)(int64_t)(AGG(v1)->f[0]);
-    v4 = (int64_t)(int64_t)(AGG(v1)->f[1]);
-    v105 = (uint64_t)(v0 & 255u);
+static bool n_covers(u64 v0, Obj *v1) {
+    bool v6 = 0, v11 = 0, v13 = 0, v23 = 0, v24 = 0, v26 = 0, v55 = 0, v82 = 0, v84 = 0, v90 = 0, v92 = 0, v107 = 0, v111 = 0, v119 = 0, v129 = 0;
+    i64 v2 = 0, v4 = 0, v12 = 0, v15 = 0, v25 = 0, v28 = 0, v32 = 0, v33 = 0, v43 = 0, v45 = 0, v49 = 0, v51 = 0, v65 = 0, v66 = 0, v68 = 0, v69 = 0, v71 = 0, v73 = 0, v74 = 0, v75 = 0, v76 = 0, v78 = 0, v97 = 0, v101 = 0;
+    u64 v105 = 0, v113 = 0, v115 = 0, v121 = 0, v123 = 0, v125 = 0, v131 = 0, v133 = 0, v135 = 0, v137 = 0, v139 = 0, v141 = 0, v143 = 0;
+    u8 v7 = 0, v9 = 0, v17 = 0, v19 = 0, v21 = 0, v35 = 0, v37 = 0, v39 = 0, v41 = 0, v59 = 0, v61 = 0, v63 = 0;
+    v2 = (i64)(i64)(AGG(v1)->f[0]);
+    v4 = (i64)(i64)(AGG(v1)->f[1]);
+    v105 = (u64)(v0 & 255u);
     v107 = v105 == 0u;
     if (!(v107)) goto B1;
-    v113 = shr_u64(v0, (int64_t)8);
-    v7 = (uint8_t)v113;
-    v115 = shr_u64(v0, (int64_t)16);
-    v9 = (uint8_t)v115;
-    v12 = (int64_t)v7;
+
+    v113 = shr_u64(v0, (i64)8);
+    v7 = (u8)v113;
+    v115 = shr_u64(v0, (i64)16);
+    v9 = (u8)v115;
+    v12 = (i64)v7;
     v13 = v2 == v12;
     if (!(v13)) goto B4;
-    v15 = (int64_t)v9;
+
+    v15 = (i64)v9;
     v11 = v4 == v15;
     v6 = v11;
     return v11;
+
 B1:
     v111 = v105 == 1u;
     if (!(v111)) goto B5;
-    v121 = shr_u64(v0, (int64_t)8);
-    v17 = (uint8_t)v121;
-    v123 = shr_u64(v0, (int64_t)16);
-    v19 = (uint8_t)v123;
-    v125 = shr_u64(v0, (int64_t)24);
-    v21 = (uint8_t)v125;
-    v25 = (int64_t)v19;
+
+    v121 = shr_u64(v0, (i64)8);
+    v17 = (u8)v121;
+    v123 = shr_u64(v0, (i64)16);
+    v19 = (u8)v123;
+    v125 = shr_u64(v0, (i64)24);
+    v21 = (u8)v125;
+    v25 = (i64)v19;
     v26 = v4 == v25;
     if (!(v26)) goto B8;
-    v28 = (int64_t)v17;
+
+    v28 = (i64)v17;
     v24 = v28 <= v2;
     if (!(v24)) goto B10;
-    v32 = (int64_t)v21;
+
+    v32 = (i64)v21;
     v33 = add_i64(v28, v32);
     v23 = v2 < v33;
     v6 = v23;
     return v23;
+
 B8:
     v24 = 0;
     v23 = 0;
     v6 = 0;
     return v6;
+
 B5:
     v119 = v105 == 2u;
     if (!(v119)) goto B11;
-    v131 = shr_u64(v0, (int64_t)8);
-    v35 = (uint8_t)v131;
-    v133 = shr_u64(v0, (int64_t)16);
-    v37 = (uint8_t)v133;
-    v135 = shr_u64(v0, (int64_t)24);
-    v39 = (uint8_t)v135;
-    v137 = shr_u64(v0, (int64_t)32);
-    v41 = (uint8_t)v137;
-    v43 = (int64_t)v35;
-    v45 = (int64_t)v39;
+
+    v131 = shr_u64(v0, (i64)8);
+    v35 = (u8)v131;
+    v133 = shr_u64(v0, (i64)16);
+    v37 = (u8)v133;
+    v135 = shr_u64(v0, (i64)24);
+    v39 = (u8)v135;
+    v137 = shr_u64(v0, (i64)32);
+    v41 = (u8)v137;
+    v43 = (i64)v35;
+    v45 = (i64)v39;
     v97 = add_i64(v43, v45);
-    v49 = (int64_t)v37;
-    v51 = (int64_t)v41;
+    v49 = (i64)v37;
+    v51 = (i64)v41;
     v101 = add_i64(v49, v51);
     v84 = v2 >= v43;
     if (!(v84)) goto B18;
+
     v82 = v2 < v97;
     if (!(v82)) goto B14;
+
     v92 = v4 >= v49;
     if (!(v92)) goto B20;
+
     v90 = v4 < v101;
     v55 = v90;
     v6 = v90;
     return v90;
+
 B20:
     v90 = 0;
     v55 = 0;
     v6 = 0;
     return v55;
+
 B18:
     v82 = 0;
     v55 = 0;
     v6 = 0;
     return v6;
+
 B11:
     v129 = v105 == 3u;
     if (!(v129)) goto B15;
-    v139 = shr_u64(v0, (int64_t)8);
-    v59 = (uint8_t)v139;
-    v141 = shr_u64(v0, (int64_t)16);
-    v61 = (uint8_t)v141;
-    v143 = shr_u64(v0, (int64_t)24);
-    v63 = (uint8_t)v143;
-    v65 = (int64_t)v59;
+
+    v139 = shr_u64(v0, (i64)8);
+    v59 = (u8)v139;
+    v141 = shr_u64(v0, (i64)16);
+    v61 = (u8)v141;
+    v143 = shr_u64(v0, (i64)24);
+    v63 = (u8)v143;
+    v65 = (i64)v59;
     v66 = sub_i64(v2, v65);
-    v68 = (int64_t)v61;
+    v68 = (i64)v61;
     v69 = sub_i64(v4, v68);
     v71 = mul_i64(v69, 2);
     v73 = mul_i64(v66, v66);
     v74 = mul_i64(v71, v71);
     v75 = add_i64(v73, v74);
-    v76 = (int64_t)v63;
+    v76 = (i64)v63;
     v78 = mul_i64(v76, v76);
     v6 = v75 <= v78;
     return v6;
+
 B4:
     v11 = 0;
     v6 = 0;
     return v6;
+
 B10:
     v23 = 0;
     v6 = 0;
     return v6;
+
 B14:
     v55 = 0;
     v6 = 0;
     return v6;
+
 B15:
     trap_unreach("covers");
 }
 
 static Obj *n_closure_506(Obj **up, Obj *v0) {
     Obj *v1 = NULL, *v2 = NULL, *v10 = NULL, *v13 = NULL;
-    int64_t v3 = 0, v6 = 0;
-    uint32_t v7 = 0;
-    uint8_t v5 = 0;
-    Obj **fr_roots[5] = {&v0, &v1, &v2, &v10, &v13};
-    Frame fr = {NULL, fr_roots, 5};
+    bool v5 = 0;
+    chr v7 = 0;
+    i64 v3 = 0, v6 = 0;
+    FRAME(&v0, &v1, &v2, &v10, &v13);
     DEPTH_ENTER();
-    fr.up = gc_top;
-    gc_top = &fr;
     (void)up;
     v1 = kstr(5);
-    GC_POINT();
     v2 = arr_new(0, 1);
     v3 = 0;
-    v6 = (int64_t)(ARR(v0)->len);
+    v6 = (i64)(ARR(v0)->len);
     v5 = v3 < v6;
     if (!(v5)) goto B1;
+
 B2:
-    v7 = (uint32_t)(arr_get(v0, (int64_t)v3));
+    v7 = (u32)(arr_get(v0, (i64)v3));
     GC_POINT();
     sb_cp(&rt_sb, v7);
     v10 = sb_take();
     arr_push(v2, O2W(v10));
     v3 = add_i64(v3, 1);
-    v6 = (int64_t)(ARR(v0)->len);
+    v6 = (i64)(ARR(v0)->len);
     v5 = v3 < v6;
     if (v5) goto B2;
+
 B1:
-    GC_POINT();
     v13 = str_join(v2, v1);
     DEPTH_LEAVE();
-    gc_top = fr.up;
+    FRAME_LEAVE();
     return v13;
 }
 
@@ -1172,7 +1251,7 @@ static NORETURN COLD void trap_shift(void) {
 }
 #endif
 
-static NORETURN COLD void trap_index(int64_t index, size_t len) {
+static NORETURN COLD void trap_index(i64 index, size_t len) {
     rt_fail("index %lld out of bounds (length %zu)", (long long)index, len);
 }
 
@@ -1238,9 +1317,9 @@ static Obj *obj_new(size_t size, unsigned kind, unsigned flags) {
         o = (Obj *)(g + 1);
         gc_bytes += size;
     }
-    o->kind = (uint8_t)kind;
+    o->kind = (u8)kind;
     o->mark = 0;
-    o->flags = (uint16_t)flags;
+    o->flags = (u16)flags;
     o->n = 0;
     return o;
 }
@@ -1285,7 +1364,7 @@ static void gc_scan(Obj *o) {
 /* Bytes an object holds outside its cell (array and map buffers). */
 static size_t gc_extern(const Obj *o) {
     if (o->kind == K_ARR) return ((const Arr *)o)->cap * sizeof(W);
-    if (o->kind == K_MAP) return ((const Map *)o)->cap * 2 * sizeof(W) + ((const Map *)o)->ixcap * sizeof(int32_t);
+    if (o->kind == K_MAP) return ((const Map *)o)->cap * 2 * sizeof(W) + ((const Map *)o)->ixcap * sizeof(i32);
     return 0;
 }
 
@@ -1353,7 +1432,7 @@ static void gc_collect(void) {
     gc_next = gc_bytes * 2 > ((size_t)4 << 20) ? gc_bytes * 2 : ((size_t)4 << 20);
 }
 
-static size_t utf8_enc(uint32_t c, char *out) {
+static size_t utf8_enc(u32 c, char *out) {
     if (c < 0x80) { out[0] = (char)c; return 1; }
     if (c < 0x800) { out[0] = (char)(0xC0 | (c >> 6)); out[1] = (char)(0x80 | (c & 0x3F)); return 2; }
     if (c < 0x10000) {
@@ -1378,6 +1457,7 @@ static Obj *str_new(const char *s, size_t n) {
 }
 
 static Obj *str_cat(Obj *a, Obj *b) {
+    GC_POINT();
     size_t n = STR(a)->len, m = STR(b)->len;
     Str *o = (Str *)obj_new(sizeof(Str) + n + m + 1, K_STR, 0);
     o->len = n + m;
@@ -1388,23 +1468,35 @@ static Obj *str_cat(Obj *a, Obj *b) {
 }
 
 /* A struct or one variant of an enum: `n` word-sized fields, `mask` marks the references. */
-static Obj *agg_new(uint32_t tag, uint32_t n, uint64_t mask) {
-    uint32_t i;
+static Obj *agg_alloc(u32 tag, u32 n, u64 mask) {
+    u32 i;
     Agg *g = (Agg *)obj_new(sizeof(Agg) + n * sizeof(W), K_AGG, 0);
     g->h.n = n;
     g->mask = mask;
-    g->h.flags = (uint16_t)tag;
+    g->h.flags = (u16)tag;
     for (i = 0; i < n; i++) g->f[i] = 0;
     return &g->h;
 }
 
-static Obj *arr_new(size_t cap, int is_ref) {
+/* What the program calls: the collector may run here, before the new object exists. */
+static Obj *agg_new(u32 tag, u32 n, u64 mask) {
+    GC_POINT();
+    return agg_alloc(tag, n, mask);
+}
+
+static Obj *arr_alloc(size_t cap, int is_ref) {
     Arr *a = (Arr *)obj_new(sizeof(Arr), K_ARR, is_ref ? 1u : 0u);
     a->len = 0;
     a->cap = cap;
     a->a = cap ? (W *)rt_malloc(cap * sizeof(W)) : NULL;
     gc_bytes += cap * sizeof(W);
     return &a->h;
+}
+
+/* What the program calls: the collector may run here, before the new object exists. */
+static Obj *arr_new(size_t cap, int is_ref) {
+    GC_POINT();
+    return arr_alloc(cap, is_ref);
 }
 
 static void arr_push(Obj *o, W v) {
@@ -1418,21 +1510,22 @@ static void arr_push(Obj *o, W v) {
     a->a[a->len++] = v;
 }
 
-static W arr_get(Obj *o, int64_t i) {
+static W arr_get(Obj *o, i64 i) {
     const Arr *a = ARR(o);
-    if (UNLIKELY((uint64_t)i >= a->len)) trap_index(i, a->len);
+    if (UNLIKELY((u64)i >= a->len)) trap_index(i, a->len);
     return a->a[i];
 }
 
-static void arr_set(Obj *o, int64_t i, W v) {
+static void arr_set(Obj *o, i64 i, W v) {
     Arr *a = ARR(o);
-    if (UNLIKELY((uint64_t)i >= a->len)) trap_index(i, a->len);
+    if (UNLIKELY((u64)i >= a->len)) trap_index(i, a->len);
     a->a[i] = v;
 }
 
 /* A closure: its code and the cells of the variables it captured. */
-static Obj *clo_new(void (*fn)(void), uint32_t n) {
-    uint32_t i;
+static Obj *clo_new(void (*fn)(void), u32 n) {
+    GC_POINT();
+    u32 i;
     Clo *c = (Clo *)obj_new(sizeof(Clo) + n * sizeof(Obj *), K_CLO, 0);
     c->h.n = n;
     c->fn = fn;
@@ -1457,7 +1550,7 @@ static void sb_puts(SB *b, const char *s) {
 }
 
 /* Appends a code point as UTF-8. */
-static void sb_cp(SB *b, uint32_t c) {
+static void sb_cp(SB *b, u32 c) {
     char buf[4];
     sb_put(b, buf, utf8_enc(c, buf));
 }
@@ -1469,13 +1562,13 @@ static Obj *sb_take(void) {
     return s;
 }
 
-static void sb_i64(SB *b, int64_t v) {
+static void sb_i64(SB *b, i64 v) {
     char buf[32];
     int n = snprintf(buf, sizeof buf, "%lld", (long long)v);
     sb_put(b, buf, (size_t)n);
 }
 
-static void sb_u64(SB *b, uint64_t v) {
+static void sb_u64(SB *b, u64 v) {
     char buf[32];
     int n = snprintf(buf, sizeof buf, "%llu", (unsigned long long)v);
     sb_put(b, buf, (size_t)n);
@@ -1494,6 +1587,7 @@ static void out_str(Obj *s, int newline) {
 }
 
 static Obj *str_join(Obj *arr, Obj *sep) {
+    GC_POINT();
     const Arr *a = ARR(arr);
     size_t i;
     for (i = 0; i < a->len; i++) {
@@ -1503,55 +1597,55 @@ static Obj *str_join(Obj *arr, Obj *sep) {
     return sb_take();
 }
 
-static int64_t add_i64(int64_t a, int64_t b) {
+static i64 add_i64(i64 a, i64 b) {
 #if NEON_CHECKS
-    int64_t r;
+    i64 r;
     if (UNLIKELY(OVF_ADD(a, b, &r))) trap_overflow();
     return r;
 #else
-    return (int64_t)((uint64_t)a + (uint64_t)b);
+    return (i64)((u64)a + (u64)b);
 #endif
 }
 
-static int64_t div_i64(int64_t a, int64_t b) {
+static i64 div_i64(i64 a, i64 b) {
 #if NEON_CHECKS
     if (UNLIKELY(b == 0)) trap_div0();
     if (UNLIKELY(a == INT64_MIN && b == -1)) trap_overflow();
 #endif
-    return (int64_t)(a / b);
+    return (i64)(a / b);
 }
 
-static int64_t mul_i64(int64_t a, int64_t b) {
+static i64 mul_i64(i64 a, i64 b) {
 #if NEON_CHECKS
-    int64_t r;
+    i64 r;
     if (UNLIKELY(OVF_MUL(a, b, &r))) trap_overflow();
     return r;
 #else
-    return (int64_t)((uint64_t)a * (uint64_t)b);
+    return (i64)((u64)a * (u64)b);
 #endif
 }
 
-static int64_t rem_i64(int64_t a, int64_t b) {
+static i64 rem_i64(i64 a, i64 b) {
 #if NEON_CHECKS
     if (UNLIKELY(b == 0)) trap_div0();
     if (b == -1) return 0;  /* MIN % -1 is 0, not an overflow */
 #endif
-    return (int64_t)(a % b);
+    return (i64)(a % b);
 }
 
-static uint64_t shr_u64(uint64_t a, int64_t n) {
+static u64 shr_u64(u64 a, i64 n) {
 #if NEON_CHECKS
-    if (UNLIKELY((uint64_t)n >= 64)) trap_shift();
+    if (UNLIKELY((u64)n >= 64)) trap_shift();
 #endif
-    return (uint64_t)(a >> (n & 63));
+    return (u64)(a >> (n & 63));
 }
 
-static int64_t sub_i64(int64_t a, int64_t b) {
+static i64 sub_i64(i64 a, i64 b) {
 #if NEON_CHECKS
-    int64_t r;
+    i64 r;
     if (UNLIKELY(OVF_SUB(a, b, &r))) trap_overflow();
     return r;
 #else
-    return (int64_t)((uint64_t)a - (uint64_t)b);
+    return (i64)((u64)a - (u64)b);
 #endif
 }

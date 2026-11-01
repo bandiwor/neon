@@ -311,6 +311,14 @@ fn run_fmt<R: BufRead, W: Write, E: Write>(
     status
 }
 
+/// A program that runs without a disk or a terminal of its own (the browser): the files it sees, and a flag
+/// that is raised when the input ran out while the program waited for a key.
+#[derive(Debug, Clone, Default)]
+pub struct Sandbox {
+    pub files: crate::host::MemFiles,
+    pub waiting_for_key: std::rc::Rc<std::cell::Cell<bool>>,
+}
+
 /// Runs the CLI with `args` (without the program name) and returns the exit status.
 pub fn main_with<R: BufRead, W: Write, E: Write>(
     args: &[String],
@@ -319,6 +327,19 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
     stdout: W,
     stderr: &mut E,
     interactive: bool,
+) -> i32 {
+    main_in(args, vfs, stdin, stdout, stderr, interactive, None)
+}
+
+/// [`main_with`], with the program's files and keyboard supplied by the host.
+pub fn main_in<R: BufRead, W: Write, E: Write>(
+    args: &[String],
+    vfs: &dyn Vfs,
+    stdin: R,
+    stdout: W,
+    stderr: &mut E,
+    interactive: bool,
+    sandbox: Option<Sandbox>,
 ) -> i32 {
     let args = match parse_args(args) {
         Parsed::Go(a) => a,
@@ -412,7 +433,12 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
         }
         Command::Run => {
             let bc = compiled.bytecode.as_ref().expect("bytecode");
-            let mut io = StreamIo::new(stdin, std::io::BufWriter::new(stdout)).with_args(args.prog_args.clone());
+            let mut io = StreamIo::new(stdin, std::io::BufWriter::new(stdout))
+                .with_args(args.prog_args.clone())
+                .with_tty(interactive);
+            if let Some(sb) = sandbox {
+                io = io.with_files(sb.files).with_key_wait(sb.waiting_for_key);
+            }
             let report = vm::run(bc, &mut io, &args.vm);
             let (_, mut w) = io.into_parts();
             let _ = w.flush();
@@ -426,6 +452,11 @@ pub fn main_with<R: BufRead, W: Write, E: Write>(
             }
             match report.result {
                 Ok(()) => EXIT_OK,
+                // `sys.exit(code)`: the program's own status, nothing to report
+                Err(e) if matches!(e.trap, crate::runtime::Trap::Exit(_)) => {
+                    let crate::runtime::Trap::Exit(code) = e.trap else { unreachable!() };
+                    code as i32
+                }
                 Err(e) => {
                     let _ = writeln!(stderr, "{e}");
                     EXIT_RUNTIME
@@ -564,8 +595,8 @@ mod tests {
     }
 
     #[test]
-    fn arguments_after_double_dash_become_sys_args() {
-        let src = "println(sys.args.len()); for a in sys.args { println(a); }";
+    fn arguments_after_double_dash_reach_sys_args() {
+        let src = "import \"sys\" as sys;\nprintln(sys::args().len()); for a in sys::args() { println(a); }";
         let files = [("p.neon", src)];
         let (code, out, _) = go(&["run", "p.neon"], &files, "");
         assert_eq!((code, out.as_str()), (EXIT_OK, "0\n"));
@@ -574,15 +605,40 @@ mod tests {
         // the bare form works too
         let (_, out, _) = go(&["p.neon", "--", "x"], &files, "");
         assert_eq!(out, "1\nx\n");
-        // `sys` has one member, which is read-only; a variable called `sys` wins
-        let (code, _, err) = go(&["check", "e.neon"], &[("e.neon", "println(sys.nope);")], "");
+    }
+
+    #[test]
+    fn sys_is_a_module_to_import_not_a_name_of_the_language() {
+        // without the import there is no `sys`
+        let (code, _, err) = go(&["check", "e.neon"], &[("e.neon", "println(sys::args());")], "");
         assert_eq!(code, EXIT_COMPILE);
-        assert!(err.contains("`sys` has no member `nope`"), "{err}");
-        let (code, _, err) = go(&["check", "e.neon"], &[("e.neon", "sys.args = [];")], "");
+        assert!(err.contains("sys"), "{err}");
+        // the module has the members it lists, and nothing else
+        let (code, _, err) =
+            go(&["check", "e.neon"], &[("e.neon", "import \"sys\" as sys;\nprintln(sys::nope());")], "");
         assert_eq!(code, EXIT_COMPILE);
-        assert!(err.contains("cannot assign to `sys.args`"), "{err}");
+        assert!(err.contains("module `sys` has no exported item `nope`"), "{err}");
+        // a name of your own is yours: a variable called `sys` does not clash with anything
         let (code, out, _) = go(&["run", "e.neon"], &[("e.neon", "let sys = [1, 2]; println(sys.len());")], "");
         assert_eq!((code, out.as_str()), (EXIT_OK, "2\n"));
+        // named imports work like for any module
+        let (code, out, _) = go(
+            &["run", "e.neon"],
+            &[("e.neon", "import { platform } from \"sys\";\nprintln(platform().len() > 0);")],
+            "",
+        );
+        assert_eq!((code, out.as_str()), (EXIT_OK, "true\n"));
+        // the native functions are checked like any others
+        let (code, _, err) = go(&["check", "e.neon"], &[("e.neon", "import \"sys\" as sys;\nsys::exit(\"x\");")], "");
+        assert_eq!(code, EXIT_COMPILE);
+        assert!(err.contains("E0"), "{err}");
+    }
+
+    #[test]
+    fn sys_exit_ends_the_program_with_its_status() {
+        let src = "import \"sys\" as sys;\nprintln(\"before\");\nsys::exit(7);\nprintln(\"after\");";
+        let (code, out, err) = go(&["run", "p.neon"], &[("p.neon", src)], "");
+        assert_eq!((code, out.as_str(), err.as_str()), (7, "before\n", ""));
     }
 
     #[test]

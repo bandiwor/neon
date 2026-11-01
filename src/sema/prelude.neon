@@ -67,6 +67,39 @@ export enum Tuple8<A, B, C, D, E, F, G, H> { T(A, B, C, D, E, F, G, H) }
 
 export enum Option<T> { Some(T), None }
 
+// `flatten` peels every layer of a nested option: `Option<Option<Option<T>>>` becomes `Option<T>`.
+// Method lookup takes the first inherent impl that fits, so the deepest nesting is listed first;
+// each layer flattens the one below it.
+impl<T> Option<Option<Option<Option<Option<Option<T>>>>>> {
+    fn flatten(self) -> Option<T> {
+        match self { Option::Some(inner) => inner.flatten(), Option::None => Option::None }
+    }
+}
+
+impl<T> Option<Option<Option<Option<Option<T>>>>> {
+    fn flatten(self) -> Option<T> {
+        match self { Option::Some(inner) => inner.flatten(), Option::None => Option::None }
+    }
+}
+
+impl<T> Option<Option<Option<Option<T>>>> {
+    fn flatten(self) -> Option<T> {
+        match self { Option::Some(inner) => inner.flatten(), Option::None => Option::None }
+    }
+}
+
+impl<T> Option<Option<Option<T>>> {
+    fn flatten(self) -> Option<T> {
+        match self { Option::Some(inner) => inner.flatten(), Option::None => Option::None }
+    }
+}
+
+impl<T> Option<Option<T>> {
+    fn flatten(self) -> Option<T> {
+        match self { Option::Some(inner) => inner, Option::None => Option::None }
+    }
+}
+
 impl<T> Option<T> {
     fn is_some(self) -> bool {
         match self { Option::Some(_) => true, Option::None => false }
@@ -175,6 +208,69 @@ impl<T, E> Result<T, E> {
 
     fn err(self) -> Option<E> {
         match self { Result::Ok(_) => Option::None, Result::Err(e) => Option::Some(e) }
+    }
+}
+
+// ---- arrays of Option and Result -------------------------------------------------------
+
+impl<T>[Option<T>] {
+    // All the values, if none is missing: `[Some(1), Some(2)]` -> `Some([1, 2])`, a single `None` -> `None`.
+    fn sequence(self) -> Option<[T]> {
+        var out: [T] = [];
+        for x in self {
+            match x {
+                Option::Some(v) => out.push(v),
+                Option::None => return Option::None,
+            }
+        }
+        Option::Some(out)
+    }
+
+    // The present values, in order; the `None`s are dropped.
+    fn flatten(self) -> [T] {
+        var out: [T] = [];
+        for x in self {
+            match x { Option::Some(v) => out.push(v), Option::None => {} }
+        }
+        out
+    }
+}
+
+impl<T, E>[Result<T, E>] {
+    // All the values, or the first error.
+    fn sequence(self) -> Result<[T], E> {
+        var out: [T] = [];
+        for x in self {
+            match x {
+                Result::Ok(v) => out.push(v),
+                Result::Err(e) => return Result::Err(e),
+            }
+        }
+        Result::Ok(out)
+    }
+
+    // The `Ok` values, in order; the errors are dropped.
+    fn flatten(self) -> [T] {
+        var out: [T] = [];
+        for x in self {
+            match x { Result::Ok(v) => out.push(v), Result::Err(_) => {} }
+        }
+        out
+    }
+}
+
+impl<T, E> Result<Result<T, E>, E> {
+    fn flatten(self) -> Result<T, E> {
+        match self { Result::Ok(inner) => inner, Result::Err(e) => Result::Err(e) }
+    }
+}
+
+impl<T>[[T]] {
+    // One array from an array of arrays.
+    fn flatten(self) -> [T] {
+        var out: [T] = [];
+        for xs in self { for x in xs { out.push(x); } }
+        out
     }
 }
 
