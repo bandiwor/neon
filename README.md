@@ -247,6 +247,14 @@ a long chain is a few times slower than one hand-written loop; ranges are not va
 Without a terminal (a pipe, `TERM=dumb`, `NEON_REPL=plain`) the plain `>>>` loop is used. `:help` lists
 the commands.
 
+### In the browser
+
+`web/` is a complete online compiler: the Rust engine built to WebAssembly, an editor with
+completion, diagnostics, hover, rename and formatting (the language server runs inside the module), a console
+with interactive input, IR / bytecode / C views and a REPL. Everything runs on the client and the whole
+program can be shared as a link. See [web/README.md](web/README.md) (in Russian); the workflow
+`.github/workflows/pages.yml` publishes it to GitHub Pages.
+
 ### Examples
 
 * `examples/scene.neon` — a small software renderer (compact enums, tuples, ranges, fused iterator chains).

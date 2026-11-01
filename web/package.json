@@ -1,0 +1,28 @@
+{
+  "name": "neon-web",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Neon in the browser: the compiler (WebAssembly), an editor, a console, the REPL",
+  "type": "module",
+  "scripts": {
+    "build:wasm": "node build.mjs wasm",
+    "build": "node build.mjs",
+    "dev": "node build.mjs --watch & node serve.mjs",
+    "serve": "node serve.mjs",
+    "test": "node --test test/*.test.mjs"
+  },
+  "dependencies": {
+    "@codemirror/autocomplete": "^6.18.0",
+    "@codemirror/commands": "^6.7.0",
+    "@codemirror/language": "^6.10.0",
+    "@codemirror/lint": "^6.8.0",
+    "@codemirror/search": "^6.5.0",
+    "@codemirror/state": "^6.5.0",
+    "@codemirror/view": "^6.36.0",
+    "@lezer/highlight": "^1.2.0",
+    "preact": "^10.25.0"
+  },
+  "devDependencies": {
+    "esbuild": "^0.25.0"
+  }
+}

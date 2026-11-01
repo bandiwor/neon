@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="ru" data-theme="system" data-accent="ember">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Neon — онлайн-компилятор</title>
+<meta name="description" content="Онлайн-компилятор и редактор языка Neon: запуск, форматирование, IR, байткод, перевод в C, REPL. Всё работает в браузере.">
+<meta name="color-scheme" content="light dark">
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
+<link rel="stylesheet" href="app.css?v=__VERSION__">
+<script>
+  // the theme before the first paint, so there is no flash
+  try {
+    var s = JSON.parse(localStorage.getItem('neon-web:settings') || '{}');
+    if (s.theme) document.documentElement.dataset.theme = s.theme;
+    if (s.accent) document.documentElement.dataset.accent = s.accent;
+  } catch (e) {}
+</script>
+</head>
+<body>
+<div id="app"></div>
+<noscript><p style="padding:2rem;font:16px system-ui">Для работы компилятора нужен JavaScript и WebAssembly.</p></noscript>
+<script type="module" src="app.js?v=__VERSION__"></script>
+</body>
+</html>
