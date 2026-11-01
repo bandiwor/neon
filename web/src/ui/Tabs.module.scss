@@ -1,0 +1,64 @@
+.tabs {
+  display: flex;
+  align-items: stretch;
+  height: 34px;
+  padding: 0 4px;
+  border-bottom: 1px solid var(--line);
+  overflow-x: auto;
+  scrollbar-width: none;
+}
+
+.tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  margin-bottom: -1px;
+  background: transparent;
+  color: var(--text-2);
+  white-space: nowrap;
+
+  &:hover {
+    color: var(--text);
+  }
+}
+
+.selected {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+
+// the sidebar: icons only, the label of the selected one
+.compact .tab {
+  flex: 1;
+  justify-content: center;
+
+  span {
+    display: none;
+  }
+}
+
+.compact .selected span {
+  display: inline;
+}
+
+.count {
+  min-width: 18px;
+  padding: 0 5px;
+  border-radius: 9px;
+  font-size: 11px;
+  line-height: 17px;
+  text-align: center;
+}
+
+.countError {
+  background: var(--error);
+  color: #fff;
+}
+
+.countWarning {
+  background: var(--warn);
+  color: #1c1c1a;
+}

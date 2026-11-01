@@ -18,72 +18,104 @@
 | Остановка | программа идёт в отдельном воркере; «Остановить» и лимит времени завершают воркер |
 | Несколько файлов | `import "lib/util" as u;` между файлами проекта |
 | Ссылка | «Поделиться» кладёт проект (сжатый deflate) в адрес `#p=…` |
-| Темы, акцент, i18n | светлая/тёмная/системная; 4 акцента; все тексты в `src/locales/ru.js` |
+| Темы, акцент, i18n | светлая/тёмная/системная; 4 акцента; все тексты в `src/locales/` |
+
+## Стек
+
+| Задача | Инструмент |
+|---|---|
+| Язык | TypeScript 5.9, максимальная строгость (`strict`, `noUncheckedIndexedAccess`, `exactOptionalPropertyTypes`, …) |
+| Интерфейс | Preact + CodeMirror 6 |
+| Сборка | Vite 7 |
+| JS: минификация и манглинг | Terser (`toplevel`, `module`, 3 прохода сжатия) |
+| CSS: преобразование и минификация | Lightning CSS (`light-dark()` остаётся нативным: цели — Chrome 123, Firefox 120, Safari 17.5) |
+| Стили | SCSS-модули (`*.module.scss`), классы получают короткие имена |
+| Сервер | `node:http` на TypeScript: сжатые копии `.br`/`.gz`, ETag/304, CSP по хэшам встроенных скриптов |
+| Тесты | Vitest (+ Playwright для страницы) |
+
+Имена классов в сборке — 1–2 буквы: Lightning CSS даёт локальные имена по хэшу файла, а плагин
+`build/plugins/shortClassNames.ts` после сборки заменяет их по всему бандлу на самые короткие
+(`.J{flex:none}`). В разработке имена читаемы (`Button__primary_x7f3a`). Типы классов
+(`Button.module.d.scss.ts`) генерируются из SCSS автоматически, поэтому опечатка в `s.primry` — ошибка
+компиляции. Манглинг свойств объектов отключён намеренно: библиотеки обращаются к ним по имени.
 
 ## Запуск локально
 
-Нужны Rust (с целью `wasm32-unknown-unknown`) и Node.js 20+.
+Нужны Rust (с целью `wasm32-unknown-unknown`) и Node.js 22+.
 
 ```sh
 rustup target add wasm32-unknown-unknown
 cd web
 npm ci
-npm run build        # dist/: neon.wasm, app.js, app.css, examples.json, index.html
-npm run serve        # http://localhost:8080  (асинхронный статический сервер, без зависимостей)
+npm run dev          # Vite с горячей заменой; модуль соберётся сам, если его ещё нет
+npm run build        # модуль → типы → Vite → сжатые копии; результат в dist/
+npm run serve        # http://localhost:8080 — сервер для dist/  (-p порт, -H адрес, -d папка, -q тише)
 ```
 
-Во время разработки: `npm run build` один раз (собирает модуль), затем
-`node build.mjs --no-wasm --watch` в одном терминале и `npm run serve` в другом.
-После правок Rust-кода — `npm run build:wasm`.
+После правок Rust-кода — `npm run build:wasm`. Проверка типов без сборки — `npm run typecheck`.
 
 ## Тесты
 
 ```sh
-cargo test --manifest-path wasm/Cargo.toml   # JSON-интерфейс модуля
-npm test                                     # i18n, интерфейс модуля из Node, страница в браузере
+cargo test --manifest-path wasm/Cargo.toml   # JSON-интерфейс модуля (Rust)
+npm test                                     # unit, модуль из Node, сервер, страница в Chromium
 ```
 
-Тест страницы использует Playwright и пропускается, если его нет
-(`npm i --no-save playwright && npx playwright install chromium`).
+Тест страницы идёт по собранному `dist/` и пропускается, если сборки или Playwright нет
+(`npx playwright install chromium`). Селекторы в нём — роли и тексты словаря, а не классы.
 
 ## Публикация на GitHub Pages
 
 В репозитории есть workflow `.github/workflows/pages.yml`: при пуше в `main` он собирает сайт, прогоняет
 тесты и публикует `web/dist`. Один раз включите Pages: **Settings → Pages → Build and deployment →
-Source: GitHub Actions**. Адрес будет `https://<пользователь>.github.io/<репозиторий>/`; все пути в
-сайте относительные, поэтому подкаталог не мешает.
+Source: GitHub Actions**, а в **Settings → Environments → github-pages → Deployment branches** разрешите
+ветку `main`. Адрес будет `https://<пользователь>.github.io/<репозиторий>/`; все пути в сайте
+относительные, поэтому подкаталог не мешает.
 
 ## Устройство
 
 ```
 web/
-  wasm/            Rust cdylib (neon-web): C ABI + JSON, без wasm-bindgen; зависит только от крейта neon
+  wasm/               Rust cdylib (neon-web): C ABI + JSON, без wasm-bindgen; зависит только от крейта neon
+  data/examples.json  список примеров (исходники берутся из tests/corpus и examples/)
+  public/             файлы, которые копируются как есть
+  build/              расширения Vite: примеры, типы CSS-модулей, короткие имена классов
+  scripts/            сборка модуля, генерация типов, сжатие
+  server/             статический сервер (config, files, headers, csp, mime, server, main)
+  tests/              unit/, server/, e2e/ и wasm.test.ts
   src/
-    engine.js      воркер с экземпляром модуля, запросы-ответы
-    wasm-worker.js код воркера
-    toolchain.js   запуск программ (одноразовый воркер), IR/байткод/C, форматирование
-    lsp.js         клиент языкового сервера и REPL (воркер, живущий всё время)
-    sync.js        пакетная отправка изменений документов серверу
-    editor.js      CodeMirror: язык, подсказки, hover, диагностика, семантические цвета
-    actions.js     всё, что делают кнопки и горячие клавиши
-    store.js       состояние: проект, настройки, раскладка (localStorage) и временное
-    components/    Preact-компоненты
-    locales/ru.js  тексты интерфейса
-  build.mjs        сборка: cargo → esbuild → dist/
-  serve.mjs        статический сервер на node:http
-  examples.json    список примеров (исходники берутся из tests/corpus и examples/)
+    main.tsx          точка входа
+    core/             всё без интерфейса — зависит только от себя
+      wasm/           воркер с модулем, протокол запросов (типизирован по операциям)
+      lsp/            клиент языкового сервера и REPL
+      toolchain/      запуск программ (одноразовый воркер), IR/байткод/C, форматирование
+      editor/         порт редактора (интерфейс), чтобы функции не зависели от CodeMirror
+      state/          хранилища: настройки, проект, раскладка (localStorage), состояние выполнения
+      project/        файлы проекта, примеры, ссылки
+      i18n/, util/
+    features/         по папке на возможность: editor, console, problems, views, repl, sidebar, panel, dialogs
+    ui/               кирпичики интерфейса (Button, Tabs, Menu, Dialog, …)
+    app/              оболочка: App, Header, команды, горячие клавиши, действия
+    styles/           токены, миксины, глобальные стили
+    locales/          словари текстов
 ```
+
+Слои зависят только вниз: `app → features → ui → core`. Добавить вкладку боковой панели или нижней панели —
+значит добавить компонент в `features/` и строку в список вкладок; новый диалог — вариант в `DialogState`;
+пример — запись в `data/examples.json`.
 
 ### Протокол модуля
 
 Один запрос — один вызов: `neon_alloc(len)` выдаёт буфер, в него пишется JSON, `neon_call(ptr, len)`
 возвращает буфер «длина (u32 LE) + JSON». Операции: `version`, `cli` (аргументы командной строки,
 файлы проекта, stdin → код возврата, stdout, stderr), `lsp` (одно JSON-RPC сообщение → ответы и
-уведомления), `repl_*`. Полное описание — в шапке `wasm/src/lib.rs`.
+уведомления), `repl_*`. Полное описание — в шапке `wasm/src/lib.rs`; типы запросов и ответов —
+`src/core/wasm/protocol.ts`.
 
 ### Новый язык интерфейса
 
-1. Скопируйте `src/locales/ru.js` в `src/locales/<код>.js` и переведите значения.
-2. Добавьте его в `LOCALES` в `src/i18n.js` и выбор языка в настройки.
+1. Скопируйте `src/locales/ru.ts` в `src/locales/<код>.ts` и переведите значения (тип словаря требует
+   все ключи).
+2. Добавьте его в `LOCALES` в `src/locales/index.ts` и выбор языка в настройки.
 
-Тест `test/i18n.test.mjs` следит, чтобы все используемые ключи были в словаре и не осталось лишних.
+Тест `tests/unit/i18n.test.ts` следит, чтобы во всех языках были все ключи и не осталось неиспользуемых.

@@ -1,0 +1,65 @@
+.pane {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  min-height: 40px;
+
+  // a switch in the bar has no bottom margin of its own
+  :global(label) {
+    margin-bottom: 0;
+  }
+}
+
+.optBadge {
+  padding: 0 6px;
+  border: 1px solid var(--accent-line);
+  border-radius: 3px;
+  font-size: 11px;
+  line-height: 16px;
+  color: var(--accent);
+}
+
+.out {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 10px 14px;
+}
+
+.loading {
+  opacity: 0.55;
+}
+
+.empty {
+  margin: 6px 0;
+  color: var(--text-3);
+}
+
+.code {
+  margin: 0;
+  font-size: 12.5px;
+  line-height: 1.5;
+  white-space: pre;
+  tab-size: 4;
+}
+
+// the highlighter's classes (see highlight.ts)
+.keyword { color: var(--syn-keyword); }
+.string { color: var(--syn-string); }
+.number { color: var(--syn-number); }
+.type { color: var(--syn-type); }
+.label { color: var(--syn-function); }
+
+.comment {
+  color: var(--syn-comment);
+  font-style: italic;
+}

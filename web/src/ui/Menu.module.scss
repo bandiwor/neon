@@ -1,0 +1,54 @@
+@use 'mixins' as *;
+
+.menu {
+  position: relative;
+}
+
+.pop {
+  position: absolute;
+  z-index: 40;
+  top: calc(100% + 4px);
+  min-width: 250px;
+  padding: 4px;
+  background: var(--raised);
+  border: 1px solid var(--line-strong);
+  border-radius: 6px;
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.16);
+}
+
+.left {
+  left: 0;
+}
+
+.right {
+  right: 0;
+}
+
+.item {
+  @include pressable(3px);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  padding: 6px 8px;
+  border: 0;
+  background: transparent;
+  text-align: left;
+}
+
+.itemIcon {
+  width: 16px;
+  display: grid;
+  place-items: center;
+  color: var(--text-2);
+}
+
+.itemLabel {
+  flex: 1;
+}
+
+.sep {
+  height: 1px;
+  margin: 4px 2px;
+  background: var(--line);
+}

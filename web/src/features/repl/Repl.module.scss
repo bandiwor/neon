@@ -1,0 +1,152 @@
+@use 'mixins' as *;
+
+.repl {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+.bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 8px;
+  border-bottom: 1px solid var(--line);
+  min-height: 40px;
+}
+
+.log {
+  flex: 1;
+  min-height: 0;
+  overflow: auto;
+  padding: 8px 14px;
+}
+
+.placeholder {
+  margin: 6px 0;
+  color: var(--text-3);
+  max-width: 46ch;
+}
+
+.entry {
+  margin: 0 0 6px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.input .prompt {
+  margin-right: 4px;
+}
+
+.error {
+  color: var(--error);
+}
+
+.prompt {
+  color: var(--accent);
+  @include code-font;
+  font-weight: 700;
+}
+
+.editor {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--line);
+  background: var(--bg);
+}
+
+.field {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+}
+
+// the text is drawn by the overlay (colored); the textarea above it only holds the caret and the input
+.overlay,
+.field textarea {
+  margin: 0;
+  padding: 0;
+  font: 13px / 1.5 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+  border: 0;
+  letter-spacing: 0;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+}
+
+.field textarea {
+  position: relative;
+  display: block;
+  width: 100%;
+  resize: none;
+  background: transparent;
+  color: transparent;
+  caret-color: var(--accent);
+  outline: none;
+  overflow: hidden;
+
+  &::placeholder {
+    color: var(--text-3);
+  }
+}
+
+.menu {
+  list-style: none;
+  margin: 0;
+  padding: 4px;
+  max-height: 160px;
+  overflow: auto;
+  border-top: 1px solid var(--line);
+  background: var(--raised);
+  font: 12.5px var(--font-mono);
+
+  li {
+    display: flex;
+    gap: 12px;
+    padding: 2px 8px;
+    border-radius: 3px;
+  }
+}
+
+.selected {
+  background: var(--accent-soft);
+}
+
+.preview {
+  padding: 2px 14px 8px 40px;
+  color: var(--text-3);
+  font: 12.5px var(--font-mono);
+  background: var(--bg);
+}
+
+.hlKeyword { color: var(--syn-keyword); }
+.hlType { color: var(--syn-type); }
+.hlVariant { color: var(--syn-variant); }
+.hlGlobal { color: var(--text); }
+.hlParam { color: var(--syn-param); }
+.hlLocal { color: var(--syn-local); }
+.hlFunction { color: var(--syn-function); }
+.hlNumber { color: var(--syn-number); }
+.hlString { color: var(--syn-string); }
+.hlOperator { color: var(--syn-operator); }
+.hlPunct { color: var(--syn-punct); }
+
+.hlComment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+// the preview, the log and the menu are command output: no `out` styling of their own beyond color
+.out {
+  margin: 0 0 6px;
+}

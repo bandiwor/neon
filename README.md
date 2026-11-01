@@ -252,7 +252,8 @@ the commands.
 `web/` is a complete online compiler: the Rust engine built to WebAssembly, an editor with
 completion, diagnostics, hover, rename and formatting (the language server runs inside the module), a console
 with interactive input, IR / bytecode / C views and a REPL. Everything runs on the client and the whole
-program can be shared as a link. See [web/README.md](web/README.md) (in Russian); the workflow
+program can be shared as a link. Built with strict TypeScript, Vite (Terser + Lightning CSS) and SCSS
+modules. See [web/README.md](web/README.md) (in Russian); the workflow
 `.github/workflows/pages.yml` publishes it to GitHub Pages.
 
 ### Examples

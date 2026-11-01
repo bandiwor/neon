@@ -2,14 +2,21 @@
   "name": "neon-web",
   "version": "0.1.0",
   "private": true,
-  "description": "Neon in the browser: the compiler (WebAssembly), an editor, a console, the REPL",
   "type": "module",
+  "description": "Neon in the browser: the compiler (WebAssembly), an editor, a console, the REPL",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
-    "build:wasm": "node build.mjs wasm",
-    "build": "node build.mjs",
-    "dev": "node build.mjs --watch & node serve.mjs",
-    "serve": "node serve.mjs",
-    "test": "node --test test/*.test.mjs"
+    "dev": "tsx scripts/ensure-wasm.ts && vite",
+    "build:wasm": "tsx scripts/build-wasm.ts",
+    "typecheck": "npm run types:css && tsc --noEmit -p tsconfig.json && tsc --noEmit -p tsconfig.node.json",
+    "build": "npm run build:wasm && npm run typecheck && vite build && tsx scripts/precompress.ts",
+    "serve": "tsx server/main.ts",
+    "preview": "npm run serve",
+    "test": "vitest run",
+    "test:watch": "vitest",
+    "types:css": "tsx scripts/css-types.ts"
   },
   "dependencies": {
     "@codemirror/autocomplete": "^6.18.0",
@@ -23,6 +30,15 @@
     "preact": "^10.25.0"
   },
   "devDependencies": {
-    "esbuild": "^0.25.0"
+    "@preact/preset-vite": "^2.10.0",
+    "@types/node": "^22.10.0",
+    "lightningcss": "^1.30.0",
+    "playwright": "^1.63.0",
+    "sass": "^1.89.0",
+    "terser": "^5.40.0",
+    "tsx": "^4.20.0",
+    "typescript": "~5.9.0",
+    "vite": "^7.1.0",
+    "vitest": "^3.2.0"
   }
 }

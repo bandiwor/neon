@@ -1,0 +1,48 @@
+@use 'mixins' as *;
+
+.btn {
+  @include pressable;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 10px;
+  border: 1px solid transparent;
+  background: transparent;
+  color: var(--text);
+  white-space: nowrap;
+
+  &:disabled {
+    color: var(--text-3);
+    cursor: default;
+  }
+}
+
+.iconOnly {
+  width: 28px;
+  padding: 0;
+  justify-content: center;
+}
+
+.active {
+  background: var(--active);
+}
+
+.primary {
+  background: var(--accent);
+  color: var(--on-accent);
+  font-weight: 600;
+
+  &:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--accent) 88%, var(--text));
+  }
+}
+
+.danger {
+  border-color: var(--error);
+  color: var(--error);
+
+  &:hover:not(:disabled) {
+    background: color-mix(in srgb, var(--error) 14%, transparent);
+  }
+}

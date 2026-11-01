@@ -1,0 +1,243 @@
+// CodeMirror brings its own class names (cm-*): those are global on purpose. The classes this file
+// generates (tok*, sem*, hover) are handed to the editor from Editor.tsx.
+@use 'mixins' as *;
+
+.host {
+  flex: 1;
+  min-height: 0;
+  min-width: 0;
+  background: var(--bg);
+
+  :global(.cm-editor) {
+    height: 100%;
+    background: var(--bg);
+    color: var(--text);
+    font-size: var(--code-size);
+
+    &:global(.cm-focused) {
+      outline: none;
+    }
+  }
+}
+
+.host {
+  :global(.cm-scroller) {
+    @include code-font;
+    line-height: 1.55;
+  }
+
+  :global(.cm-content) {
+    caret-color: var(--accent);
+    padding: 8px 0;
+  }
+
+  :global(.cm-cursor),
+  :global(.cm-dropCursor) {
+    border-left: 2px solid var(--accent) !important;
+  }
+
+  :global(.cm-gutters) {
+    background: var(--bg) !important;
+    color: var(--text-3) !important;
+    border-right: 1px solid var(--line) !important;
+  }
+
+  :global(.cm-lineNumbers) :global(.cm-gutterElement) {
+    padding: 0 10px 0 14px !important;
+    font-size: 0.9em;
+  }
+
+  :global(.cm-activeLine) {
+    background: color-mix(in srgb, var(--text) 4%, transparent) !important;
+  }
+
+  :global(.cm-activeLineGutter) {
+    background: transparent !important;
+    color: var(--text) !important;
+  }
+
+  :global(.cm-selectionBackground),
+  :global(.cm-focused) > :global(.cm-scroller) > :global(.cm-selectionLayer) :global(.cm-selectionBackground) {
+    background: color-mix(in srgb, var(--accent) 24%, transparent) !important;
+  }
+
+  :global(.cm-selectionMatch) {
+    background: color-mix(in srgb, var(--accent) 16%, transparent) !important;
+  }
+
+  :global(.cm-matchingBracket) {
+    background: var(--accent-soft) !important;
+    outline: 1px solid var(--accent-line);
+    color: inherit !important;
+  }
+
+  :global(.cm-foldGutter) span {
+    color: var(--text-3);
+    cursor: pointer;
+    padding: 0 3px;
+  }
+
+  :global(.cm-foldPlaceholder) {
+    background: var(--active);
+    border: 0;
+    color: var(--text-2);
+  }
+
+  :global(.cm-panels) {
+    background: var(--panel);
+    color: var(--text);
+    border-color: var(--line) !important;
+
+    input,
+    button {
+      font-size: 12.5px;
+    }
+  }
+
+  :global(.cm-panels) :global(.cm-textfield) {
+    background: var(--bg);
+    border: 1px solid var(--line-strong);
+    border-radius: 3px;
+    color: var(--text);
+    padding: 2px 6px;
+  }
+
+  :global(.cm-panels) :global(.cm-button) {
+    background: var(--raised);
+    border: 1px solid var(--line-strong);
+    border-radius: 3px;
+    background-image: none;
+    color: var(--text);
+  }
+
+  :global(.cm-searchMatch) {
+    background: color-mix(in srgb, var(--warn) 30%, transparent) !important;
+  }
+
+  :global(.cm-searchMatch-selected) {
+    background: color-mix(in srgb, var(--accent) 45%, transparent) !important;
+  }
+
+  :global(.cm-lintRange-error) {
+    background-image: none;
+    text-decoration: underline wavy var(--error);
+    text-underline-offset: 3px;
+  }
+
+  :global(.cm-lintRange-warning) {
+    background-image: none;
+    text-decoration: underline wavy var(--warn);
+    text-underline-offset: 3px;
+  }
+
+  :global(.cm-lintRange-info) {
+    background-image: none;
+    text-decoration: underline dotted var(--info);
+    text-underline-offset: 3px;
+  }
+}
+
+// lexical colors
+.tokKeyword { color: var(--syn-keyword); }
+.tokString { color: var(--syn-string); }
+.tokNumber { color: var(--syn-number); }
+.tokType { color: var(--syn-type); }
+.tokFunction { color: var(--syn-function); }
+.tokOperator { color: var(--syn-operator); }
+.tokPunct { color: var(--syn-punct); }
+
+.tokComment {
+  color: var(--syn-comment);
+  font-style: italic;
+}
+
+// what the analyzer knows overrides what the lexer guessed
+:global(.cm-content) {
+  .semType, .semType * { color: var(--syn-type); }
+  .semFunction, .semFunction * { color: var(--syn-function); }
+  .semVariant, .semVariant * { color: var(--syn-variant); }
+  .semParam, .semParam * { color: var(--syn-param); }
+  .semVariable, .semVariable *, .semProperty, .semProperty * { color: var(--text); }
+}
+
+// tooltips and the completion list live outside the editor's box
+@at-root {
+  :global(.cm-tooltip) {
+    background: var(--raised) !important;
+    color: var(--text) !important;
+    border: 1px solid var(--line-strong) !important;
+    border-radius: 5px;
+    box-shadow: 0 6px 20px rgb(0 0 0 / 0.16);
+  }
+
+  :global(.cm-tooltip-autocomplete) > ul {
+    @include code-font;
+    font-size: 12.5px;
+    max-height: 18em;
+
+    > li {
+      padding: 2px 8px !important;
+
+      &[aria-selected] {
+        background: var(--accent-soft) !important;
+        color: var(--text) !important;
+      }
+    }
+  }
+
+  :global(.cm-completionDetail) {
+    color: var(--text-3);
+    font-style: normal;
+    margin-left: 1em;
+  }
+
+  :global(.cm-completionMatchedText) {
+    text-decoration: none !important;
+    color: var(--accent);
+    font-weight: 600;
+  }
+
+  :global(.cm-completionIcon) {
+    opacity: 0.7;
+  }
+
+  :global(.cm-tooltip-lint) {
+    max-width: 520px;
+  }
+
+  :global(.cm-diagnostic) {
+    padding: 5px 10px;
+    font-size: 12.5px;
+    border-left-width: 3px;
+  }
+
+  :global(.cm-diagnostic-error) { border-left-color: var(--error); }
+  :global(.cm-diagnostic-warning) { border-left-color: var(--warn); }
+  :global(.cm-diagnostic-info) { border-left-color: var(--info); }
+
+  :global(.cm-diagnosticAction) {
+    background: var(--accent-soft);
+    color: var(--accent);
+    border-radius: 3px;
+    padding: 1px 6px;
+  }
+}
+
+.hover {
+  padding: 6px 10px;
+  max-width: 520px;
+  font-size: 12.5px;
+
+  p {
+    margin: 2px 0;
+    color: var(--text-2);
+    white-space: pre-wrap;
+  }
+
+  pre {
+    margin: 2px 0;
+    font-size: 12.5px;
+    white-space: pre-wrap;
+    color: var(--text);
+  }
+}

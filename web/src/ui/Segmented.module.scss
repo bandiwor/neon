@@ -1,0 +1,30 @@
+.segmented {
+  display: inline-flex;
+  border: 1px solid var(--line-strong);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.option {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 12px;
+  border: 0;
+  border-right: 1px solid var(--line-strong);
+  background: var(--bg);
+
+  &:last-child {
+    border-right: 0;
+  }
+
+  &:hover {
+    background: var(--hover);
+  }
+}
+
+.active,
+.active:hover {
+  background: var(--accent);
+  color: var(--on-accent);
+}

@@ -1,0 +1,15 @@
+.field {
+  display: grid;
+  gap: 4px;
+  margin-bottom: 12px;
+}
+
+.label {
+  font-weight: 600;
+  font-size: 12.5px;
+}
+
+.hint {
+  color: var(--text-3);
+  font-size: 12px;
+}

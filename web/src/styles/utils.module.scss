@@ -1,0 +1,36 @@
+// Small classes several components share.
+@use 'mixins' as *;
+
+.muted {
+  color: var(--text-3);
+}
+
+.spacer {
+  flex: 1;
+}
+
+.errorText {
+  color: var(--error);
+}
+
+.warnText {
+  color: var(--warn);
+}
+
+.mono {
+  @include code-font;
+}
+
+// hidden on narrow screens
+.hideNarrow {
+  @include narrow {
+    display: none !important;
+  }
+}
+
+// hidden on phones
+.hidePhone {
+  @include phone {
+    display: none !important;
+  }
+}

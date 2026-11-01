@@ -1,0 +1,44 @@
+// Shared by the component modules: `@use 'mixins' as *;` (the styles directory is on Sass's load path).
+
+$narrow: 980px;
+$phone: 560px;
+
+@mixin narrow {
+  @media (max-width: #{$narrow}) {
+    @content;
+  }
+}
+
+@mixin phone {
+  @media (max-width: #{$phone}) {
+    @content;
+  }
+}
+
+/// A single line that ends in an ellipsis.
+@mixin ellipsis {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/// Text in the code font, without ligatures (`->` must stay two characters).
+@mixin code-font {
+  font-family: var(--font-mono);
+  font-variant-ligatures: none;
+  font-feature-settings: 'liga' 0, 'calt' 0;
+}
+
+/// A hover/active background for something that behaves like a button.
+@mixin pressable($radius: var(--radius)) {
+  border-radius: $radius;
+  transition: background var(--ease);
+
+  &:hover:not(:disabled) {
+    background: var(--hover);
+  }
+
+  &:active:not(:disabled) {
+    background: var(--active);
+  }
+}

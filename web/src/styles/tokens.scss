@@ -1,0 +1,77 @@
+// Design tokens as custom properties. Light and dark are one set of declarations (light-dark()), chosen by
+// color-scheme, which data-theme on <html> controls. The accent is one pair of colors, chosen by data-accent.
+
+:root {
+  --font-ui: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+  --font-mono: ui-monospace, 'SF Mono', SFMono-Regular, 'JetBrains Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+  --code-size: 14px;
+  --radius: 4px;
+  --header-h: 46px;
+  --status-h: 26px;
+  --ease: 120ms ease-out;
+
+  --bg: light-dark(#fbfbfa, #131312);
+  --panel: light-dark(#f4f4f2, #1a1a18);
+  --raised: light-dark(#ffffff, #21211f);
+  --hover: light-dark(#ebebe8, #262624);
+  --active: light-dark(#e2e2de, #2e2e2b);
+  --line: light-dark(#dcdcd6, #2c2c29);
+  --line-strong: light-dark(#c4c4bc, #42423e);
+  --text: light-dark(#1c1c1a, #e9e9e5);
+  --text-2: light-dark(#5b5b54, #a4a49c);
+  --text-3: light-dark(#8b8b83, #72726b);
+  --accent: light-dark(var(--accent-l), var(--accent-d));
+  --on-accent: light-dark(#ffffff, #1a0e08);
+  --accent-soft: color-mix(in srgb, var(--accent) 14%, transparent);
+  --accent-line: color-mix(in srgb, var(--accent) 45%, transparent);
+  --error: light-dark(#c62828, #ff6b6b);
+  --warn: light-dark(#a86400, #f0b04a);
+  --ok: light-dark(#2e7d32, #6fcf8c);
+  --info: light-dark(#1d5fa8, #6db3ff);
+  --scrim: rgb(10 10 8 / 0.42);
+
+  // syntax
+  --syn-keyword: var(--accent);
+  --syn-string: light-dark(#2e7d32, #86c97e);
+  --syn-number: light-dark(#2547d0, #7ea6ff);
+  --syn-type: light-dark(#0e7a70, #4ec9b0);
+  --syn-function: light-dark(#1d5fa8, #6db3ff);
+  --syn-variant: light-dark(#9a5a00, #ffb86c);
+  --syn-param: light-dark(#a0481a, #ff9e64);
+  --syn-local: light-dark(#6b5a00, #e6db74);
+  --syn-operator: light-dark(#c62d3b, #ff6272);
+  --syn-punct: light-dark(#6b6b64, #b4b4ac);
+  --syn-comment: light-dark(#8b8b83, #72726b);
+}
+
+:root[data-theme='system'] {
+  color-scheme: light dark;
+}
+
+:root[data-theme='light'] {
+  color-scheme: light;
+}
+
+:root[data-theme='dark'] {
+  color-scheme: dark;
+}
+
+:root[data-accent='ember'] {
+  --accent-l: #c2410c;
+  --accent-d: #ff8a4c;
+}
+
+:root[data-accent='moss'] {
+  --accent-l: #2f7d4f;
+  --accent-d: #5fcf8e;
+}
+
+:root[data-accent='azure'] {
+  --accent-l: #2563b8;
+  --accent-d: #6ea8ff;
+}
+
+:root[data-accent='graphite'] {
+  --accent-l: #3a3a36;
+  --accent-d: #d6d6d0;
+}
