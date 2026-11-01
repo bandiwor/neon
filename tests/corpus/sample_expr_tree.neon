@@ -8,6 +8,7 @@ fn eval(e: Expr) -> i64 {
         Expr::Neg(a) => -eval(a),
     }
 }
+
 fn show(e: Expr) -> string {
     match e {
         Expr::Num(n) => n.to_string(),
@@ -16,6 +17,7 @@ fn show(e: Expr) -> string {
         Expr::Neg(a) => "-" + show(a),
     }
 }
+
 let e = Expr::Add(Expr::Mul(Expr::Num(3), Expr::Num(4)), Expr::Neg(Expr::Num(5)));
 println(show(e));
 println(eval(e));

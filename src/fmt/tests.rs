@@ -138,6 +138,60 @@ fn enums_structs_traits() {
 }
 
 #[test]
+fn one_statement_per_line() {
+    check(
+        "fn main() { let a = 1; let b = 2; println(a + b); }\n",
+        "fn main() {\n    let a = 1;\n    let b = 2;\n    println(a + b);\n}\n",
+    );
+    check("let a = 1; let b = 2;\n", "let a = 1;\nlet b = 2;\n");
+}
+
+#[test]
+fn functions_are_never_one_line_but_short_ifs_may_be() {
+    check("fn one() -> i64 { 1 }\n", "fn one() -> i64 {\n    1\n}\n");
+    check("fn f() {}\n", "fn f() {}\n");
+    check(
+        "fn f() -> i64 {\n    let x = if 1 == 1 {10} else {15};\n    x\n}\n",
+        "fn f() -> i64 {\n    let x = if 1 == 1 { 10 } else { 15 };\n    x\n}\n",
+    );
+    // a branch with several statements opens up all of them
+    check(
+        "fn f(c: bool) {\n    if c { a(); b(); } else { d(); }\n}\n",
+        "fn f(c: bool) {\n    if c {\n        a();\n        b();\n    } else {\n        d();\n    }\n}\n",
+    );
+}
+
+#[test]
+fn a_blank_line_follows_every_function() {
+    check("fn a() {}\nfn b() {}\nlet x = 1;\n", "fn a() {}\n\nfn b() {}\n\nlet x = 1;\n");
+    // not before the closing brace of an impl, and the author's blank lines stay single
+    check("impl P {\nfn a(self) {}\nfn b(self) {}\n}\n", "impl P {\n    fn a(self) {}\n\n    fn b(self) {}\n}\n");
+    check("fn a() {}\n\n\n\nfn b() {}\n", "fn a() {}\n\nfn b() {}\n");
+}
+
+#[test]
+fn long_lines_are_broken() {
+    // inside the last bracket pair
+    check(
+        "fn main() {\n    let result = some_function_name(argument_number_one, argument_number_two, argument_number_three, four);\n}\n",
+        "fn main() {\n    let result = some_function_name(\n        argument_number_one,\n        argument_number_two,\n        argument_number_three,\n        four\n    );\n}\n",
+    );
+    // before the loosest operator, and the block after it opens up
+    check(
+        "fn main() {\n    if first_condition_is_long_enough && second_condition_is_long_enough && third_condition_is_long { go(); }\n}\n",
+        "fn main() {\n    if first_condition_is_long_enough\n        && second_condition_is_long_enough\n        && third_condition_is_long {\n        go();\n    }\n}\n",
+    );
+    // a method chain
+    check(
+        "fn main() {\n    let v = items.iter().map(|x| => x * 2).filter(|x| => x > 3).map(|x| => x + 1).sum_of_everything_here();\n}\n",
+        "fn main() {\n    let v = items\n        .iter()\n        .map(|x| => x * 2)\n        .filter(|x| => x > 3)\n        .map(|x| => x + 1)\n        .sum_of_everything_here();\n}\n",
+    );
+    // a line that fits is left alone; a trailing comment does not count
+    check("fn main() {\n    println(1); // a comment that makes the line much much longer than a hundred characters wide, indeed\n}\n",
+        "fn main() {\n    println(1); // a comment that makes the line much much longer than a hundred characters wide, indeed\n}\n");
+}
+
+#[test]
 fn syntax_errors_are_refused() {
     assert!(format_source("fn main( {").is_err());
     assert!(format_source("let x = \"unterminated;\n").is_err());

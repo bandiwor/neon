@@ -1004,9 +1004,7 @@ impl<'p> Gen<'p> {
             sig_params.push("void".into());
         }
         let eff = self.fx.of(id);
-        let attr = if f.is_closure || self.guarded[id.index()] {
-            ""
-        } else if f.ret == IrTy::Unit {
+        let attr = if f.is_closure || self.guarded[id.index()] || f.ret == IrTy::Unit {
             ""
         } else if eff == Effects::NONE {
             self.need("hint_const");

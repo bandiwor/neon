@@ -49,7 +49,21 @@ impl Color {
 
     fn glyph(self) -> char {
         let b = self.brightness();
-        if b == 0 { ' ' } elif b < 100 { '.' } elif b < 160 { ':' } elif b < 220 { 'o' } else { '#' }
+        if b
+            == 0 {
+            ' '
+        } elif b
+            < 100 {
+            '.'
+        } elif b
+            < 160 {
+            ':'
+        } elif b
+            < 220 {
+            'o'
+        } else {
+            '#'
+        }
     }
 }
 
@@ -68,7 +82,9 @@ fn covers(s: Shape, p: (i64, i64)) -> bool {
     let (x, y) = p;
     match s {
         Shape::Dot(dx, dy) => x == dx as i64 && y == dy as i64,
-        Shape::HLine(lx, ly, len) => y == ly as i64 && x >= lx as i64 && x < (lx as i64) + (len as i64),
+        Shape::HLine(lx, ly, len) => y == ly as i64
+            && x >= lx as i64
+            && x < (lx as i64) + (len as i64),
         Shape::Rect(rx, ry, w, h) => {
             let xs = (rx as i64)..((rx as i64) + (w as i64));
             let ys = (ry as i64)..((ry as i64) + (h as i64));
@@ -187,8 +203,12 @@ impl Editor {
         for row in rows { println("|" + row.iter().map(|c| => f"{c}").join("") + "|"); }
         println("+" + (0..W).map(|i| => "-").join("") + "+");
         let covered = (0..H).map(|y| => (0..W).filter(|x| => covers(b, (x, y))).count()).sum();
-        println(f"pos ({px}, {py})  tool {self.tool_name()}  size {self.size}  color {palette(self.color)}  brush covers {covered}  stamps {self.ops.len()}");
-        println("keys: w a s d move | t tool | + - size | c color | space stamp | u undo | x clear | q quit");
+        println(
+            f"pos ({px}, {py})  tool {self.tool_name()}  size {self.size}  color {palette(self.color)}  brush covers {covered}  stamps {self.ops.len()}"
+        );
+        println(
+            "keys: w a s d move | t tool | + - size | c color | space stamp | u undo | x clear | q quit"
+        );
     }
 }
 

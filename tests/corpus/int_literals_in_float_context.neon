@@ -1,4 +1,7 @@
-fn half(x: f64) -> f64 { x / 2 }
+fn half(x: f64) -> f64 {
+    x / 2
+}
+
 struct P { x: f64, y: f64 }
 fn main() {
     let a: f64 = 15;

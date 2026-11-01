@@ -17,6 +17,7 @@ impl Shape {
             Shape::Tall(a, b) => (a as i64) * (b as i64),
         }
     }
+
     fn grow(self) -> Shape {
         match self {
             Shape::Dot => Shape::Circle(1),
@@ -112,7 +113,14 @@ fn main() {
     println(Big::Rect(1, 2));
 
     // payload patterns, guards, nested literals
-    let cells = [Cell::Empty, Cell::Wall(true), Cell::Wall(false), Cell::Mark('x'), Cell::Num(-4), Cell::Num(12)];
+    let cells = [
+        Cell::Empty,
+        Cell::Wall(true),
+        Cell::Wall(false),
+        Cell::Mark('x'),
+        Cell::Num(-4),
+        Cell::Num(12)
+    ];
     var line = "";
     for c in cells { line = line + describe(c); }
     println(line);
@@ -140,7 +148,7 @@ fn main() {
     ms.push(Mood::Angry);
     ms.push(Mood::Calm);
     println(ms);
-    var by_name: {string: Shape} = {};
+    var by_name: { string: Shape } = {};
     by_name["a"] = Shape::Circle(9);
     by_name["b"] = Shape::Dot;
     println(by_name["a"].area());
@@ -175,7 +183,7 @@ fn main() {
     let opts: [Option<u8>] = [Option::Some(1), Option::None, Option::Some(255)];
     println(opts);
     println(opts.get(2));
-    var cs: {string: Option<char>} = {};
+    var cs: { string: Option<char> } = {};
     cs["x"] = Option::Some('a');
     cs["y"] = Option::None;
     println(cs["x"]);

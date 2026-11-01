@@ -7,6 +7,16 @@ const MASK: u32 = 0xFF << 8;
 const BIG = i32::MAX as i64 + 1;
 const FLAG = MAX_USERS > 50 && !false;
 const LETTER = 'a';
-fn describe() -> string { GREETING + " " + HALF.to_string() }
-println(MAX_USERS); println(HALF); println(GREETING); println(PI2);
-println(MASK); println(BIG); println(FLAG); println(LETTER); println(describe());
+fn describe() -> string {
+    GREETING + " " + HALF.to_string()
+}
+
+println(MAX_USERS);
+println(HALF);
+println(GREETING);
+println(PI2);
+println(MASK);
+println(BIG);
+println(FLAG);
+println(LETTER);
+println(describe());

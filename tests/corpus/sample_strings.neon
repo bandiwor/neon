@@ -6,7 +6,11 @@ fn reverse(s: string) -> string {
     for c in cs { out = out + c.to_string(); }
     out
 }
-fn is_palindrome(s: string) -> bool { s == reverse(s) }
+
+fn is_palindrome(s: string) -> bool {
+    s == reverse(s)
+}
+
 println(reverse("hello"));
 println(is_palindrome("level"));
 println(is_palindrome("neon"));

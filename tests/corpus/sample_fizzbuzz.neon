@@ -5,4 +5,5 @@ fn say(n: i64) -> string {
     elif n % 5 == 0 { "Buzz" }
     else { n.to_string() }
 }
+
 for i in 1..=15 { println(say(i)); }

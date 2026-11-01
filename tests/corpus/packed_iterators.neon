@@ -3,7 +3,11 @@ fn main() {
     let b: [u8] = [10, 20, 30, 40];
     println(a.iter().zip(b).map(|(x, y)| => x as i64 + y as i64).collect());
     println(a.iter().zip(b).filter(|(x, y)| => x > 1).collect());
-    let h: [i64] = a.iter().filter_map(|x| => if x % 2 == 0 { Option::Some(x / 2) } else { Option::None }).map(|v| => v as i64).collect();
+    let h: [i64] = a
+        .iter()
+        .filter_map(|x| => if x % 2 == 0 { Option::Some(x / 2) } else { Option::None })
+        .map(|v| => v as i64)
+        .collect();
     println(h);
     println(a.iter().find(|x| => x > 2));
     println(a.iter().position(|x| => x == 250));

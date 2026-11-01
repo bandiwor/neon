@@ -50,7 +50,9 @@ fn covers(s: Shape, p: (i64, i64)) -> bool {
     let (x, y) = p;
     match s {
         Shape::Dot(dx, dy) => x == dx as i64 && y == dy as i64,
-        Shape::HLine(lx, ly, len) => y == ly as i64 && lx as i64 <= x && x < (lx as i64) + (len as i64),
+        Shape::HLine(lx, ly, len) => y == ly as i64
+            && lx as i64 <= x
+            && x < (lx as i64) + (len as i64),
         Shape::Rect(rx, ry, w, h) => {
             let xs = (rx as i64)..((rx as i64) + (w as i64));
             let ys = (ry as i64)..((ry as i64) + (h as i64));
@@ -104,7 +106,12 @@ fn main() {
     for line in render(scene) { println("|" + line + "|"); }
 
     // tuples and lazy chains over ranges
-    let shapes = [Shape::Dot(1, 1), Shape::HLine(0, 0, 9), Shape::Rect(3, 3, 4, 5), Shape::Circle(20, 8, 6)];
+    let shapes = [
+        Shape::Dot(1, 1),
+        Shape::HLine(0, 0, 9),
+        Shape::Rect(3, 3, 4, 5),
+        Shape::Circle(20, 8, 6)
+    ];
     println("areas:");
     for (i, s) in shapes.iter().enumerate() {
         println(f"  shape {i}: {area(s)} cells");
@@ -112,10 +119,23 @@ fn main() {
     let (biggest, cells) = shapes.iter().map(|s| => (s, area(s))).max_by_key(|p| => p.1).unwrap();
     println(f"biggest: {biggest} with {cells} cells");
 
-    let palette = [Color::Black, Color::Gray(40), Color::Gray(100), Color::Rgb(200, 180, 90), Color::Rgb(255, 255, 255)];
+    let palette = [
+        Color::Black,
+        Color::Gray(40),
+        Color::Gray(100),
+        Color::Rgb(200, 180, 90),
+        Color::Rgb(255, 255, 255)
+    ];
     println(palette);
     println(palette.iter().map(|c| => c.brightness()).collect());
-    println(palette.iter().zip(0..).filter(|(c, i)| => c.brightness() > 50).map(|(c, i)| => f"{i}:{c}").join(", "));
+    println(
+        palette
+            .iter()
+            .zip(0..)
+            .filter(|(c, i)| => c.brightness() > 50)
+            .map(|(c, i)| => f"{i}:{c}")
+            .join(", ")
+    );
     println((1..=5).rev().map(|n| => (n, n * n)).collect());
     println((0..40).step_by(8).collect());
     println((0..20).filter(|n| => n % 3 == 0).map(|n| => n * n).sum());

@@ -5,26 +5,39 @@ fn build(n: i64) -> Option<Node> {
     for i in 0..n { head = Option::Some(Node { val: i, next: head }); }
     head
 }
+
 fn sum(l: Option<Node>) -> i64 {
     var t = 0;
     var cur = l;
     while true {
         match cur {
-            Option::Some(n) => { t += n.val; cur = n.next; }
+            Option::Some(n) => {
+                t += n.val;
+                cur = n.next;
+            }
             Option::None => break,
         }
     }
     t
 }
+
 fn main() {
     var total = 0;
     for round in 0..200 {
         let l = build(500);
         total += sum(l);
-        var m: {string: Rec} = {};
+        var m: { string: Rec } = {};
         for i in 0..50 {
             let key = f"k{i % 17}";
-            m.insert(key, Rec { name: key + "!", tags: [key, f"{round}"], score: i as f64 * 0.5, link: Option::None });
+            m.insert(
+                key,
+                Rec {
+                    name: key + "!",
+                    tags: [key, f"{round}"],
+                    score: i as f64 * 0.5,
+                    link: Option::None
+                }
+            );
         }
         var arr: [string] = [];
         for k in m.keys() { arr.push(m[k].name + m[k].tags.join(",")); }
@@ -40,9 +53,19 @@ fn main() {
     var rs: [Rec] = [];
     for i in 0..1000 { rs.push(Rec { name: f"n{i}", tags: [], score: 1.0, link: Option::None }); }
     var chain = Rec { name: "root", tags: [], score: 0.0, link: Option::None };
-    for r in rs { chain = Rec { name: r.name, tags: r.tags, score: r.score, link: Option::Some(chain) }; }
+    for r in rs {
+        chain = Rec { name: r.name, tags: r.tags, score: r.score, link: Option::Some(chain) };
+    }
     var depth = 0;
     var c = Option::Some(chain);
-    while true { match c { Option::Some(r) => { depth += 1; c = r.link; } Option::None => break } }
+    while true {
+        match c {
+            Option::Some(r) => {
+                depth += 1;
+                c = r.link;
+            }
+            Option::None => break
+        }
+    }
     println(depth);
 }
