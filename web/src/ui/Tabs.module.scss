@@ -30,18 +30,10 @@
   border-bottom-color: var(--accent);
 }
 
-// the sidebar: icons only, the label of the selected one
+// the sidebar: icons only, sharing the width
 .compact .tab {
   flex: 1;
   justify-content: center;
-
-  span {
-    display: none;
-  }
-}
-
-.compact .selected span {
-  display: inline;
 }
 
 .count {

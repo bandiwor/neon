@@ -1,7 +1,6 @@
 import type { JSX } from 'preact';
 import { useEffect, useState } from 'preact/hooks';
 import { jumpTo } from '@/app/actions';
-import { t } from '@/core/i18n';
 import { lsp } from '@/core/lsp/client';
 import { onSynced } from '@/core/lsp/sync';
 import type { DocumentSymbol } from '@/core/lsp/types';
@@ -42,7 +41,7 @@ export function OutlineTab(): JSX.Element {
     };
   }, [active]);
   const flat = flatten(items);
-  if (flat.length === 0) return <p class={s.hint}>{t('outline.empty')}</p>;
+  if (flat.length === 0) return <></>;
   return (
     <List>
       {flat.map((sym, i) => {

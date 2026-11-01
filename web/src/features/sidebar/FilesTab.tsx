@@ -24,7 +24,7 @@ export function FilesTab(): JSX.Element {
   return (
     <div>
       <div class={s.head}>
-        <span>{t('files.title')}</span>
+        <span />
         <Button icon="plus" title={t('files.new')} onClick={() => setAdding(freshName('module'))} />
       </div>
       <List>
@@ -86,7 +86,6 @@ export function FilesTab(): JSX.Element {
           </Row>
         )}
       </List>
-      <p class={s.hint}>{t('files.hint')}</p>
     </div>
   );
 }

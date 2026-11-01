@@ -3,7 +3,7 @@ import { useEffect, useState } from 'preact/hooks';
 import { openProject } from '@/app/actions';
 import { t } from '@/core/i18n';
 import type { Example } from '@/core/project/types';
-import { Badge, List, Row, RowMain, cx, listClasses } from '@/ui';
+import { Badge, List, Row, RowMain, listClasses } from '@/ui';
 import s from './Sidebar.module.scss';
 
 /** The example programs, in groups; they are loaded on demand (a chunk of their own). */
@@ -29,7 +29,6 @@ export function ExamplesTab(): JSX.Element {
                   <RowMain class={s.example} onClick={() => openProject(e.files, 'main.neon', e.title)} title={e.description}>
                     <span class={listClasses.name}>{e.title}</span>
                     {e.interactive && <Badge accent>{t('examples.interactive')}</Badge>}
-                    <span class={cx(listClasses.sub)}>{e.description}</span>
                   </RowMain>
                 </Row>
               ))}

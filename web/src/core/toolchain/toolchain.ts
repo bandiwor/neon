@@ -2,7 +2,7 @@
 // Programs run in a worker of their own that can be killed (an endless loop must not freeze the page).
 import { Engine, TerminatedError } from '../wasm/engine';
 import type { CliReply, Files } from '../wasm/protocol';
-import type { OptLevel, Settings } from '../state/types';
+import type { OptFlags, Settings } from '../state/types';
 import { optFlags, runArgs } from './args';
 
 const runnerEngine = new Engine('run');
@@ -77,7 +77,7 @@ const tool = (args: readonly string[], files: Files): Promise<CliReply> =>
 export type ViewKind = 'ir' | 'bytecode' | 'c';
 
 export interface ViewOptions {
-  readonly opt: OptLevel;
+  readonly opt: OptFlags;
   readonly effects?: boolean;
   readonly annotate?: boolean;
 }

@@ -10,7 +10,6 @@ export function ShareDialog({ url }: { readonly url: string }): JSX.Element {
   useEffect(() => box.current?.select(), []);
   return (
     <Dialog title={t('share.title')} onClose={() => runtime.set({ dialog: null })}>
-      <p>{t('share.text')}</p>
       <textarea class={u.mono} ref={box} readOnly rows={5} value={url} onFocus={(e) => e.currentTarget.select()} />
     </Dialog>
   );

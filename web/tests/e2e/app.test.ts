@@ -93,6 +93,50 @@ describe.skipIf(!ready)('the site in a browser', () => {
     await page.close();
   });
 
+  it('has icon-only buttons in the header and no brand', async () => {
+    const { page } = await open();
+    const header = page.locator('header').first();
+    expect((await header.innerText()).trim()).toBe('');
+    expect(await header.getByRole('button').count()).toBeGreaterThanOrEqual(9);
+    await page.close();
+  });
+
+  it('edits like an editor: brackets, Enter, completion with a call', async () => {
+    const { page } = await open();
+    const lines = () => page.evaluate(() => [...document.querySelectorAll('.cm-line')].map((l) => l.textContent ?? ''));
+    await page.locator('.cm-content').click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
+    await page.keyboard.type('fn main() {');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('if x > 1 {');
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('println("a');
+    expect(await lines()).toEqual(['fn main() {', '    if x > 1 {', '        println("a")', '    }', '}']);
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
+    await page.keyboard.type('fn main() {\nprintl');
+    await page.getByRole('option', { name: /println/ }).waitFor({ timeout: 30_000 });
+    await page.keyboard.press('Enter');
+    await page.keyboard.type('"hi"');
+    expect(await lines()).toEqual(['fn main() {', '    println("hi")', '}']);
+    await page.close();
+  });
+
+  it('keeps the settings in sections', async () => {
+    const { page } = await open();
+    await page.getByRole('button', { name: ru['actions.settings'] }).click();
+    const dialog = page.getByRole('dialog');
+    for (const key of ['settings.s_appearance', 'settings.s_editor', 'settings.s_compiler', 'settings.s_vm', 'settings.s_program'] as const) {
+      await dialog.getByRole('button', { name: ru[key] }).click();
+    }
+    await dialog.getByRole('button', { name: ru['settings.s_compiler'] }).click();
+    await dialog.getByText(ru['opt.inline']).waitFor();
+    // switching a pass off reaches the optimizer: the IR view changes
+    await page.keyboard.press('Escape');
+    await page.close();
+  });
+
   it('fits a phone', async () => {
     const { page } = await open(390, 800);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

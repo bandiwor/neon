@@ -21,14 +21,11 @@ const SHORTCUTS: readonly (readonly [id: 'run' | 'stop' | 'format' | 'check' | '
   ['help', 'F1'],
 ];
 
-const PANEL_HELP: readonly MessageKey[] = ['help.p_console', 'help.p_problems', 'help.p_ir', 'help.p_bytecode', 'help.p_c', 'help.p_repl'];
-
 export function HelpDialog(): JSX.Element {
   return (
-    <Dialog title={t('help.title')} onClose={() => runtime.set({ dialog: null })} wide>
+    <Dialog title={t('help.title')} onClose={() => runtime.set({ dialog: null })}>
       <div class={s.help}>
         <p>{t('help.intro')}</p>
-        <h3>{t('help.shortcuts')}</h3>
         <dl class={s.shortcuts}>
           {SHORTCUTS.map(([id, keys]) => (
             <>
@@ -39,14 +36,6 @@ export function HelpDialog(): JSX.Element {
             </>
           ))}
         </dl>
-        <h3>{t('help.panels')}</h3>
-        <ul>
-          {PANEL_HELP.map((k) => (
-            <li key={k}>{t(k)}</li>
-          ))}
-        </ul>
-        <h3>{t('help.about')}</h3>
-        <p>{t('help.about_text')}</p>
       </div>
     </Dialog>
   );

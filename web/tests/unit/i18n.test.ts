@@ -20,7 +20,7 @@ const code = sources(src).map((p) => readFileSync(p, 'utf8')).join('\n');
 // Any quoted 'namespace.key' counts as a use: t('a.b'), label('a.b', ...), cmd('x', 'a.b', ...), lists of keys.
 const used = new Set([...code.matchAll(/'([a-z_]+\.[a-z_0-9-]+)'/g)].flatMap((m) => (m[1] ? [m[1]] : [])));
 // keys built from a variable: t(`panel.${id}`)
-const prefixes = [...code.matchAll(/`([a-z_]+\.)\$\{/g)].flatMap((m) => (m[1] ? [m[1]] : []));
+const prefixes = [...code.matchAll(/`([a-z_]+\.[a-z_]*)\$\{/g)].flatMap((m) => (m[1] ? [m[1]] : []));
 
 describe('texts', () => {
   it('has no unused entries', () => {

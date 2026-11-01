@@ -1,7 +1,7 @@
 // The application's state: what survives a reload (settings, project, layout) and what does not (runtime).
 import type { Project } from '../project/types';
 import { createStore } from './store';
-import type { Settings, UiState, RuntimeState } from './types';
+import type { OptFlags, Settings, UiState, RuntimeState } from './types';
 
 /** Keeps only the fields of `stored` whose type matches the default (a hand-edited or old record can not break the page). */
 function reviveFields<T extends object>(stored: unknown, defaults: T): T {
@@ -14,34 +14,64 @@ function reviveFields<T extends object>(stored: unknown, defaults: T): T {
   return out as T;
 }
 
+export const DEFAULT_OPT: OptFlags = {
+  fold: true,
+  dce: true,
+  simplify: true,
+  licm: true,
+  rotate: true,
+  unroll: true,
+  inline: true,
+  peephole: true,
+  inlineThreshold: 30,
+  maxRegs: 160,
+};
+
 export const DEFAULT_SETTINGS: Settings = {
   theme: 'system',
   accent: 'ember',
   lang: 'ru',
+  panelPos: 'auto',
   fontSize: 14,
+  lineHeight: 'normal',
+  tabSize: 4,
   wrap: false,
-  opt: 'default',
+  lineNumbers: true,
+  activeLine: true,
+  folding: true,
+  closeBrackets: true,
+  matchBrackets: true,
+  syntax: 'neon',
+  opt: DEFAULT_OPT,
   maxSteps: 500_000_000,
+  maxFrames: 20_000,
   timeout: 20,
   gcStress: false,
   gcLimit: '',
   stats: true,
   args: '',
   stdin: '',
-  panelPos: 'auto',
 };
+
+export function reviveSettings(stored: unknown, defaults: Settings): Settings {
+  const flat = reviveFields(stored, defaults);
+  const opt = typeof stored === 'object' && stored !== null ? (stored as { opt?: unknown }).opt : undefined;
+  return { ...flat, opt: reviveFields(opt, defaults.opt) };
+}
 
 export const settings = createStore<Settings>(DEFAULT_SETTINGS, {
   persistKey: 'neon-web:settings',
-  revive: reviveFields,
+  revive: reviveSettings,
 });
 
-const STARTER = `// Добро пожаловать в Neon!  Ctrl+Enter — запустить, Ctrl+Shift+F — отформатировать.
+const STARTER = `// Ctrl+Enter — запустить, Ctrl+Shift+F — отформатировать
 
 struct Point { x: i64, y: i64 }
 
 impl Point {
-    fn dist2(self) -> i64 { self.x * self.x + self.y * self.y }
+    fn dist2(self) -> i64 {
+        self.x * self.x + self.y * self.y
+    }
 }
 
 fn main() {
@@ -87,7 +117,6 @@ export const DEFAULT_UI: UiState = {
   panelTab: 'console',
   panelSize: 0.42,
   sidebarWidth: 232,
-  showRunOptions: false,
 };
 
 export const ui = createStore<UiState>(DEFAULT_UI, { persistKey: 'neon-web:ui', revive: reviveFields });

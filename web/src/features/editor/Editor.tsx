@@ -9,7 +9,7 @@ import { project, runtime, settings } from '@/core/state/stores';
 import { useStore } from '@/core/state/useStore';
 import { goToDefinition, startRename } from '@/app/actions/navigation';
 import { applyWorkspaceEdit } from '@/app/actions/edits';
-import { createEditor, toEditorDiagnostics, type EditorController } from './createEditor';
+import { createEditor, toEditorDiagnostics, type EditorController, type EditorOptions } from './createEditor';
 import s from './Editor.module.scss';
 
 const CLASSES = {
@@ -18,14 +18,31 @@ const CLASSES = {
   hover: s.hover,
 } as const;
 
+/** How long typing must pause before the semantic colors are repainted. */
+const SETTLE = 250;
+
+/** The text the editor itself last reported: the store's echo of it needs no round trip. */
+let lastTyped = '';
+let lastEdit = 0;
+
+const editorOptions = (): EditorOptions => {
+  const { wrap, lineNumbers, activeLine, folding, closeBrackets, matchBrackets, tabSize } = settings.get();
+  return { wrap, lineNumbers, activeLine, folding, closeBrackets, matchBrackets, tabSize };
+};
+
 /** The editor of the open file. */
 export function Editor(): JSX.Element {
   const host = useRef<HTMLDivElement>(null);
   const controller = useRef<EditorController | null>(null);
   const fixes = useRef<{ key: string; actions: readonly (readonly CodeAction[])[] }>({ key: '', actions: [] });
   const active = useStore(project, (p) => p.active);
-  const text = useStore(project, (p) => getFile(p.active)?.text ?? '');
   const wrap = useStore(settings, (st) => st.wrap);
+  const lineNumbers = useStore(settings, (st) => st.lineNumbers);
+  const activeLine = useStore(settings, (st) => st.activeLine);
+  const folding = useStore(settings, (st) => st.folding);
+  const closeBrackets = useStore(settings, (st) => st.closeBrackets);
+  const matchBrackets = useStore(settings, (st) => st.matchBrackets);
+  const tabSize = useStore(settings, (st) => st.tabSize);
   const problems = useStore(runtime, (r) => r.problems[active]);
   const jump = useStore(runtime, (r) => r.jump);
 
@@ -36,6 +53,8 @@ export function Editor(): JSX.Element {
       lsp,
       flush,
       onChange: (file, value) => {
+        lastTyped = value;
+        lastEdit = performance.now();
         setFileText(file, value);
         scheduleChange(file, value);
       },
@@ -46,17 +65,34 @@ export function Editor(): JSX.Element {
     });
     controller.current = ed;
     editorPort.current = ed;
-    // semantic colors follow every change the server has seen
-    const off = onSynced((file) => {
-      if (file !== ed.name) return;
+    ed.configure(editorOptions());
+    // semantic colors follow the changes the server has seen, once typing pauses (repainting while the
+    // fingers move is what makes typing feel uneven)
+    let repaint: ReturnType<typeof setTimeout> | undefined;
+    const paint = (file: string): void => {
       lsp
         .semanticTokens(file)
         .then((tokens) => {
           if (tokens && ed.name === file) ed.setSemantic(tokens.data, lsp.legend());
         })
         .catch(() => undefined /* the server restarted: the next change repaints */);
+    };
+    const off = onSynced((file) => {
+      if (file !== ed.name) return;
+      clearTimeout(repaint);
+      const quiet = performance.now() - lastEdit;
+      repaint = setTimeout(() => paint(file), Math.max(0, SETTLE - quiet));
+    });
+    // changes that did not come from typing (format, rename, an example, undo of a file operation)
+    const offProject = project.subscribe(() => {
+      const name = project.get().active;
+      const text = getFile(name)?.text ?? '';
+      if (ed.name === name && text === lastTyped) return; // our own echo
+      ed.show(name, text);
     });
     return () => {
+      clearTimeout(repaint);
+      offProject();
       off();
       ed.destroy();
       controller.current = null;
@@ -67,9 +103,9 @@ export function Editor(): JSX.Element {
   useEffect(() => {
     // the store, not the (possibly stale) render's value: typing must never be overwritten by its own echo
     controller.current?.show(active, getFile(active)?.text ?? '');
-  }, [active, text]);
+  }, [active]);
 
-  useEffect(() => controller.current?.setWrap(wrap), [wrap]);
+  useEffect(() => controller.current?.configure(editorOptions()), [wrap, lineNumbers, activeLine, folding, closeBrackets, matchBrackets, tabSize]);
 
   // problems -> squiggles, with the quick fixes the server offers
   useEffect(() => {

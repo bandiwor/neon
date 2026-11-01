@@ -11,6 +11,9 @@ import '@/styles/global.scss';
 
 // problems published by the language server
 lsp.onDiagnostics((file, diagnostics) => {
+  // the server repeats what it found after every change: only a different answer is news
+  const known = runtime.get().problems[file];
+  if (known && JSON.stringify(known) === JSON.stringify(diagnostics)) return;
   runtime.set((r) => ({ problems: { ...r.problems, [file]: diagnostics } }));
 });
 

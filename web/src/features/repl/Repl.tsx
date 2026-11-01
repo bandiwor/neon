@@ -186,7 +186,6 @@ export function Repl(): JSX.Element {
   return (
     <div class={s.repl} onClick={() => area.current?.focus()}>
       <div class={s.bar}>
-        <span class={u.muted}>{t('repl.hint')}</span>
         <span class={u.spacer} />
         <Button
           icon="reset"
@@ -199,7 +198,6 @@ export function Repl(): JSX.Element {
         <Button icon="trash" title={t('console.clear')} onClick={() => setEntries([])} />
       </div>
       <div class={s.log} ref={log}>
-        {entries.length === 0 && <p class={s.placeholder}>{t('repl.empty')}</p>}
         {entries.map((e, i) => {
           switch (e.kind) {
             case 'input':

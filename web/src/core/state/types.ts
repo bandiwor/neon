@@ -4,26 +4,56 @@ import type { Project } from '../project/types';
 
 export type Theme = 'system' | 'light' | 'dark';
 export type Accent = 'ember' | 'moss' | 'azure' | 'graphite';
-export type OptLevel = 'default' | 'none' | 'no-inline' | 'no-peephole';
 export type PanelPosition = 'auto' | 'right' | 'bottom';
+export type SyntaxStyle = 'neon' | 'quiet' | 'contrast';
+export type LineHeight = 'tight' | 'normal' | 'loose';
+
+/** The passes of the optimizer, one by one (`neon --no-fold`, `--inline-threshold`, ...). */
+export interface OptFlags {
+  readonly fold: boolean;
+  readonly dce: boolean;
+  readonly simplify: boolean;
+  readonly licm: boolean;
+  readonly rotate: boolean;
+  readonly unroll: boolean;
+  readonly inline: boolean;
+  readonly peephole: boolean;
+  /** Callees of at most this many instructions are inlined. */
+  readonly inlineThreshold: number;
+  readonly maxRegs: number;
+}
 
 export interface Settings {
+  // appearance
   readonly theme: Theme;
   readonly accent: Accent;
   readonly lang: 'ru';
+  readonly panelPos: PanelPosition;
+  // editor
   readonly fontSize: number;
+  readonly lineHeight: LineHeight;
+  readonly tabSize: number;
   readonly wrap: boolean;
-  readonly opt: OptLevel;
+  readonly lineNumbers: boolean;
+  readonly activeLine: boolean;
+  readonly folding: boolean;
+  readonly closeBrackets: boolean;
+  readonly matchBrackets: boolean;
+  readonly syntax: SyntaxStyle;
+  // compiler
+  readonly opt: OptFlags;
+  // virtual machine
   /** VM instruction limit; 0 is none. */
   readonly maxSteps: number;
+  readonly maxFrames: number;
   /** Seconds before a program is stopped; 0 is never. */
   readonly timeout: number;
   readonly gcStress: boolean;
   readonly gcLimit: string;
   readonly stats: boolean;
+  // program
   readonly args: string;
   readonly stdin: string;
-  readonly panelPos: PanelPosition;
 }
 
 export type SidebarTab = 'files' | 'examples' | 'outline';
@@ -37,7 +67,6 @@ export interface UiState {
   /** The share of the work area the panel takes (0..1). */
   readonly panelSize: number;
   readonly sidebarWidth: number;
-  readonly showRunOptions: boolean;
 }
 
 /** What the last run (or check) left in the console. */

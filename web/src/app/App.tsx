@@ -29,6 +29,8 @@ function useNarrow(): boolean {
   return narrow;
 }
 
+const LINE_HEIGHT = { tight: '1.35', normal: '1.55', loose: '1.8' } as const;
+
 export function App(): JSX.Element {
   const st = useStore(settings);
   const sidebar = useStore(ui, (v) => v.sidebar);
@@ -43,9 +45,11 @@ export function App(): JSX.Element {
     const root = document.documentElement;
     root.dataset['theme'] = st.theme;
     root.dataset['accent'] = st.accent;
+    root.dataset['syntax'] = st.syntax;
     root.style.setProperty('--code-size', `${st.fontSize}px`);
+    root.style.setProperty('--code-line', LINE_HEIGHT[st.lineHeight]);
     root.lang = st.lang;
-  }, [st.theme, st.accent, st.fontSize, st.lang]);
+  }, [st.theme, st.accent, st.syntax, st.fontSize, st.lineHeight, st.lang]);
 
   useEffect(installShortcuts, []);
 

@@ -68,7 +68,7 @@ export function commands(): Command[] {
       title: t('actions.show', { what: t(`sidebar.${id}`) }),
       run: () => ui.set({ sidebarTab: id, sidebar: true }),
     })),
-    cmd('theme', 'actions.cycle_theme', cycleTheme),
+    cmd('theme', 'settings.theme', cycleTheme),
     cmd('settings', 'actions.settings', () => openDialog('settings')),
     cmd('help', 'actions.help', () => openDialog('help'), 'F1'),
   ];

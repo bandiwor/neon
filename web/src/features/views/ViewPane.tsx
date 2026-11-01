@@ -4,7 +4,7 @@ import { download } from '@/app/actions';
 import { ErrorText } from '@/features/console';
 import { count, t } from '@/core/i18n';
 import { filesMap } from '@/core/project/files';
-import { project, settings } from '@/core/state/stores';
+import { DEFAULT_OPT, project, settings } from '@/core/state/stores';
 import { useStore } from '@/core/state/useStore';
 import { view, type ViewKind } from '@/core/toolchain/toolchain';
 import type { CliReply } from '@/core/wasm/protocol';
@@ -59,7 +59,7 @@ export function ViewPane({ kind }: { readonly kind: ViewKind }): JSX.Element {
             {t('view.annotate')}
           </Switch>
         )}
-        {opt !== 'default' && <span class={s.optBadge}>{t(`opt.${opt}`)}</span>}
+        {JSON.stringify(opt) !== JSON.stringify(DEFAULT_OPT) && <span class={s.optBadge}>{t('view.custom_opt')}</span>}
         <span class={u.spacer} />
         {stdout && <span class={u.muted}>{count(lines, ['строка', 'строки', 'строк'])}</span>}
         <Button icon="copy" title={t('view.copy')} disabled={!stdout} onClick={() => void navigator.clipboard?.writeText(stdout)} />

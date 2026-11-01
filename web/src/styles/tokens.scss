@@ -75,3 +75,32 @@
   --accent-l: #3a3a36;
   --accent-d: #d6d6d0;
 }
+
+// the code palettes: "neon" is the default above
+:root[data-syntax='quiet'] {
+  --syn-keyword: light-dark(#5b5b54, #a4a49c);
+  --syn-string: light-dark(#4d6b4f, #9db89f);
+  --syn-number: light-dark(#4a5a80, #9aa8cf);
+  --syn-type: light-dark(#3f6a66, #86b5af);
+  --syn-function: light-dark(#2f4a68, #9db7d6);
+  --syn-variant: light-dark(#80633a, #c9aa7a);
+  --syn-param: light-dark(#7a5340, #c9a08e);
+  --syn-local: light-dark(#5b5b54, #c9c9c1);
+  --syn-operator: light-dark(#6b6b64, #b4b4ac);
+  --syn-punct: light-dark(#8b8b83, #8c8c85);
+  --syn-comment: light-dark(#a3a39b, #62625c);
+}
+
+:root[data-syntax='contrast'] {
+  --syn-keyword: light-dark(#a3002f, #ff5c8a);
+  --syn-string: light-dark(#006b1e, #7dff9e);
+  --syn-number: light-dark(#0030c8, #7aa2ff);
+  --syn-type: light-dark(#00695f, #3df2d4);
+  --syn-function: light-dark(#0050a0, #5cc4ff);
+  --syn-variant: light-dark(#8a4a00, #ffc24a);
+  --syn-param: light-dark(#a02800, #ff9a6a);
+  --syn-local: light-dark(#5e5200, #f2e65a);
+  --syn-operator: light-dark(#b80030, #ff5c7a);
+  --syn-punct: light-dark(#3b3b36, #e2e2da);
+  --syn-comment: light-dark(#6b6b64, #8c8c85);
+}

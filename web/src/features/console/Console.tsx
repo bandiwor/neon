@@ -1,8 +1,8 @@
 import type { JSX } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { jumpToPlace, stop, submitInput } from '@/app/actions';
+import { jumpToPlace, submitInput } from '@/app/actions';
 import { t } from '@/core/i18n';
-import { runtime, settings, ui } from '@/core/state/stores';
+import { runtime, settings } from '@/core/state/stores';
 import type { RunOutcome } from '@/core/state/types';
 import { useStore } from '@/core/state/useStore';
 import { parseAnsi, type AnsiRun } from '@/core/util/ansi';
@@ -86,8 +86,6 @@ const STATUS_CLASS: Readonly<Record<StatusKind, string>> = { busy: s.busy ?? '',
 export function Console(): JSX.Element {
   const run = useStore(runtime, (r) => r.run);
   const running = useStore(runtime, (r) => r.running);
-  const showOptions = useStore(ui, (v) => v.showRunOptions);
-  const st = useStore(settings);
   const parsed = useMemo(() => parseAnsi(run?.stdout ?? ''), [run?.stdout]);
   const status = statusOf(run, running);
   const [line, setLine] = useState('');
@@ -102,31 +100,10 @@ export function Console(): JSX.Element {
   return (
     <div class={s.console}>
       <div class={s.bar}>
-        {running && (
-          <Button icon="stop" onClick={() => void stop()} danger>
-            {t('actions.stop')}
-          </Button>
-        )}
         <span class={u.spacer} />
-        <Button icon="terminal" active={showOptions} title={t('console.run_options')} onClick={() => ui.set({ showRunOptions: !showOptions })}>
-          {t('console.run_options_short')}
-        </Button>
         <Button icon="trash" title={t('console.clear')} onClick={() => runtime.set({ run: null })} />
       </div>
-      {showOptions && (
-        <div class={s.options}>
-          <label class={s.optionField}>
-            <span class={s.optionLabel}>{t('options.args')}</span>
-            <input value={st.args} placeholder={t('options.args_placeholder')} onInput={(e) => settings.set({ args: e.currentTarget.value })} spellcheck={false} />
-          </label>
-          <label class={s.optionField}>
-            <span class={s.optionLabel}>{t('options.stdin')}</span>
-            <textarea rows={3} value={st.stdin} placeholder={t('options.stdin_placeholder')} onInput={(e) => settings.set({ stdin: e.currentTarget.value })} spellcheck={false} />
-          </label>
-        </div>
-      )}
       <div class={s.output} ref={box} aria-live="polite">
-        {!run && !running && <p class={s.placeholder}>{t('console.empty')}</p>}
         {parsed.truncated && <p class={u.muted}>{t('console.truncated')}</p>}
         {run && (
           <pre class={s.out}>

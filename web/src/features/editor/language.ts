@@ -111,7 +111,8 @@ export const neonLanguage = StreamLanguage.define<LexState>({
   token,
   languageData: {
     commentTokens: { line: '//', block: { open: '/*', close: '*/' } },
-    closeBrackets: { brackets: ['(', '[', '{', '"'] },
+    closeBrackets: { brackets: ['(', '[', '{', '"', "'"] },
+    indentOnInput: /^\s*[})\]]$/,
   },
 });
 

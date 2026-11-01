@@ -20,7 +20,7 @@
 }
 
 .wide {
-  width: min(780px, 100%);
+  width: min(760px, 100%);
 }
 
 .head {
@@ -40,6 +40,10 @@
 .body {
   padding: 16px 18px;
   overflow: auto;
+}
+
+.flush {
+  padding: 0;
 }
 
 .foot {

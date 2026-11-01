@@ -21,17 +21,12 @@ export function Sidebar(): JSX.Element {
   const specs: TabSpec<SidebarTab>[] = TABS.map((x) => ({
     id: x.id,
     title: x.title(),
-    label: (
-      <>
-        <Icon name={x.icon} />
-        <span>{x.title()}</span>
-      </>
-    ),
+    label: <Icon name={x.icon} />,
   }));
   const Body = (TABS.find((x) => x.id === tab) ?? TABS[0])?.body;
   return (
     <aside class={s.sidebar} aria-label={t('sidebar.label')}>
-      <Tabs tabs={specs} value={tab} onChange={(id) => ui.set({ sidebarTab: id })} compact />
+      <Tabs tabs={specs} value={tab} onChange={(id) => ui.set({ sidebarTab: id })} label={t('sidebar.label')} compact />
       <div class={s.body}>{Body && <Body />}</div>
     </aside>
   );

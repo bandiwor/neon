@@ -1,8 +1,8 @@
 // The code editor: CodeMirror 6 with a Neon language, diagnostics, completion, hover and the semantic
 // colors of the language server on top of the lexical ones.
 import { autocompletion, closeBrackets, closeBracketsKeymap, completionKeymap } from '@codemirror/autocomplete';
-import { defaultKeymap, history, historyKeymap, indentWithTab, toggleComment } from '@codemirror/commands';
-import { bracketMatching, codeFolding, foldGutter, foldKeymap, indentUnit, syntaxHighlighting } from '@codemirror/language';
+import { defaultKeymap, history, historyKeymap, indentWithTab, insertNewlineAndIndent, toggleComment } from '@codemirror/commands';
+import { bracketMatching, codeFolding, foldGutter, foldKeymap, indentOnInput, indentUnit, syntaxHighlighting } from '@codemirror/language';
 import { lintGutter, lintKeymap, setDiagnostics, type Diagnostic as EditorDiagnostic } from '@codemirror/lint';
 import { highlightSelectionMatches, searchKeymap } from '@codemirror/search';
 import { Compartment, EditorState, Prec, type Extension } from '@codemirror/state';
@@ -16,7 +16,9 @@ import {
   keymap,
   lineNumbers,
   rectangularSelection,
+  scrollPastEnd,
 } from '@codemirror/view';
+import type { Command } from '@codemirror/view';
 import type { lsp as Lsp } from '@/core/lsp/client';
 import type { EditorPort, TextChange } from '@/core/editor/port';
 import type { Position } from '@/core/lsp/types';
@@ -42,22 +44,83 @@ export interface EditorHooks {
   };
 }
 
+/** The editor settings that can change while it is open. */
+export interface EditorOptions {
+  readonly wrap: boolean;
+  readonly lineNumbers: boolean;
+  readonly activeLine: boolean;
+  readonly folding: boolean;
+  readonly closeBrackets: boolean;
+  readonly matchBrackets: boolean;
+  readonly tabSize: number;
+}
+
 export interface EditorController extends EditorPort {
   readonly view: EditorView;
   /** Shows file `name`; its undo history and caret are kept while it is open. */
   show(name: string, text: string): void;
   focus(): void;
-  setWrap(on: boolean): void;
+  /** Applies the settings (to the open document and to the ones opened later). */
+  configure(options: EditorOptions): void;
   setSemantic(data: readonly number[], legend: readonly string[]): void;
   setDiagnostics(list: readonly EditorDiagnostic[]): void;
   /** Positions of the open document, for converting diagnostics. */
   destroy(): void;
 }
 
-const wrapCompartment = new Compartment();
+const PAIRS: Readonly<Record<string, string>> = { '(': ')', '[': ']', '{': '}' };
+
+/** Enter: between a bracket and its closer it opens a block (closer on its own line), else it keeps the indentation. */
+const smartEnter: Command = (view) => {
+  const { state } = view;
+  const sel = state.selection.main;
+  if (state.selection.ranges.length === 1 && sel.empty) {
+    const before = state.sliceDoc(sel.head - 1, sel.head);
+    if (PAIRS[before] !== undefined && PAIRS[before] === state.sliceDoc(sel.head, sel.head + 1)) {
+      const base = /^[ \t]*/.exec(state.doc.lineAt(sel.head).text)?.[0] ?? '';
+      const unit = state.facet(indentUnit);
+      view.dispatch({
+        changes: { from: sel.head, insert: `\n${base}${unit}\n${base}` },
+        selection: { anchor: sel.head + 1 + base.length + unit.length },
+        scrollIntoView: true,
+        userEvent: 'input',
+      });
+      return true;
+    }
+  }
+  return insertNewlineAndIndent(view);
+};
+
+// the compartments hold what the settings can change
+const wrapC = new Compartment();
+const gutterC = new Compartment();
+const activeLineC = new Compartment();
+const closeC = new Compartment();
+const matchC = new Compartment();
+const indentC = new Compartment();
+
+function optionExtensions(o: EditorOptions): Record<'wrap' | 'gutter' | 'activeLine' | 'close' | 'match' | 'indent', Extension> {
+  return {
+    wrap: o.wrap ? EditorView.lineWrapping : [],
+    gutter: [o.lineNumbers ? [lineNumbers(), highlightActiveLineGutter()] : [], o.folding ? [foldGutter({ openText: '▾', closedText: '▸' }), codeFolding()] : [], lintGutter()],
+    activeLine: o.activeLine ? highlightActiveLine() : [],
+    close: o.closeBrackets ? closeBrackets() : [],
+    match: o.matchBrackets ? bracketMatching() : [],
+    indent: [indentUnit.of(' '.repeat(o.tabSize)), EditorState.tabSize.of(o.tabSize)],
+  };
+}
+
+const DEFAULT_OPTIONS: EditorOptions = { wrap: false, lineNumbers: true, activeLine: true, folding: true, closeBrackets: true, matchBrackets: true, tabSize: 4 };
+
+function sameNumbers(a: readonly number[], b: readonly number[]): boolean {
+  if (a.length !== b.length) return false;
+  for (let i = 0; i < a.length; i++) if (a[i] !== b[i]) return false;
+  return true;
+}
 
 export function createEditor(parent: HTMLElement, hooks: EditorHooks): EditorController {
   let current: string | null = null;
+  let lastSemantic: { file: string | null; data: readonly number[] } = { file: null, data: [] };
   const states = new Map<string, EditorState>();
 
   const hover = hoverTooltip(
@@ -78,34 +141,36 @@ export function createEditor(parent: HTMLElement, hooks: EditorHooks): EditorCon
     { hoverTime: 350 },
   );
 
+  let options = DEFAULT_OPTIONS;
+  const initial = optionExtensions(options);
+
   const extensions: Extension[] = [
-    lineNumbers(),
-    highlightActiveLineGutter(),
-    foldGutter({ openText: '▾', closedText: '▸' }),
-    codeFolding(),
-    lintGutter(),
+    gutterC.of(initial.gutter),
     history(),
     drawSelection(),
     dropCursor(),
     EditorState.allowMultipleSelections.of(true),
     rectangularSelection(),
-    indentUnit.of('    '),
+    indentC.of(initial.indent),
     neonIndent,
-    bracketMatching(),
-    closeBrackets(),
-    highlightActiveLine(),
+    indentOnInput(),
+    matchC.of(initial.match),
+    closeC.of(initial.close),
+    activeLineC.of(initial.activeLine),
+    scrollPastEnd(),
     highlightSelectionMatches(),
-    autocompletion({ override: [completionSource(hooks, () => current)], icons: true, closeOnBlur: true }),
+    autocompletion({ override: [completionSource(hooks, () => current)], icons: true, closeOnBlur: true, activateOnTypingDelay: 80, maxRenderedOptions: 60 }),
     neonLanguage,
     syntaxHighlighting(makeHighlighter(hooks.classes.tokens)),
     semanticField,
     hover,
-    wrapCompartment.of([]),
+    wrapC.of(initial.wrap),
     Prec.highest(
       keymap.of([
         { key: 'F12', run: () => (hooks.onDefinition(), true) },
         { key: 'F2', run: () => (hooks.onRename(), true) },
         { key: 'Mod-/', run: toggleComment },
+        { key: 'Enter', run: smartEnter },
       ]),
     ),
     keymap.of([
@@ -133,7 +198,10 @@ export function createEditor(parent: HTMLElement, hooks: EditorHooks): EditorCon
       },
     }),
     EditorView.updateListener.of((u) => {
-      if (u.docChanged && current) hooks.onChange(current, u.state.doc.toString());
+      if (u.docChanged && current) {
+        lastSemantic = { file: null, data: [] };
+        hooks.onChange(current, u.state.doc.toString());
+      }
       if (u.selectionSet || u.docChanged) {
         const head = u.state.selection.main.head;
         const line = u.state.doc.lineAt(head);
@@ -145,6 +213,13 @@ export function createEditor(parent: HTMLElement, hooks: EditorHooks): EditorCon
 
   const make = (text: string): EditorState => EditorState.create({ doc: text, extensions });
   const view = new EditorView({ state: make(''), parent });
+
+  const applyOptions = (): void => {
+    const o = optionExtensions(options);
+    view.dispatch({
+      effects: [wrapC.reconfigure(o.wrap), gutterC.reconfigure(o.gutter), activeLineC.reconfigure(o.activeLine), closeC.reconfigure(o.close), matchC.reconfigure(o.match), indentC.reconfigure(o.indent)],
+    });
+  };
 
   return {
     view,
@@ -162,6 +237,7 @@ export function createEditor(parent: HTMLElement, hooks: EditorHooks): EditorCon
       let state = states.get(name);
       if (!state || state.doc.toString() !== text) state = make(text);
       view.setState(state);
+      applyOptions(); // a stored state may have been made under other settings
       current = name;
       const head = view.state.selection.main.head;
       const line = view.state.doc.lineAt(head);
@@ -170,8 +246,9 @@ export function createEditor(parent: HTMLElement, hooks: EditorHooks): EditorCon
     forget: (name) => void states.delete(name),
     forgetAll: () => states.clear(),
     focus: () => view.focus(),
-    setWrap(on) {
-      view.dispatch({ effects: wrapCompartment.reconfigure(on ? EditorView.lineWrapping : []) });
+    configure(next) {
+      options = next;
+      applyOptions();
     },
     edit(changes: readonly TextChange[]) {
       view.dispatch({ changes: changes.map((c) => ({ from: c.from, to: c.to, insert: c.insert })), userEvent: 'input' });
@@ -184,6 +261,9 @@ export function createEditor(parent: HTMLElement, hooks: EditorHooks): EditorCon
     },
     setSemantic(data, legend) {
       if (!current) return;
+      // nothing new: leave the decorations (and the layout) alone
+      if (lastSemantic.file === current && sameNumbers(lastSemantic.data, data)) return;
+      lastSemantic = { file: current, data };
       view.dispatch({ effects: setSemantic.of(semanticDecorations(view.state.doc, data, legend, hooks.classes.semantic)) });
     },
     setDiagnostics(list) {

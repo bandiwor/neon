@@ -1,4 +1,5 @@
-import type { CompletionContext, CompletionResult } from '@codemirror/autocomplete';
+import type { Completion, CompletionContext, CompletionResult } from '@codemirror/autocomplete';
+import type { EditorView } from '@codemirror/view';
 import type { Hover } from '@/core/lsp/types';
 import { offsetToPosition, positionToOffset } from './positions';
 import type { EditorHooks } from './createEditor';
@@ -9,6 +10,24 @@ const KIND = {
 } as const satisfies Record<number, string>;
 
 const WORD = /[A-Za-z_\u0080-\uffff][A-Za-z0-9_\u0080-\uffff]*/;
+
+/** What a function's detail says about its arguments: `name(a, b) -> T` has some, `name() -> T` has none. */
+function takesArguments(label: string, detail: string): boolean {
+  if (!detail.startsWith(`${label}(`)) return true;
+  const inside = /^[^(]*\(([^)]*)\)/.exec(detail)?.[1] ?? '';
+  return inside.replace(/^\s*self\s*(,|$)/, '').trim() !== '';
+}
+
+/** Completing a function writes the call too: `name(` with the caret inside, or `name()` with it after. */
+function callApply(label: string, detail: string): (view: EditorView, completion: Completion, from: number, to: number) => void {
+  return (view: EditorView, _completion: Completion, from: number, to: number) => {
+    const open = view.state.sliceDoc(to, to + 1) === '(';
+    const inside = takesArguments(label, detail);
+    const insert = open ? label : `${label}()`;
+    const caret = from + label.length + (open ? 0 : inside ? 1 : 2);
+    view.dispatch({ changes: { from, to, insert }, selection: { anchor: open ? from + label.length : caret }, userEvent: 'input.complete' });
+  };
+}
 
 export function completionSource(hooks: EditorHooks, file: () => string | null) {
   return async (ctx: CompletionContext): Promise<CompletionResult | null> => {
@@ -33,6 +52,7 @@ export function completionSource(hooks: EditorHooks, file: () => string | null) 
         const kind = it.kind === undefined ? undefined : (KIND as Readonly<Record<number, string>>)[it.kind];
         return {
           label: it.label,
+          ...(kind === 'function' || kind === 'method' ? { apply: callApply(it.label, detail) } : {}),
           ...(detail && detail.length < 36 ? { detail } : {}),
           ...(detail && detail.length >= 36 ? { info: detail } : {}),
           type: kind ?? 'text',

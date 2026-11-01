@@ -29,6 +29,11 @@ Commands:
 Options:
   --no-opt            disable IR optimizations (folding, DCE, inlining)
   --inline / --no-inline  force IR inlining on or off
+  --no-fold, --no-dce, --no-simplify, --no-licm, --no-rotate, --no-unroll
+                      switch off one IR pass (constant folding, dead code, simplification,
+                      loop-invariant motion, loop rotation, loop unrolling)
+  --inline-threshold <n>  inline callees of at most n instructions (default 30)
+  --max-regs <n>      stop inlining into a function that has n registers (default 160)
   --no-peephole       disable the bytecode peephole optimizer
   -j, --threads <n>   compiler threads (0 = all cores, 1 = none; default: NEON_THREADS or all cores)
   --gc-limit <size>   cap the heap (e.g. 512k, 64m); exceeding it traps
@@ -131,6 +136,26 @@ fn parse_args(args: &[String]) -> Parsed {
             "--inline" => inline = Some(true),
             "--no-inline" => inline = Some(false),
             "--no-peephole" => opts.compile.peephole = false,
+            "--no-fold" => opts.opt.fold = false,
+            "--no-dce" => opts.opt.dce = false,
+            "--no-simplify" => opts.opt.simplify = false,
+            "--no-licm" => opts.opt.licm = false,
+            "--no-rotate" => opts.opt.rotate = false,
+            "--no-unroll" => opts.opt.unroll = false,
+            "--inline-threshold" => {
+                match value("--inline-threshold")
+                    .and_then(|v| v.parse::<usize>().map_err(|_| format!("bad count `{v}`")))
+                {
+                    Ok(n) => opts.opt.inline_threshold = n,
+                    Err(e) => return usage(e),
+                }
+            }
+            "--max-regs" => {
+                match value("--max-regs").and_then(|v| v.parse::<usize>().map_err(|_| format!("bad count `{v}`"))) {
+                    Ok(n) => opts.opt.max_regs = n,
+                    Err(e) => return usage(e),
+                }
+            }
             "-j" | "--threads" => match value("--threads")
                 .and_then(|v| v.parse::<usize>().map_err(|_| format!("bad thread count `{v}`")))
             {
@@ -591,6 +616,24 @@ mod tests {
         let (code, out, _) = go(&["disasm", "--no-opt", "p.neon"], &files, "");
         assert_eq!(code, 0);
         assert!(out.contains("== f") && out.contains("ret"), "{out}");
+    }
+
+    #[test]
+    fn single_passes_can_be_switched_off() {
+        let files = [("p.neon", "fn f(x: i64) -> i64 { x + 1 }\nprintln(f(2) + 3 * 4);")];
+        let (_, full, _) = go(&["ir", "p.neon"], &files, "");
+        let (_, none, _) = go(&["ir", "--no-opt", "p.neon"], &files, "");
+        for flag in ["--no-fold", "--no-dce", "--no-simplify", "--no-licm", "--no-rotate", "--no-unroll", "--no-inline"]
+        {
+            let (code, out, err) = go(&["run", flag, "p.neon"], &files, "");
+            assert_eq!((code, out.as_str()), (0, "15\n"), "{flag}: {err}");
+        }
+        let (_, no_fold, _) = go(&["ir", "--no-fold", "p.neon"], &files, "");
+        assert_ne!(no_fold, full);
+        assert_ne!(full, none);
+        let (code, out, _) = go(&["run", "--inline-threshold", "0", "--max-regs", "8", "p.neon"], &files, "");
+        assert_eq!((code, out.as_str()), (0, "15\n"));
+        assert_eq!(go(&["run", "--inline-threshold", "many", "p.neon"], &files, "").0, EXIT_USAGE);
     }
 
     #[test]

@@ -4,51 +4,28 @@
   display: flex;
   align-items: center;
   gap: 6px;
-  padding: 0 10px 0 12px;
+  padding: 0 10px;
   background: var(--bg);
 
   @include phone {
     padding: 0 6px;
     gap: 2px;
   }
-
-  // on narrow screens the buttons keep only their icons (the run button keeps its label)
-  @include narrow {
-    :global(button:not(:first-child)) span {
-      display: none;
-    }
-  }
-}
-
-.brand {
-  display: flex;
-  align-items: center;
-  gap: 8px;
-  margin-right: 10px;
-  font-weight: 650;
-  font-size: 15px;
-  letter-spacing: 0.01em;
-  color: var(--text);
-  text-decoration: none;
-
-  img {
-    border-radius: 5px;
-    display: block;
-  }
-
-  @include phone {
-    span {
-      display: none;
-    }
-  }
 }
 
 .group {
   display: flex;
   align-items: center;
-  gap: 4px;
+  gap: 2px;
+}
+
+.divider {
+  width: 1px;
+  height: 18px;
+  margin: 0 6px;
+  background: var(--line);
 
   @include phone {
-    gap: 0;
+    margin: 0 2px;
   }
 }

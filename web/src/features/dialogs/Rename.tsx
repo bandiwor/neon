@@ -30,7 +30,7 @@ export function RenameDialog({ placeholder }: { readonly placeholder: string }):
           if (valid) void commitRename(name);
         }}
       >
-        <Field label={t('rename.new_name')} hint={t('rename.hint')}>
+        <Field label={t('rename.new_name')}>
           <FocusInput value={name} onInput={(e) => setName(e.currentTarget.value)} spellcheck={false} />
         </Field>
       </form>

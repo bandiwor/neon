@@ -23,7 +23,7 @@
 .host {
   :global(.cm-scroller) {
     @include code-font;
-    line-height: 1.55;
+    line-height: var(--code-line, 1.55);
   }
 
   :global(.cm-content) {
