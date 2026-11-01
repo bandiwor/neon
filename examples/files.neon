@@ -1,0 +1,36 @@
+// Files with the `fs` module: write, append, read back, list and clean up.
+// `neon run examples/files.neon` works in a scratch directory of its own.
+
+import "fs" as fs;
+import "sys" as sys;
+
+fn show(what: string, r: Result<(), string>) {
+    match r {
+        Result::Ok(_) => println(f"{what}: ok"),
+        Result::Err(e) => println(f"{what}: failed, {e}"),
+    }
+}
+
+fn main() {
+    let dir = "files-demo";
+    show("create the directory", fs::create_dir_all(f"{dir}/notes"));
+    show("write", fs::write_lines(f"{dir}/notes/todo.txt", ["buy milk", "write Neon", "sleep"]));
+    show(
+        "append",
+        fs::append_file(f"{dir}/notes/todo.txt", "-- done on " + sys::platform() + "\n")
+    );
+    match fs::read_lines(f"{dir}/notes/todo.txt") {
+        Result::Ok(lines) => {
+            for i in 0..lines.len() {
+                println(f"{i + 1}. {lines[i]}");
+            }
+        },
+        Result::Err(e) => println(e),
+    }
+    println(fs::list_dir(dir));
+    println(fs::read_file(f"{dir}/missing.txt"));
+    show("remove the file", fs::remove(f"{dir}/notes/todo.txt"));
+    show("remove the directory", fs::remove(f"{dir}/notes"));
+    show("remove the directory", fs::remove(dir));
+    println(fs::exists(dir));
+}

@@ -1,0 +1,20 @@
+// `flatten` peels every layer of a nested Option; `sequence` turns an array of options into an option of an array.
+
+fn parse(s: string) -> Option<i64> {
+    s.try_parse_i64().ok()
+}
+
+fn main() {
+    let deep: Option<Option<Option<i64>>> = Option::Some(Option::Some(Option::Some(7)));
+    println(deep.flatten());
+    let hollow: Option<Option<Option<i64>>> = Option::Some(Option::None);
+    println(hollow.flatten());
+
+    // all of them parse, or none
+    println(["1", "2", "3"].map(|s| => parse(s)).sequence());
+    println(["1", "x", "3"].map(|s| => parse(s)).sequence());
+    // keep what parses
+    println(["1", "x", "3"].map(|s| => parse(s)).flatten());
+    // an array of arrays
+    println([[1, 2], [3], []].flatten());
+}

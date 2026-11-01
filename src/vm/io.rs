@@ -451,7 +451,8 @@ impl<R: BufRead, W: Write> VmIo for StreamIo<R, W> {
     }
 
     fn term_is_tty(&self) -> bool {
-        self.term.is_tty()
+        // the browser draws a screen of its own
+        self.files.is_some() || self.term.is_tty()
     }
 
     fn print(&mut self, s: &str) {

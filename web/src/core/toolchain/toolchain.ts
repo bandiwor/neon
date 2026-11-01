@@ -14,7 +14,7 @@ export interface RunRequest {
   readonly files: Files;
   readonly entry: string;
   readonly settings: Settings;
-  /** The lines of input the program may read, newline-terminated. */
+  /** What the program may read: lines (newline-terminated) and keys (the bytes a terminal sends). */
   readonly answers: string;
 }
 
@@ -25,7 +25,7 @@ export interface RunReport extends CliReply {
   readonly crashed?: boolean;
 }
 
-const EMPTY: CliReply = { code: -1, stdout: '', stderr: '', needsInput: false };
+const EMPTY: CliReply = { code: -1, stdout: '', stderr: '', needsInput: false, needsKey: false };
 
 /**
  * Runs the program. If it wants more input than `answers` holds it stops with `needsInput`, so the page
@@ -45,6 +45,7 @@ export async function runProgram(request: RunRequest): Promise<RunReport> {
       files: request.files,
       stdin: request.answers,
       interactive: true,
+      exact: true,
     });
     const winner = await Promise.race([reply, timeout]);
     if (winner === 'timeout') {

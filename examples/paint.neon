@@ -273,8 +273,10 @@ impl Editor {
         }
         let (px, py) = self.pos;
         rows[py][px] = if self.blink { '@' } else { 'o' };
-        let edge = "+" + (0..W).map(|i| => "-").join("") + "+";
-        println(edge + if fancy { "\x1b[K" } else { "" });
+        // when redrawing in place, every line ends by wiping what the last frame left on it
+        let eol = if fancy { "\x1b[K" } else { "" };
+        let edge = "+" + (0..W).map(|i| => "-").join("") + "+" + eol;
+        println(edge);
         for row in rows {
             println("|" + row.iter().map(|c| => f"{c}").join("") + "|");
         }
@@ -282,12 +284,13 @@ impl Editor {
         let covered = (0..H).map(|y| => (0..W).filter(|x| => covers(b, (x, y))).count()).sum();
         let pen = if self.pen { "  pen DOWN" } else { "" };
         println(
-            f"pos ({px}, {py})  tool {self.tool_name()}  size {self.size}  color {palette(self.color)}  brush covers {covered}  stamps {self.ops.len()}{pen}"
+            f"pos ({px}, {py})  tool {self.tool_name()}  size {self.size}  color {palette(self.color)}  brush covers {covered}  stamps {self.ops.len()}{pen}{eol}"
         );
         println(
             "arrows move | space stamp | p pen | t tool | +/- size | 1-5 color | u undo | x clear | o save | q quit"
+                + eol
         );
-        println(self.message);
+        println(self.message + eol);
         if fancy {
             term::clear_below();
         }

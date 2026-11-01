@@ -11,7 +11,7 @@
 //! | op | request fields | reply |
 //! |---|---|---|
 //! | `version` | | `{version}` |
-//! | `cli` | `args`, `files` (`{path: text}`), `stdin`, `interactive` | `{code, stdout, stderr, needsInput}` |
+//! | `cli` | `args`, `files` (`{path: text}`), `stdin`, `interactive`, `exact` | `{code, stdout, stderr, needsInput, needsKey}` |
 //! | `lsp` | `message` (one JSON-RPC message as text) | `{messages: [...]}` |
 //! | `repl_eval` | `cell`, `stdin` (answers to `input()`, one per line) | `{kind, text, needsInput}` |
 //! | `repl_reset` / `repl_cells` | | `{cells}` |
@@ -29,6 +29,8 @@ use std::collections::VecDeque;
 use std::io::{self, BufRead, Read};
 use std::rc::Rc;
 
+use neon::cli::Sandbox;
+use neon::host::MemFiles;
 use neon::lsp::json::Json;
 use neon::lsp::Server;
 use neon::repl::{self, highlight::Class, ReplConfig, Session};
@@ -138,6 +140,11 @@ impl Lines {
         }
         Lines { lines, current: Vec::new(), pos: 0, interactive, asked }
     }
+
+    /// The text as it is, byte for byte: keys are not lines (an Enter is a `\r` of its own).
+    fn exact(text: &str, interactive: bool, asked: Rc<std::cell::Cell<bool>>) -> Lines {
+        Lines { lines: VecDeque::new(), current: text.as_bytes().to_vec(), pos: 0, interactive, asked }
+    }
 }
 
 impl Read for Lines {
@@ -197,14 +204,31 @@ fn cli(req: &Json) -> String {
     let vfs = memory_fs(req);
     let asked = Rc::new(std::cell::Cell::new(false));
     let interactive = req.get("interactive").and_then(Json::as_bool).unwrap_or(false);
-    let stdin = Lines::new(str_field(req, "stdin"), interactive, asked.clone());
+    let exact = req.get("exact").and_then(Json::as_bool).unwrap_or(false);
+    let stdin = if exact {
+        Lines::exact(str_field(req, "stdin"), interactive, asked.clone())
+    } else {
+        Lines::new(str_field(req, "stdin"), interactive, asked.clone())
+    };
+    // the program's files are the project's; what it writes lasts for the run
+    let mut files = MemFiles::new();
+    if let Some(Json::Obj(all)) = req.get("files") {
+        for (path, text) in all {
+            if let Some(t) = text.as_str() {
+                files.insert(path, t);
+            }
+        }
+    }
+    let sandbox = Sandbox { files, waiting_for_key: Rc::new(std::cell::Cell::new(false)) };
+    let wants_key = sandbox.waiting_for_key.clone();
     let mut stdout: Vec<u8> = Vec::new();
     let mut stderr: Vec<u8> = Vec::new();
     // one thread: the engine would otherwise ask the platform how many it may use
     neon::par::set_threads(1);
-    let code = neon::cli::main_with(&args, &vfs, stdin, &mut stdout, &mut stderr, false);
+    let code = neon::cli::main_in(&args, &vfs, stdin, &mut stdout, &mut stderr, false, Some(sandbox));
     let mut err_text = String::from_utf8_lossy(&stderr).into_owned();
-    let needs_input = asked.get();
+    // a run that ended well did not need what it peeked at (the rest of an escape sequence)
+    let needs_input = asked.get() && code != 0;
     if needs_input {
         err_text = err_text.replace(NEEDS_INPUT, "").replace("\n\n", "\n");
     }
@@ -213,6 +237,7 @@ fn cli(req: &Json) -> String {
         ("stdout", Json::from(String::from_utf8_lossy(&stdout).into_owned())),
         ("stderr", Json::from(err_text)),
         ("needsInput", Json::from(needs_input)),
+        ("needsKey", Json::from(needs_input && wants_key.get())),
     ])
     .to_string()
 }
@@ -404,6 +429,28 @@ mod tests {
         let r = call(&req("one\\n", false));
         assert_eq!(r.get("needsInput").and_then(Json::as_bool), Some(false));
         assert!(s(&r, "stdout").ends_with("Option::None\n"), "{}", s(&r, "stdout"));
+    }
+
+    #[test]
+    fn keys_are_bytes_of_the_input_and_the_host_is_asked_for_the_next_one() {
+        let prog = "import \\\"term\\\" as term;\\nimport \\\"fs\\\" as fs;\\nfn main() { println(fs::read_file(\\\"a.txt\\\")); loop { match term::read_key() { Option::Some(k) => println(k), Option::None => break } } }";
+        let req = |stdin: &str| {
+            format!(
+                r#"{{"op":"cli","args":["run","m.neon"],"files":{{"m.neon":"{prog}","a.txt":"hi"}},"stdin":"{stdin}","interactive":true,"exact":true}}"#
+            )
+        };
+        let r = call(&req("a\\u001b[A"));
+        assert_eq!(s(&r, "stdout"), "Result::Ok(\"hi\")\na\nup\n");
+        assert_eq!(r.get("needsInput").and_then(Json::as_bool), Some(true));
+        assert_eq!(r.get("needsKey").and_then(Json::as_bool), Some(true));
+        // a key that is only the start of an escape sequence is an Esc: the run asked, but it is not stuck
+        let r = call(&req("\\u001b"));
+        assert_eq!(s(&r, "stdout"), "Result::Ok(\"hi\")\nesc\n");
+        // a program that asks for a line is not asking for a key
+        let line = r#"{"op":"cli","args":["run","m.neon"],"files":{"m.neon":"fn main() { println(read_line()); }"},"stdin":"","interactive":true,"exact":true}"#;
+        let r = call(line);
+        assert_eq!(r.get("needsInput").and_then(Json::as_bool), Some(true));
+        assert_eq!(r.get("needsKey").and_then(Json::as_bool), Some(false));
     }
 
     #[test]

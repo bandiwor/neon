@@ -10,6 +10,8 @@ export interface CliReply {
   readonly stderr: string;
   /** The program asked for more input than it was given. */
   readonly needsInput: boolean;
+  /** What it asked for was a key (`term.read_key()`), not a line. */
+  readonly needsKey: boolean;
 }
 
 export interface ReplEvalReply {
@@ -30,7 +32,14 @@ export interface ReplCandidate {
 export interface OpTable {
   version: { req: Record<never, never>; reply: { readonly version: string } };
   cli: {
-    req: { readonly args: readonly string[]; readonly files: Files; readonly stdin: string; readonly interactive: boolean };
+    req: {
+      readonly args: readonly string[];
+      readonly files: Files;
+      readonly stdin: string;
+      readonly interactive: boolean;
+      /** `stdin` is the program's input byte for byte (keys), not lines. */
+      readonly exact?: boolean;
+    };
     reply: CliReply;
   };
   /** One JSON-RPC message in; the replies and notifications out (already parsed). */

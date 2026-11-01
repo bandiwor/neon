@@ -26,5 +26,8 @@
   { "id": "expr", "group": "Программы", "title": "Дерево выражений", "description": "Рекурсивные enum и вычисление", "source": "tests/corpus/sample_expr_tree.neon" },
   { "id": "matrix", "group": "Программы", "title": "Матрицы", "description": "Вложенные массивы", "source": "tests/corpus/sample_matrix.neon" },
   { "id": "scene", "group": "Программы", "title": "Растеризатор сцены", "description": "Компактные enum, кортежи и ленивые цепочки рисуют сцену", "source": "examples/scene.neon" },
-  { "id": "paint", "group": "Программы", "title": "Рисовалка", "description": "Интерактивная: вводите клавиши w a s d, пробел, t, c, q", "source": "examples/paint.neon", "interactive": true }
+  { "id": "nested", "group": "Данные", "title": "Вложенные Option", "description": "flatten и sequence", "source": "examples/nested_options.neon" },
+  { "id": "files", "group": "Программы", "title": "Файлы", "description": "Модуль fs: запись, чтение, каталоги", "source": "examples/files.neon" },
+  { "id": "keys", "group": "Программы", "title": "Клавиши", "description": "Модуль term: нажатия без Enter", "source": "examples/keys.neon", "interactive": true },
+  { "id": "paint", "group": "Программы", "title": "Рисовалка", "description": "Реагирует на каждую клавишу: стрелки, пробел, p, t, 1-5, o, q", "source": "examples/paint.neon", "interactive": true }
 ]

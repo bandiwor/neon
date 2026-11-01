@@ -1,11 +1,12 @@
 import type { JSX } from 'preact';
 import { useEffect, useMemo, useRef, useState } from 'preact/hooks';
-import { jumpToPlace, submitInput } from '@/app/actions';
+import { jumpToPlace, submitInput, submitKey } from '@/app/actions';
 import { t } from '@/core/i18n';
 import { runtime, settings } from '@/core/state/stores';
 import type { RunOutcome } from '@/core/state/types';
 import { useStore } from '@/core/state/useStore';
 import { parseAnsi, type AnsiRun } from '@/core/util/ansi';
+import { terminalKey } from '@/core/util/keys';
 import { Button, cx } from '@/ui';
 import u from '@/styles/utils.module.scss';
 import s from './Console.module.scss';
@@ -91,10 +92,11 @@ export function Console(): JSX.Element {
   const [line, setLine] = useState('');
   const box = useRef<HTMLDivElement>(null);
   const input = useRef<HTMLInputElement>(null);
+  const keys = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
     if (box.current) box.current.scrollTop = box.current.scrollHeight;
-    if (run?.needsInput) input.current?.focus();
+    if (run?.needsInput) (run.needsKey ? keys.current : input.current)?.focus();
   }, [run]);
 
   return (
@@ -121,7 +123,26 @@ export function Console(): JSX.Element {
           </p>
         )}
         {run?.stderr && <ErrorText text={run.stderr} />}
-        {run?.needsInput && !running && (
+        {run?.needsInput && run.needsKey && !running && (
+          <div
+            ref={keys}
+            class={s.keys}
+            tabIndex={0}
+            role="textbox"
+            aria-label={t('console.press_key')}
+            onKeyDown={(e) => {
+              const key = terminalKey(e);
+              if (!key) return;
+              e.preventDefault();
+              e.stopPropagation();
+              void submitKey(key);
+            }}
+          >
+            <span class={s.prompt}>⌨</span>
+            <span class={u.muted}>{t('console.press_key')}</span>
+          </div>
+        )}
+        {run?.needsInput && !run.needsKey && !running && (
           <form
             class={s.inputRow}
             onSubmit={(e) => {

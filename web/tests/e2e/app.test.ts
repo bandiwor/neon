@@ -137,6 +137,51 @@ describe.skipIf(!ready)('the site in a browser', () => {
     await page.close();
   });
 
+  it('runs a program that reacts to every key, with no Enter', async () => {
+    const { page, errors } = await open();
+    await page.locator('.cm-content').click();
+    await page.keyboard.press('Control+A');
+    await page.keyboard.press('Delete');
+    await page.keyboard.insertText(
+      'import "term" as term;\nfn main() {\n    loop {\n        match term::read_key() {\n            Option::Some(k) => {\n                println(k);\n                if k == "q" { break; }\n            },\n            Option::None => break,\n        }\n    }\n}\n',
+    );
+    await page.getByRole('button', { name: ru['actions.run'] }).first().click();
+    const keys = page.getByRole('textbox', { name: ru['console.press_key'] });
+    await keys.waitFor({ timeout: 30_000 });
+    await keys.press('a');
+    await keys.press('ArrowUp');
+    await keys.press('Control+c');
+    await keys.press('q');
+    await page.getByText('ctrl+c').waitFor({ timeout: 30_000 });
+    expect(await page.locator('pre').first().innerText()).toBe('a\nup\nctrl+c\nq\n');
+    await keys.waitFor({ state: 'detached' });
+    expect(errors).toEqual([]);
+    await page.close();
+  });
+
+  it('redraws the paint example in place as keys arrive', async () => {
+    const { page, errors } = await open();
+    // the example list is in the second tab of the sidebar
+    await page.getByRole('tab').nth(1).click();
+    await page.getByText('Рисовалка').click();
+    await page.getByRole('button', { name: ru['actions.run'] }).first().click();
+    const keys = page.getByRole('textbox', { name: ru['console.press_key'] });
+    await keys.waitFor({ timeout: 30_000 });
+    const frame = async () => page.locator('pre').first().innerText();
+    expect(await frame()).toContain('pos (24, 9)');
+    await keys.press('ArrowRight');
+    await page.getByText('pos (25, 9)').waitFor({ timeout: 30_000 });
+    await keys.press('ArrowDown');
+    await keys.press(' ');
+    await page.getByText('stamps 1').waitFor({ timeout: 30_000 });
+    // one frame on the screen, not a pile of them
+    expect((await frame()).match(/arrows move/g)?.length).toBe(1);
+    await keys.press('q');
+    await page.getByText('bye').waitFor({ timeout: 30_000 });
+    expect(errors).toEqual([]);
+    await page.close();
+  });
+
   it('fits a phone', async () => {
     const { page } = await open(390, 800);
     const overflow = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);

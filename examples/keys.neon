@@ -1,0 +1,24 @@
+// Keys without Enter: press keys and see their names; `q` or Ctrl+C quits.
+// `neon run examples/keys.neon`; keys can also be piped in: printf 'ab\033[A q' | neon run examples/keys.neon
+
+import "term" as term;
+
+fn main() {
+    term::raw(true);
+    println("press keys (q quits)");
+    var count = 0;
+    loop {
+        match term::read_key() {
+            Option::Some(key) => {
+                count += 1;
+                println(f"{count}: {key}");
+                if key == "q" || key == "ctrl+c" {
+                    break;
+                }
+            },
+            Option::None => break,
+        }
+    }
+    term::raw(false);
+    println("bye");
+}

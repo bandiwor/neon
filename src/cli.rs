@@ -357,7 +357,7 @@ pub fn main_in<R: BufRead, W: Write, E: Write>(
         return run_fmt(&args, vfs, stdin, &mut stdout, stderr);
     }
     if args.command == Command::Repl {
-        let cfg = ReplConfig { options: args.opts, vm: args.vm, prompt: interactive, color: false };
+        let cfg = ReplConfig { options: args.opts, vm: args.vm, prompt: interactive, color: false, host: true };
         let mut stdin = stdin;
         // at a terminal the prompt is a line editor with colors, history, completion and a live preview
         if interactive && repl::interactive::wanted() {

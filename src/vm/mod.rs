@@ -10,7 +10,7 @@ mod io;
 
 use std::fmt;
 
-pub use io::{BufferIo, StreamIo, VmIo};
+pub use io::{BufferIo, StreamIo, VmIo, NO_FS};
 
 use crate::builtin::Builtin;
 use crate::bytecode::opcode::{CmpKind, FusedKind, Opcode, EXT_ESCAPE};

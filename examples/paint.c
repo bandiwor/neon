@@ -287,9 +287,9 @@ static const struct { const char *s; size_t n; } k_lit[77] = {
     {"", 0},
     {"\033[\?25h\033[\?1049l", 14},
     {"bye", 3},
+    {"\033[K", 3},
     {"+", 1},
     {"-", 1},
-    {"\033[K", 3},
     {"|", 1},
     {"  pen DOWN", 10},
     {"pos (", 5},
@@ -513,12 +513,12 @@ B14:
 }
 
 static unit n_draw(Obj *v0, bool v1) {
-    Obj *v6 = NULL, *v21 = NULL, *v24 = NULL, *v32 = NULL, *v41 = NULL, *v42 = NULL, *v45 = NULL, *v46 = NULL, *v52 = NULL, *v55 = NULL, *v56 = NULL, *v58 = NULL, *v60 = NULL, *v70 = NULL, *v72 = NULL, *v74 = NULL, *v82 = NULL, *v85 = NULL, *v110 = NULL, *v116 = NULL, *v121 = NULL, *v122 = NULL, *v123 = NULL, *v124 = NULL, *v125 = NULL, *v126 = NULL, *v127 = NULL, *v128 = NULL, *v129 = NULL, *v130 = NULL, *v131 = NULL, *v132 = NULL, *v133 = NULL, *v135 = NULL, *v136 = NULL, *v137 = NULL, *v138 = NULL, *v141 = NULL, *v143 = NULL, *v147 = NULL, *v149 = NULL, *v155 = NULL, *v157 = NULL;
-    bool v13 = 0, v18 = 0, v20 = 0, v22 = 0, v38 = 0, v49 = 0, v69 = 0, v77 = 0, v98 = 0, v107 = 0, v111 = 0, v117 = 0;
-    chr v25 = 0, v37 = 0, v79 = 0;
-    i64 v12 = 0, v17 = 0, v33 = 0, v35 = 0, v47 = 0, v66 = 0, v68 = 0, v75 = 0, v78 = 0, v94 = 0, v96 = 0, v103 = 0, v105 = 0, v134 = 0, v139 = 0, v150 = 0;
-    u64 v8 = 0, v140 = 0;
-    FRAME(&v0, &v6, &v21, &v24, &v32, &v41, &v42, &v45, &v46, &v52, &v55, &v56, &v58, &v60, &v70, &v72, &v74, &v82, &v85, &v110, &v116, &v121, &v122, &v123, &v124, &v125, &v126, &v127, &v128, &v129, &v130, &v131, &v132, &v133, &v135, &v136, &v137, &v138, &v141, &v143, &v147, &v149, &v155, &v157);
+    Obj *v6 = NULL, *v21 = NULL, *v24 = NULL, *v32 = NULL, *v41 = NULL, *v42 = NULL, *v46 = NULL, *v49 = NULL, *v50 = NULL, *v56 = NULL, *v59 = NULL, *v60 = NULL, *v62 = NULL, *v63 = NULL, *v71 = NULL, *v73 = NULL, *v75 = NULL, *v83 = NULL, *v86 = NULL, *v111 = NULL, *v117 = NULL, *v122 = NULL, *v123 = NULL, *v124 = NULL, *v125 = NULL, *v126 = NULL, *v127 = NULL, *v128 = NULL, *v129 = NULL, *v130 = NULL, *v131 = NULL, *v132 = NULL, *v133 = NULL, *v134 = NULL, *v136 = NULL, *v137 = NULL, *v138 = NULL, *v139 = NULL, *v142 = NULL, *v144 = NULL, *v148 = NULL, *v150 = NULL, *v157 = NULL, *v160 = NULL;
+    bool v13 = 0, v18 = 0, v20 = 0, v22 = 0, v38 = 0, v53 = 0, v70 = 0, v78 = 0, v99 = 0, v108 = 0, v112 = 0, v118 = 0;
+    chr v25 = 0, v37 = 0, v80 = 0;
+    i64 v12 = 0, v17 = 0, v33 = 0, v35 = 0, v51 = 0, v67 = 0, v69 = 0, v76 = 0, v79 = 0, v95 = 0, v97 = 0, v104 = 0, v106 = 0, v135 = 0, v140 = 0, v151 = 0;
+    u64 v8 = 0, v141 = 0;
+    FRAME(&v0, &v6, &v21, &v24, &v32, &v41, &v42, &v46, &v49, &v50, &v56, &v59, &v60, &v62, &v63, &v71, &v73, &v75, &v83, &v86, &v111, &v117, &v122, &v123, &v124, &v125, &v126, &v127, &v128, &v129, &v130, &v131, &v132, &v133, &v134, &v136, &v137, &v138, &v139, &v142, &v144, &v148, &v150, &v157, &v160);
     if (!(v1)) goto B2;
 
     n_move_to(0, 0);
@@ -567,155 +567,158 @@ B7:
 B12:
     v41 = W2O(arr_get(v6, (i64)v35));
     arr_set(v41, (i64)v33, (W)v37);
+    if (!(v1)) goto B16;
+
     v42 = kstr(5);
-    v45 = kstr(2);
-    v46 = arr_new(0, 1);
-    v47 = 0;
-    v49 = 1;
-    v52 = kstr(6);
 
 B15:
-    arr_push(v46, O2W(v52));
-    v47 = add_i64(v47, 1);
-    v49 = v47 < 48;
-    if (v49) goto B15;
+    v46 = kstr(6);
+    v49 = kstr(2);
+    v50 = arr_new(0, 1);
+    v51 = 0;
+    v53 = 1;
+    v56 = kstr(7);
 
-    v55 = str_join(v46, v45);
-    v56 = str_cat(v42, v55);
-    v58 = str_cat(v56, v42);
-    if (!(v1)) goto B18;
+B18:
+    arr_push(v50, O2W(v56));
+    v51 = add_i64(v51, 1);
+    v53 = v51 < 48;
+    if (v53) goto B18;
 
-    v60 = kstr(7);
+    v59 = str_join(v50, v49);
+    v60 = str_cat(v46, v59);
+    v62 = str_cat(v60, v46);
+    v63 = str_cat(v62, v42);
+    out_str(v63, 1);
+    v67 = 0;
+    v69 = (i64)(ARR(v6)->len);
+    v70 = v67 < v69;
+    if (!(v70)) goto B20;
 
-B17:
-    out_str(v58, 0);
-    out_str(v60, 1);
-    v66 = 0;
-    v68 = (i64)(ARR(v6)->len);
-    v69 = v66 < v68;
-    if (!(v69)) goto B20;
-
-    v72 = kstr(8);
+    v73 = kstr(8);
 
 B19:
-    v70 = W2O(arr_get(v6, (i64)v66));
-    v74 = arr_new(0, 1);
-    v75 = 0;
-    v78 = (i64)(ARR(v70)->len);
-    v77 = v75 < v78;
-    if (!(v77)) goto B21;
+    v71 = W2O(arr_get(v6, (i64)v67));
+    v75 = arr_new(0, 1);
+    v76 = 0;
+    v79 = (i64)(ARR(v71)->len);
+    v78 = v76 < v79;
+    if (!(v78)) goto B21;
 
 B22:
-    v79 = (u32)(arr_get(v70, (i64)v75));
+    v80 = (u32)(arr_get(v71, (i64)v76));
     GC_POINT();
-    sb_cp(&rt_sb, v79);
-    v82 = sb_take();
-    arr_push(v74, O2W(v82));
-    v75 = add_i64(v75, 1);
-    v78 = (i64)(ARR(v70)->len);
-    v77 = v75 < v78;
-    if (v77) goto B22;
+    sb_cp(&rt_sb, v80);
+    v83 = sb_take();
+    arr_push(v75, O2W(v83));
+    v76 = add_i64(v76, 1);
+    v79 = (i64)(ARR(v71)->len);
+    v78 = v76 < v79;
+    if (v78) goto B22;
 
 B21:
-    v85 = str_join(v74, v45);
-    out_str(v72, 0);
-    out_str(v85, 0);
-    out_str(v72, 1);
-    v66 = add_i64(v66, 1);
-    v68 = (i64)(ARR(v6)->len);
-    v69 = v66 < v68;
-    if (v69) goto B19;
+    v86 = str_join(v75, v49);
+    out_str(v73, 0);
+    out_str(v86, 0);
+    out_str(v73, 1);
+    v67 = add_i64(v67, 1);
+    v69 = (i64)(ARR(v6)->len);
+    v70 = v67 < v69;
+    if (v70) goto B19;
 
 B20:
-    out_str(v58, 1);
-    v94 = 0;
-    v96 = 0;
-    v98 = 1;
+    out_str(v63, 1);
+    v95 = 0;
+    v97 = 0;
+    v99 = 1;
 
 B24:
-    v103 = 0;
-    v105 = 0;
-    v107 = 1;
+    v104 = 0;
+    v106 = 0;
+    v108 = 1;
 
 B26:
-    v110 = agg_new(0, 2, 0);
-    AGG(v110)->f[0] = (W)(i64)v105;
-    AGG(v110)->f[1] = (W)(i64)v96;
-    v111 = n_covers(v8, v110);
-    if (!(v111)) goto B27;
+    v111 = agg_new(0, 2, 0);
+    AGG(v111)->f[0] = (W)(i64)v106;
+    AGG(v111)->f[1] = (W)(i64)v97;
+    v112 = n_covers(v8, v111);
+    if (!(v112)) goto B27;
 
-    v103 = add_i64(v103, 1);
+    v104 = add_i64(v104, 1);
 
 B27:
-    v105 = add_i64(v105, 1);
-    v107 = v105 < 48;
-    if (v107) goto B26;
+    v106 = add_i64(v106, 1);
+    v108 = v106 < 48;
+    if (v108) goto B26;
 
-    v94 = add_i64(v94, v103);
-    v96 = add_i64(v96, 1);
-    v98 = v96 < 18;
-    if (v98) goto B24;
+    v95 = add_i64(v95, v104);
+    v97 = add_i64(v97, 1);
+    v99 = v97 < 18;
+    if (v99) goto B24;
 
-    v117 = (u8)(AGG(v0)->f[4]);
-    if (!(v117)) goto B31;
+    v118 = (u8)(AGG(v0)->f[4]);
+    if (!(v118)) goto B31;
 
-    v116 = kstr(9);
+    v117 = kstr(9);
 
 B30:
-    v121 = kstr(10);
+    v122 = kstr(10);
     GC_POINT();
     sb_i64(&rt_sb, v33);
-    v122 = sb_take();
-    v123 = str_cat(v121, v122);
-    v124 = kstr(11);
-    v125 = str_cat(v123, v124);
+    v123 = sb_take();
+    v124 = str_cat(v122, v123);
+    v125 = kstr(11);
+    v126 = str_cat(v124, v125);
     GC_POINT();
     sb_i64(&rt_sb, v35);
-    v126 = sb_take();
-    v127 = str_cat(v125, v126);
-    v128 = kstr(12);
-    v129 = str_cat(v127, v128);
-    v130 = n_tool_name(v0);
-    v131 = str_cat(v129, v130);
-    v132 = kstr(13);
-    v133 = str_cat(v131, v132);
-    v134 = (i64)(i64)(AGG(v0)->f[2]);
+    v127 = sb_take();
+    v128 = str_cat(v126, v127);
+    v129 = kstr(12);
+    v130 = str_cat(v128, v129);
+    v131 = n_tool_name(v0);
+    v132 = str_cat(v130, v131);
+    v133 = kstr(13);
+    v134 = str_cat(v132, v133);
+    v135 = (i64)(i64)(AGG(v0)->f[2]);
     GC_POINT();
-    sb_i64(&rt_sb, v134);
-    v135 = sb_take();
-    v136 = str_cat(v133, v135);
-    v137 = kstr(14);
-    v138 = str_cat(v136, v137);
-    v139 = (i64)(i64)(AGG(v0)->f[3]);
-    v140 = n_palette(v139);
-    v141 = n_to_string(v140);
-    v143 = kstr(15);
-    v147 = kstr(16);
-    v149 = W2O(AGG(v0)->f[7]);
-    v150 = (i64)(ARR(v149)->len);
-    out_str(v138, 0);
-    out_str(v141, 0);
-    out_str(v143, 0);
-    sb_i64(&rt_sb, v94);
+    sb_i64(&rt_sb, v135);
+    v136 = sb_take();
+    v137 = str_cat(v134, v136);
+    v138 = kstr(14);
+    v139 = str_cat(v137, v138);
+    v140 = (i64)(i64)(AGG(v0)->f[3]);
+    v141 = n_palette(v140);
+    v142 = n_to_string(v141);
+    v144 = kstr(15);
+    v148 = kstr(16);
+    v150 = W2O(AGG(v0)->f[7]);
+    v151 = (i64)(ARR(v150)->len);
+    out_str(v139, 0);
+    out_str(v142, 0);
+    out_str(v144, 0);
+    sb_i64(&rt_sb, v95);
     out_sb(0);
-    out_str(v147, 0);
-    sb_i64(&rt_sb, v150);
+    out_str(v148, 0);
+    sb_i64(&rt_sb, v151);
     out_sb(0);
-    out_str(v116, 1);
-    v155 = kstr(17);
-    out_str(v155, 1);
-    v157 = W2O(AGG(v0)->f[6]);
-    out_str(v157, 1);
+    out_str(v117, 0);
+    out_str(v42, 1);
+    v157 = kstr(17);
+    out_str(v157, 0);
+    out_str(v42, 1);
+    v160 = W2O(AGG(v0)->f[6]);
+    out_str(v160, 0);
+    out_str(v42, 1);
     if (v1) goto B32;
     goto B33;
 
 B31:
-    v116 = kstr(2);
+    v117 = kstr(2);
     goto B30;
 
-B18:
-    v60 = kstr(2);
-    goto B17;
+B16:
+    v42 = kstr(2);
+    goto B15;
 
 B13:
     v37 = 111u;
@@ -936,7 +939,7 @@ B39:
     v95 = str_eq(v1, v94);
     if (v95) goto B38;
 
-    v99 = kstr(5);
+    v99 = kstr(6);
     v100 = str_eq(v1, v99);
     if (!(v100)) goto B45;
 
@@ -957,7 +960,7 @@ B45:
     v104 = str_eq(v1, v103);
     if (v104) goto B44;
 
-    v111 = kstr(6);
+    v111 = kstr(7);
     v112 = str_eq(v1, v111);
     if (!(v112)) goto B49;
 

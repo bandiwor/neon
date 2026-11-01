@@ -65,6 +65,7 @@ const ru = {
   'console.timeout': 'Остановлено по времени ({s} с). Лимит можно изменить в настройках.',
   'console.crashed': 'Внутренняя ошибка компилятора',
   'console.waiting_input': 'Программа ждёт ввода',
+  'console.press_key': 'Нажимайте клавиши',
   'console.input_placeholder': 'Введите строку и нажмите Enter',
   'console.typed': 'Ввод',
   'console.truncated': 'Начало вывода скрыто: он слишком длинный.',

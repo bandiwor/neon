@@ -70,7 +70,7 @@ export interface UiState {
 }
 
 /** What the last run (or check) left in the console. */
-export interface RunOutcome extends Pick<CliReply, 'code' | 'stdout' | 'needsInput'> {
+export interface RunOutcome extends Pick<CliReply, 'code' | 'stdout' | 'needsInput' | 'needsKey'> {
   readonly stderr: string;
   readonly stats: string;
   readonly ms: number;
@@ -78,7 +78,7 @@ export interface RunOutcome extends Pick<CliReply, 'code' | 'stdout' | 'needsInp
   readonly aborted?: boolean;
   readonly crashed?: boolean;
   readonly check?: boolean;
-  /** The lines of input the program was given. */
+  /** The lines and keys the program was given, as the console shows them. */
   readonly inputs: readonly string[];
   readonly entry: string;
 }

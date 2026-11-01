@@ -40,6 +40,9 @@ pub struct ReplConfig {
     pub prompt: bool,
     /// Color the diagnostics (the terminal prompt sets it).
     pub color: bool,
+    /// Cells may use the machine's files, clock and environment (the terminal's prompt does; the browser
+    /// does not).
+    pub host: bool,
 }
 
 const HELP: &str = "\
@@ -176,6 +179,8 @@ struct ReplayIo<'a> {
     read_error: Option<String>,
     /// How many lines the program asked the user for (as opposed to replayed ones).
     live_reads: usize,
+    /// The standard modules reach the machine.
+    host: bool,
 }
 
 impl VmIo for ReplayIo<'_> {
@@ -214,6 +219,112 @@ impl VmIo for ReplayIo<'_> {
                 self.read_error = Some(e.to_string());
                 Err(e.to_string())
             }
+        }
+    }
+
+    fn env(&self, name: &str) -> Option<String> {
+        if self.host {
+            crate::host::env(name)
+        } else {
+            None
+        }
+    }
+
+    fn platform(&self) -> String {
+        if self.host {
+            crate::host::platform().to_string()
+        } else {
+            "unknown".to_string()
+        }
+    }
+
+    fn now_ms(&mut self) -> i64 {
+        if self.host {
+            crate::host::now_ms()
+        } else {
+            0
+        }
+    }
+
+    fn ticks_ms(&mut self) -> i64 {
+        if self.host {
+            crate::host::ticks_ms()
+        } else {
+            0
+        }
+    }
+
+    fn sleep_ms(&mut self, ms: u64) {
+        if self.host {
+            crate::host::sleep_ms(ms);
+        }
+    }
+
+    fn fs_read(&mut self, path: &str) -> Result<String, String> {
+        if self.host {
+            crate::host::fs_read(path)
+        } else {
+            Err(crate::vm::NO_FS.to_string())
+        }
+    }
+
+    fn fs_write(&mut self, path: &str, text: &str) -> Result<(), String> {
+        if self.host {
+            crate::host::fs_write(path, text)
+        } else {
+            Err(crate::vm::NO_FS.to_string())
+        }
+    }
+
+    fn fs_append(&mut self, path: &str, text: &str) -> Result<(), String> {
+        if self.host {
+            crate::host::fs_append(path, text)
+        } else {
+            Err(crate::vm::NO_FS.to_string())
+        }
+    }
+
+    fn fs_exists(&mut self, path: &str) -> bool {
+        self.host && crate::host::fs_exists(path)
+    }
+
+    fn fs_is_file(&mut self, path: &str) -> bool {
+        self.host && crate::host::fs_is_file(path)
+    }
+
+    fn fs_is_dir(&mut self, path: &str) -> bool {
+        self.host && crate::host::fs_is_dir(path)
+    }
+
+    fn fs_list(&mut self, path: &str) -> Result<Vec<String>, String> {
+        if self.host {
+            crate::host::fs_list(path)
+        } else {
+            Err(crate::vm::NO_FS.to_string())
+        }
+    }
+
+    fn fs_create_dir(&mut self, path: &str) -> Result<(), String> {
+        if self.host {
+            crate::host::fs_create_dir(path)
+        } else {
+            Err(crate::vm::NO_FS.to_string())
+        }
+    }
+
+    fn fs_remove(&mut self, path: &str) -> Result<(), String> {
+        if self.host {
+            crate::host::fs_remove(path)
+        } else {
+            Err(crate::vm::NO_FS.to_string())
+        }
+    }
+
+    fn fs_rename(&mut self, from: &str, to: &str) -> Result<(), String> {
+        if self.host {
+            crate::host::fs_rename(from, to)
+        } else {
+            Err(crate::vm::NO_FS.to_string())
         }
     }
 }
@@ -408,6 +519,7 @@ impl Session {
             output: String::new(),
             value_start: None,
             read_error: None,
+            host: cfg.host,
         };
         let report = vm::run(bc, &mut io, &cfg.vm);
         Ok(Ran {
