@@ -19,7 +19,8 @@ Commands:
   run <file>      compile and run a program (the default for `neon <file>`)
   check <file>    report errors without running
   disasm <file>   print the compiled bytecode (--annotate adds pseudo-code to every line)
-  c <file>        translate to one self-contained C file (stdout, or -o <out.c>)
+  c <file>        translate to C (stdout, or -o <out.c>); the file includes neon.h
+  runtime [dir]   write the C runtime (neon.h, neon.c) to a directory (default: .)
   ir <file>       print the (optimized) intermediate representation (--effects: and what each
                   function can do: const / pure / impure, traps, allocates, ...)
   repl            start an interactive session
@@ -67,6 +68,7 @@ enum Command {
     Repl,
     Lsp,
     Fmt,
+    Runtime,
 }
 
 #[derive(Debug)]
@@ -204,6 +206,7 @@ fn parse_args(args: &[String]) -> Parsed {
             "repl" if command.is_none() && file.is_none() => command = Some(Command::Repl),
             "lsp" if command.is_none() && file.is_none() => command = Some(Command::Lsp),
             "fmt" if command.is_none() && file.is_none() => command = Some(Command::Fmt),
+            "runtime" if command.is_none() && file.is_none() => command = Some(Command::Runtime),
 
             path if command == Some(Command::Fmt) => files.push(path.to_string()),
             path => {
@@ -219,7 +222,7 @@ fn parse_args(args: &[String]) -> Parsed {
     if let Some(on) = inline {
         opts.opt.inline = on;
     }
-    if !matches!(command, Command::Repl | Command::Lsp | Command::Fmt) && file.is_none() {
+    if !matches!(command, Command::Repl | Command::Lsp | Command::Fmt | Command::Runtime) && file.is_none() {
         return usage("this command needs a file".to_string());
     }
     Parsed::Go(Args {
@@ -356,6 +359,19 @@ pub fn main_in<R: BufRead, W: Write, E: Write>(
     if args.command == Command::Fmt {
         return run_fmt(&args, vfs, stdin, &mut stdout, stderr);
     }
+    if args.command == Command::Runtime {
+        // `neon runtime [dir]`: neon.h and neon.c, the runtime the C files include
+        let dir = args.file.as_deref().unwrap_or(".").trim_end_matches('/').to_string();
+        for (name, text) in [("neon.h", crate::cgen::NEON_H), ("neon.c", crate::cgen::NEON_C)] {
+            let path = if dir.is_empty() { name.to_string() } else { format!("{dir}/{name}") };
+            if let Err(e) = vfs.write(&path, text) {
+                let _ = writeln!(stderr, "error: cannot write {path}: {e}");
+                return EXIT_RUNTIME;
+            }
+        }
+        let _ = writeln!(stdout, "{dir}/neon.h, {dir}/neon.c");
+        return EXIT_OK;
+    }
     if args.command == Command::Repl {
         let cfg = ReplConfig { options: args.opts, vm: args.vm, prompt: interactive, color: false, host: true };
         let mut stdin = stdin;
@@ -463,7 +479,7 @@ pub fn main_in<R: BufRead, W: Write, E: Write>(
                 }
             }
         }
-        Command::Repl | Command::Lsp | Command::Fmt => unreachable!(),
+        Command::Repl | Command::Lsp | Command::Fmt | Command::Runtime => unreachable!(),
     }
 }
 

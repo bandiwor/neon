@@ -497,20 +497,24 @@ non-escaping class is *private*: nothing outside the function can tell what happ
 
 ### Translation to C
 
-`neon c program.neon -o program.c` writes the optimized IR as **one independent C99 file**
-that builds with any C compiler and cross-compiles like any C program:
+`neon c program.neon -o program.c` writes the optimized IR as C99 that builds with any C compiler
+and cross-compiles like any C program. The program is one small file; the **runtime is the pair
+`runtime/neon.h` + `runtime/neon.c`** (hand-written C, kept in the project, `neon runtime <dir>` writes
+a copy out of the binary):
 
 ```sh
-neon c tests/corpus/sample_sieve.neon -o sieve.c && cc -O2 sieve.c -o sieve -lm
+neon c tests/corpus/sample_sieve.neon -o sieve.c
+cc -O2 -I runtime sieve.c runtime/neon.c -o sieve -lm
 ```
 
-The file is laid out in the order a reader wants it: the `#include`s, the runtime's declarations
-(hint macros, types, prototypes), the program's declarations (globals, string constants,
-prototypes), the program's functions, `main`, and last the runtime's implementation. **Nothing
-unused is emitted**: the runtime is cut into small pieces (a string builder, `arr_sort`, the
-collector, each checked `add_i32`, ...) that are pulled in through their dependencies, so
-`println(1 + 2)` produces a file without a collector, maps or string functions. **Every function is
-`static`** and none is `inline` (the compiler decides).
+The generated file is `#include "neon.h"` and the program: its declarations (globals, string
+constants, prototypes), its functions and `main` - no macros, no runtime, no system headers.
+`neon.h` holds every system header the runtime needs, the type names (`i8`..`u64`, `f32`, `f64`,
+`bool`, `chr`, `unit`), the hint and `FRAME` / `GC_POINT` macros, the prototypes of the runtime and
+the checked arithmetic of every integer type as `static inline` functions (`add_i32`, `shr_u8`,
+`chk_mul_i64`, `f2i_u8`, ...), so the C compiler inlines them. `neon.c` holds the allocator and the
+collector, strings, arrays, maps, formatting, input and the `sys` / `fs` / `term` modules (with the
+platform headers); build it once and link it with every program.
 
 * Registers become typed locals (`int32_t v3`, `Obj *v7`); containers hold 64-bit words.
   Control flow is `goto` in the layout order of the bytecode compiler, so most jumps are
@@ -524,8 +528,8 @@ collector, each checked `add_i32`, ...) that are pulled in through their depende
   build: integer overflow, division by zero, bad shifts and recursion deeper than `NEON_MAX_DEPTH`
   (20000, `-DNEON_MAX_DEPTH=n`) end the program with an error. `cc -O3 -DNDEBUG` (or
   `-DNEON_CHECKS=0`) is the release build: integers wrap around, division by zero and `MIN / -1` are
-  left to C (undefined), shift counts are masked, and the recursion is not counted. The checks, the
-  trap functions and the overflow macros disappear from what the C compiler sees. Array bounds, map
+  left to C (undefined), shift counts are masked, and the recursion is not counted. The checks
+  sit inside the inline functions of `neon.h` and compile away. Array bounds, map
   keys, parsing, `assert` and `panic` stay checked in both, and `checked_add` & co. keep returning
   `Option`.
 * Memory is a precise mark-and-sweep collector over a size-class allocator (objects up to 256 bytes are
@@ -571,8 +575,8 @@ Highlights:
   safe-point, and run through the real binary.
 * `tests/phase13_c.rs` — the C backend: every corpus program is translated, built with `-Wall -Wextra
   -Werror -pedantic` (also with `-DNEON_GC_STRESS`), run and compared with the VM; run-time errors,
-  `input()`/`read_line()` and the file layout (sections, `static`-only, unused pieces left out) are
-  checked as well. The test skips itself when there is no C compiler.
+  `input()`/`read_line()` and the layout of the generated file (one include, no runtime copied into
+  it) and of `runtime/` are checked as well. The test skips itself when there is no C compiler.
 * `tests/phase9_math.rs` — boundary-value arithmetic for every numeric type,
   operator and cast, VM against interpreter.
 * `tests/phase8_gc.rs`, `src/gc/tests.rs` — collector behavior under restricted

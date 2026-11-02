@@ -16,21 +16,9 @@ use crate::ir::effects::{analyze, FuncEffects};
 use crate::ir::*;
 use crate::runtime::{ArithOp, CmpOp, NumTy};
 
-/// A runtime function generated for one type (checked arithmetic, conversions).
-struct SysFn {
-    src: String,
-    /// Present in release builds too (otherwise it only exists under `NEON_CHECKS`).
-    release: bool,
-}
-
 pub struct Gen<'p> {
     pub prog: &'p IrProgram,
     fx: FuncEffects,
-    /// Runtime pieces the program asks for directly.
-    needs: BTreeSet<String>,
-    /// Pieces only the checks of a debug build use (overflow traps, the recursion guard).
-    checked: BTreeSet<String>,
-    sys: BTreeMap<String, SysFn>,
     live: Vec<bool>,
     names: Vec<String>,
     guarded: Vec<bool>,
@@ -43,17 +31,6 @@ pub struct Gen<'p> {
     fnptrs: Vec<(String, String)>,
     /// Plain functions used as closure values: they get a wrapper taking the (unused) cell array.
     wrappers: BTreeSet<usize>,
-}
-
-/// The program's code, the runtime pieces it asks for, and the generated runtime functions.
-pub type Generated = (Output, Needs, BTreeMap<String, (String, bool)>);
-
-/// Runtime pieces the program asks for: those every build needs, and those only a checked (debug)
-/// build needs.
-#[derive(Debug, Default)]
-pub struct Needs {
-    pub always: BTreeSet<String>,
-    pub checked: BTreeSet<String>,
 }
 
 /// The pieces of the generated program, before they are put in order.
@@ -142,24 +119,6 @@ fn ret_cty(t: IrTy) -> &'static str {
     }
 }
 
-fn unsigned_cty(n: NumTy) -> &'static str {
-    match n.bits() {
-        8 => "u8",
-        16 => "u16",
-        32 => "u32",
-        _ => "u64",
-    }
-}
-
-fn limits(n: NumTy) -> (String, String) {
-    let b = n.bits();
-    if n.is_signed() {
-        (format!("INT{b}_MIN"), format!("INT{b}_MAX"))
-    } else {
-        ("0".into(), format!("UINT{b}_MAX"))
-    }
-}
-
 fn paren(e: &str) -> String {
     if e.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
         e.to_string()
@@ -240,9 +199,6 @@ impl<'p> Gen<'p> {
         Gen {
             prog,
             fx: analyze(prog),
-            needs: BTreeSet::new(),
-            checked: BTreeSet::new(),
-            sys: BTreeMap::new(),
             live: vec![false; prog.funcs.len()],
             names: vec![String::new(); prog.funcs.len()],
             guarded: vec![false; prog.funcs.len()],
@@ -255,37 +211,6 @@ impl<'p> Gen<'p> {
             fnptrs: Vec::new(),
             wrappers: BTreeSet::new(),
         }
-    }
-
-    pub fn need(&mut self, name: &str) {
-        self.needs.insert(name.to_string());
-    }
-
-    fn needs_all(&mut self, names: &[&str]) {
-        for n in names {
-            self.need(n);
-        }
-    }
-
-    /// A piece that only a build with `NEON_CHECKS` uses.
-    fn need_checked(&mut self, names: &[&str]) {
-        self.need("checks");
-        for n in names {
-            self.checked.insert(n.to_string());
-        }
-    }
-
-    /// A generated runtime function. `deps` are what every build needs, `checked_deps` what only a
-    /// checked build does; `release` says whether release builds contain the function at all.
-    fn sysfn(&mut self, name: &str, deps: &[&str], checked_deps: &[&str], release: bool, src: String) {
-        self.needs_all(deps);
-        if checked_deps.is_empty() {
-            self.need("checks");
-        } else {
-            self.need_checked(checked_deps);
-        }
-        let e = self.sys.entry(name.to_string()).or_insert(SysFn { src, release });
-        e.release |= release;
     }
 
     // ---- program-wide analyses -----------------------------------------------------------------
@@ -390,16 +315,13 @@ impl<'p> Gen<'p> {
         match t {
             IrTy::Num(n) if n.is_signed() => format!("(W)(i64){}", paren(e)),
             IrTy::Num(NumTy::F64) => {
-                self.need("f64_bits");
                 format!("f64_bits({e})")
             }
             IrTy::Num(NumTy::F32) => {
-                self.need("f32_bits");
                 format!("f32_bits({e})")
             }
             IrTy::Num(_) | IrTy::Bool | IrTy::Char => format!("(W){}", paren(e)),
             IrTy::Ref => {
-                self.need("objects");
                 format!("O2W({e})")
             }
             IrTy::Unit => "0".into(),
@@ -411,18 +333,15 @@ impl<'p> Gen<'p> {
         match t {
             IrTy::Num(n) if n.is_signed() => format!("({})(i64){}", num_cty(n), paren(e)),
             IrTy::Num(NumTy::F64) => {
-                self.need("bits_f64");
                 format!("bits_f64({e})")
             }
             IrTy::Num(NumTy::F32) => {
-                self.need("bits_f32");
                 format!("bits_f32({e})")
             }
             IrTy::Num(n) => format!("({}){}", num_cty(n), paren(e)),
             IrTy::Bool => format!("(u8){}", paren(e)),
             IrTy::Char => format!("(u32){}", paren(e)),
             IrTy::Ref => {
-                self.need("objects");
                 format!("W2O({e})")
             }
             IrTy::Unit => "0".into(),
@@ -430,191 +349,52 @@ impl<'p> Gen<'p> {
         }
     }
 
-    // ---- generated runtime functions --------------------------------------------------------------
+    // ---- arithmetic -----------------------------------------------------------------------------
+    //
+    // The functions themselves (checked arithmetic, conversions) live in `runtime/neon.h` for every
+    // integer type; the generator only has to name them.
 
-    /// The arithmetic function for `op` on `ty`. A checked (debug) build traps on overflow, division by
-    /// zero and bad shifts; a release build wraps around and leaves the rest to C.
+    /// `add_i64`, `shr_u8`, ...: a checked (debug) build traps on overflow, division by zero and bad
+    /// shifts; a release build wraps around and leaves the rest to C.
     fn arith_fn(&mut self, op: ArithOp, ty: NumTy) -> String {
-        let c = num_cty(ty);
-        let n = ty.name();
-        let (min, _) = limits(ty);
-        let name = format!("{}_{n}", op.name());
-        let signed = ty.is_signed();
-        let bits = ty.bits();
-        let wide = if bits <= 32 { "u32" } else { "u64" };
-        let (src, deps): (String, &[&str]) = match op {
-            ArithOp::Add | ArithOp::Sub | ArithOp::Mul => {
-                let m = op.name().to_uppercase();
-                let sym = match op {
-                    ArithOp::Add => '+',
-                    ArithOp::Sub => '-',
-                    _ => '*',
-                };
-                (
-                    format!(
-                        "static {c} {name}({c} a, {c} b) {{\n#if NEON_CHECKS\n    {c} r;\n    if (UNLIKELY(OVF_{m}(a, b, &r))) trap_overflow();\n    return r;\n#else\n    return ({c})(({wide})a {sym} ({wide})b);\n#endif\n}}"
-                    ),
-                    &["ovf", "trap_overflow", "hint_expect"],
-                )
-            }
-            ArithOp::Div => {
-                let ovf = if signed {
-                    format!("    if (UNLIKELY(a == {min} && b == -1)) trap_overflow();\n")
-                } else {
-                    String::new()
-                };
-                (
-                    format!(
-                        "static {c} {name}({c} a, {c} b) {{\n#if NEON_CHECKS\n    if (UNLIKELY(b == 0)) trap_div0();\n{ovf}#endif\n    return ({c})(a / b);\n}}"
-                    ),
-                    &["trap_div0", "trap_overflow", "hint_expect"],
-                )
-            }
-            ArithOp::Rem => {
-                let minus =
-                    if signed { "    if (b == -1) return 0;  /* MIN % -1 is 0, not an overflow */\n" } else { "" };
-                (
-                    format!(
-                        "static {c} {name}({c} a, {c} b) {{\n#if NEON_CHECKS\n    if (UNLIKELY(b == 0)) trap_div0();\n{minus}#endif\n    return ({c})(a % b);\n}}"
-                    ),
-                    &["trap_div0", "hint_expect"],
-                )
-            }
-            ArithOp::Shl | ArithOp::Shr => {
-                let u = unsigned_cty(ty);
-                let body = if op == ArithOp::Shl {
-                    format!("({c})(({u})a << (n & {}))", bits - 1)
-                } else {
-                    format!("({c})(a >> (n & {}))", bits - 1)
-                };
-                (
-                    format!(
-                        "static {c} {name}({c} a, i64 n) {{\n#if NEON_CHECKS\n    if (UNLIKELY((u64)n >= {bits})) trap_shift();\n#endif\n    return {body};\n}}"
-                    ),
-                    &["trap_shift", "hint_expect"],
-                )
-            }
-            ArithOp::And | ArithOp::Or | ArithOp::Xor => unreachable!("bitwise operators are inline"),
-        };
-        self.sysfn(&name, &[], deps, true, src);
-        name
+        format!("{}_{}", op.name(), ty.name())
     }
 
     fn neg_fn(&mut self, ty: NumTy) -> String {
-        let (c, n) = (num_cty(ty), ty.name());
-        let name = format!("neg_{n}");
-        let wide = if ty.bits() <= 32 { "u32" } else { "u64" };
-        let check = if ty.is_signed() {
-            let (min, _) = limits(ty);
-            format!("    if (UNLIKELY(a == {min})) trap_overflow();\n")
-        } else {
-            "    if (UNLIKELY(a != 0)) trap_overflow();\n".to_string()
-        };
-        let src = format!(
-            "static {c} {name}({c} a) {{\n#if NEON_CHECKS\n{check}#endif\n    return ({c})(0 - ({wide})a);\n}}"
-        );
-        self.sysfn(&name, &[], &["trap_overflow", "hint_expect"], true, src);
-        name
+        format!("neg_{}", ty.name())
     }
 
     fn abs_fn(&mut self, ty: NumTy) -> String {
-        let (c, n) = (num_cty(ty), ty.name());
-        let name = format!("abs_{n}");
-        let (min, _) = limits(ty);
-        let wide = if ty.bits() <= 32 { "u32" } else { "u64" };
-        let src = format!(
-            "static {c} {name}({c} a) {{\n#if NEON_CHECKS\n    if (UNLIKELY(a == {min})) trap_overflow();\n#endif\n    return a < 0 ? ({c})(0 - ({wide})a) : a;\n}}"
-        );
-        self.sysfn(&name, &[], &["trap_overflow", "hint_expect"], true, src);
-        name
+        format!("abs_{}", ty.name())
     }
 
     /// `chk_<op>_<ty>(a, b, &r)`: stores the result and returns 1, or returns 0 where the plain
-    /// operation would trap. `release`: used by `checked_*` calls, which every build needs.
-    fn chk_fn(&mut self, b: Builtin, ty: NumTy, release: bool) -> String {
+    /// operation would trap.
+    fn chk_fn(&mut self, b: Builtin, ty: NumTy) -> String {
         use Builtin::*;
-        let (c, n) = (num_cty(ty), ty.name());
-        let signed = ty.is_signed();
-        let bits = ty.bits();
-        let (min, _) = limits(ty);
-        let (op, params, body) = match b {
-            CheckedAdd => ("add", format!("{c} a, {c} b"), "    return !OVF_ADD(a, b, r);".to_string()),
-            CheckedSub => ("sub", format!("{c} a, {c} b"), "    return !OVF_SUB(a, b, r);".to_string()),
-            CheckedMul => ("mul", format!("{c} a, {c} b"), "    return !OVF_MUL(a, b, r);".to_string()),
-            CheckedDiv => {
-                let ovf = if signed { format!("    if (a == {min} && b == -1) return 0;\n") } else { String::new() };
-                ("div", format!("{c} a, {c} b"), format!("    if (b == 0) return 0;\n{ovf}    *r = ({c})(a / b);\n    return 1;"))
-            }
-            CheckedRem => {
-                let minus = if signed { "    if (b == -1) { *r = 0; return 1; }\n" } else { "" };
-                ("rem", format!("{c} a, {c} b"), format!("    if (b == 0) return 0;\n{minus}    *r = ({c})(a % b);\n    return 1;"))
-            }
-            CheckedShl => {
-                let u = unsigned_cty(ty);
-                ("shl", format!("{c} a, i64 n"), format!("    if ((u64)n >= {bits}) return 0;\n    *r = ({c})(({u})a << n);\n    return 1;"))
-            }
-            CheckedShr => (
-                "shr",
-                format!("{c} a, i64 n"),
-                format!("    if ((u64)n >= {bits}) return 0;\n    *r = ({c})(a >> n);\n    return 1;"),
-            ),
-            CheckedNeg => {
-                let body = if signed {
-                    format!("    if (a == {min}) return 0;\n    *r = ({c})-a;\n    return 1;")
-                } else {
-                    "    if (a != 0) return 0;\n    *r = 0;\n    return 1;".to_string()
-                };
-                ("neg", format!("{c} a"), body)
-            }
-            CheckedPow => (
-                "pow",
-                format!("{c} base, u64 exp"),
-                format!(
-                    "    {c} result = 1, square = base;\n    while (exp > 0) {{\n        if (exp & 1) {{\n            if (OVF_MUL(result, square, &result)) return 0;\n        }}\n        exp >>= 1;\n        if (exp > 0 && OVF_MUL(square, square, &square)) return 0;\n    }}\n    *r = result;\n    return 1;"
-                ),
-            ),
+        let op = match b {
+            CheckedAdd => "add",
+            CheckedSub => "sub",
+            CheckedMul => "mul",
+            CheckedDiv => "div",
+            CheckedRem => "rem",
+            CheckedShl => "shl",
+            CheckedShr => "shr",
+            CheckedNeg => "neg",
+            CheckedPow => "pow",
             _ => unreachable!("not a checked operation"),
         };
-        let name = format!("chk_{op}_{n}");
-        let src = format!("static int {name}({params}, {c} *r) {{\n{body}\n}}");
-        if release {
-            self.sysfn(&name, &["ovf"], &[], true, src);
-        } else {
-            self.sysfn(&name, &[], &["ovf"], false, src);
-        }
-        name
+        format!("chk_{op}_{}", ty.name())
     }
 
     /// `pow_<ty>(base, exp)` for integers: a checked build traps on overflow, a release build wraps.
     fn pow_fn(&mut self, ty: NumTy) -> String {
-        let chk = self.chk_fn(Builtin::CheckedPow, ty, false);
-        let (c, n) = (num_cty(ty), ty.name());
-        let name = format!("pow_{n}");
-        let wide = if ty.bits() <= 32 { "u32" } else { "u64" };
-        let src = format!(
-            "static {c} {name}({c} base, u64 exp) {{\n#if NEON_CHECKS\n    {c} r;\n    if (UNLIKELY(!{chk}(base, exp, &r))) trap_overflow();\n    return r;\n#else\n    {c} result = 1, square = base;\n    while (exp > 0) {{\n        if (exp & 1) result = ({c})(({wide})result * ({wide})square);\n        exp >>= 1;\n        square = ({c})(({wide})square * ({wide})square);\n    }}\n    return result;\n#endif\n}}"
-        );
-        self.sysfn(&name, &[], &["trap_overflow", "hint_expect"], true, src);
-        name
+        format!("pow_{}", ty.name())
     }
 
     /// Float to integer conversion: saturating, NaN becomes 0.
     fn f2i_fn(&mut self, to: NumTy) -> String {
-        let name = format!("f2i_{}", to.name());
-        let src = match to {
-            NumTy::I64 => "static i64 f2i_i64(f64 v) {\n    if (v != v) return 0;\n    if (v >= 9223372036854775808.0) return INT64_MAX;\n    if (v <= -9223372036854775808.0) return INT64_MIN;\n    return (i64)v;\n}".to_string(),
-            NumTy::U64 => "static u64 f2i_u64(f64 v) {\n    if (!(v > 0)) return 0;\n    if (v >= 18446744073709551616.0) return UINT64_MAX;\n    return (u64)v;\n}".to_string(),
-            _ => {
-                self.f2i_fn(NumTy::I64);
-                let (min, max) = limits(to);
-                let c = num_cty(to);
-                format!(
-                    "static {c} {name}(f64 v) {{\n    i64 w = f2i_i64(v);\n    return w < {min} ? ({c}){min} : w > (i64){max} ? ({c}){max} : ({c})w;\n}}"
-                )
-            }
-        };
-        self.sysfn(&name, &[], &[], true, src);
-        name
+        format!("f2i_{}", to.name())
     }
 
     // ---- function pointer types ------------------------------------------------------------------
@@ -632,7 +412,6 @@ impl<'p> Gen<'p> {
         let i = self.fnptrs.len();
         let ptr = sig.replace("(*)", &format!("(*fp{i})"));
         self.fnptrs.push((sig, format!("typedef {ptr};")));
-        self.need("objects");
         format!("fp{i}")
     }
 
@@ -645,7 +424,6 @@ impl<'p> Gen<'p> {
         let k = self.strs.len();
         self.strs.push(i);
         self.str_idx.insert(i, k);
-        self.needs_all(&["str_new", "hint_expect"]);
         k
     }
 
@@ -659,59 +437,44 @@ impl<'p> Gen<'p> {
 
     /// A statement that appends the text of the value `w` (a word) of type `d` to the scratch buffer.
     fn put_word(&mut self, d: DescId, w: &str, nested: bool) -> String {
-        self.need("sbtype");
         let prog = self.prog;
         match prog.desc(d) {
-            TypeDesc::Unit => {
-                self.need("sb_puts");
-                "sb_puts(&rt_sb, \"()\");".into()
-            }
+            TypeDesc::Unit => "sb_puts(&rt_sb, \"()\");".into(),
             TypeDesc::Num(NumTy::F64) => {
-                self.needs_all(&["sb_float", "bits_f64"]);
                 format!("sb_float(&rt_sb, bits_f64({w}), 0);")
             }
             TypeDesc::Num(NumTy::F32) => {
-                self.needs_all(&["sb_float", "bits_f32"]);
                 format!("sb_float(&rt_sb, (f64)bits_f32({w}), 1);")
             }
             TypeDesc::Num(n) if n.is_signed() => {
-                self.need("sb_i64");
                 format!("sb_i64(&rt_sb, (i64){w});")
             }
             TypeDesc::Num(_) => {
-                self.need("sb_u64");
                 format!("sb_u64(&rt_sb, {w});")
             }
             TypeDesc::Bool => {
-                self.need("sb_puts");
                 format!("sb_puts(&rt_sb, {w} ? \"true\" : \"false\");")
             }
             TypeDesc::Char if nested => {
-                self.need("sb_dbg_char");
                 format!("sb_dbg_char(&rt_sb, (u32){w});")
             }
             TypeDesc::Char => {
-                self.need("sb_cp");
                 format!("sb_cp(&rt_sb, (u32){w});")
             }
             TypeDesc::Str if nested => {
-                self.needs_all(&["sb_dbg_str", "objects"]);
                 format!("sb_dbg_str(&rt_sb, W2O({w}));")
             }
             TypeDesc::Str => {
-                self.needs_all(&["sb_put", "objects"]);
                 format!("sb_put(&rt_sb, STR(W2O({w}))->s, STR(W2O({w}))->len);")
             }
             _ if crate::ir::packed_enum(&prog.descs, d).is_some() => format!("{}({w});", self.printer(d)),
             _ => {
-                self.need("objects");
                 format!("{}(W2O({w}));", self.printer(d))
             }
         }
     }
 
     fn put_str(&mut self, text: &str) -> String {
-        self.need("sb_puts");
         format!("sb_puts(&rt_sb, {});", c_string(text))
     }
 
@@ -861,7 +624,7 @@ impl<'p> Gen<'p> {
 
     // ---- driver -------------------------------------------------------------------------------------
 
-    pub fn generate(mut self) -> Result<Generated, String> {
+    pub fn generate(mut self) -> Result<Output, String> {
         self.find_live();
         self.assign_names();
         self.find_guarded();
@@ -895,14 +658,10 @@ impl<'p> Gen<'p> {
             let t = cty(info.ty);
             globals.push(format!("static {t}{}{};", if t.ends_with('*') { "" } else { " " }, self.gnames[g]));
             if info.ty == IrTy::Ref {
-                self.need("objects");
-            }
-            if info.ty == IrTy::Ref {
                 ref_globals.push(self.gnames[g].clone());
             }
         }
         let typedefs = self.fnptrs.iter().map(|(_, t)| t.clone()).collect();
-        let sys = self.sys.iter().map(|(n, s)| (n.clone(), (s.src.clone(), s.release))).collect();
         let out = Output {
             fn_protos,
             fn_bodies,
@@ -912,7 +671,7 @@ impl<'p> Gen<'p> {
             ref_globals,
             entry: self.names[self.prog.entry.index()].clone(),
         };
-        Ok((out, Needs { always: self.needs, checked: self.checked }, sys))
+        Ok(out)
     }
 
     /// `n_f_clo(up, args)` calls the plain function `n_f(args)`, so it can sit in a closure object.
@@ -1007,19 +766,14 @@ impl<'p> Gen<'p> {
         let attr = if f.is_closure || self.guarded[id.index()] || f.ret == IrTy::Unit {
             ""
         } else if eff == Effects::NONE {
-            self.need("hint_const");
             "CONST_FN "
         } else if eff == Effects::READS {
-            self.need("hint_const");
             "PURE_FN "
         } else {
             ""
         };
         let ret = ret_cty(f.ret);
         let sep = if ret.ends_with('*') { "" } else { " " };
-        if f.is_closure || f.regs.contains(&IrTy::Ref) {
-            self.need("objects");
-        }
         let header = format!("static {attr}{ret}{sep}{name}({})", sig_params.join(", "));
         let proto = format!("{header};");
 
@@ -1101,12 +855,9 @@ impl<'p> Gen<'p> {
             let _ = writeln!(text, "    Obj {};", list.join(", "));
         }
         if need_frame {
-            self.needs_all(&["gcstate", "gc_collect"]);
             let _ = writeln!(text, "    FRAME({});", roots.join(", "));
         }
         if guarded {
-            self.need("depth");
-            self.need_checked(&["trap_stack", "hint_expect"]);
             let _ = writeln!(text, "    DEPTH_ENTER();");
         }
         if f.is_closure && !uses_up {
@@ -1119,7 +870,6 @@ impl<'p> Gen<'p> {
         }
         for &i in &cells {
             let ty = f.regs[i];
-            self.need("cell_new");
             let init = if i < params {
                 let w = self.as_word(ty, &format!("p{i}"));
                 format!("cell_new({}, {w})", (ty == IrTy::Ref) as u8)
@@ -1193,14 +943,10 @@ impl FnEmit<'_, '_> {
         }
         if let Some(bits) = self.consts[r.index()] {
             let l = lit(self.ty(r), bits);
-            if l.contains(['N', 'I']) {
-                self.g.need("hdr_math");
-            }
             return l;
         }
         if self.pinned[r.index()] {
             let ty = self.ty(r);
-            self.g.need("objects");
             self.g.of_word(ty, &format!("CELL(c{})->v", r.index()))
         } else {
             format!("v{}", r.index())
@@ -1218,7 +964,6 @@ impl FnEmit<'_, '_> {
     fn set(&mut self, dst: VReg, expr: &str) -> String {
         if self.pinned[dst.index()] {
             let ty = self.ty(dst);
-            self.g.need("objects");
             let w = self.g.as_word(ty, expr);
             return format!("CELL(c{})->v = {w};", dst.index());
         }
@@ -1254,7 +999,6 @@ impl FnEmit<'_, '_> {
     }
 
     fn gc_point(&mut self) {
-        self.g.needs_all(&["gcstate", "gc_collect", "hint_expect"]);
         self.line("GC_POINT();");
     }
 
@@ -1313,7 +1057,6 @@ impl FnEmit<'_, '_> {
             }
             Term::BranchTag { obj, tag, then, els } => {
                 let o = self.rd(*obj);
-                self.g.need("objects");
                 self.branch(format!("TAG({o}) == {tag}"), *then, *els, next);
             }
             Term::Return(r) => {
@@ -1323,7 +1066,6 @@ impl FnEmit<'_, '_> {
                 self.line(format!("return{e};"));
             }
             Term::Unreachable => {
-                self.g.need("trap_unreach");
                 let n = self.f.name.clone();
                 self.line(format!("trap_unreach({});", c_string(&n)));
             }
@@ -1355,9 +1097,6 @@ impl FnEmit<'_, '_> {
                 match val {
                     Const::Bits(b) => {
                         let l = lit(ty, *b);
-                        if matches!(ty, IrTy::Num(NumTy::F32 | NumTy::F64)) && l.contains(['N', 'I']) {
-                            self.g.need("hdr_math");
-                        }
                         self.emit_set(*dst, &l)
                     }
                     Const::Unit => self.emit_set(*dst, "0"),
@@ -1381,7 +1120,6 @@ impl FnEmit<'_, '_> {
                         ArithOp::Mul => format!("{a} * {b}"),
                         ArithOp::Div => format!("{a} / {b}"),
                         ArithOp::Rem => {
-                            self.g.need("hdr_math");
                             format!("{}({a}, {b})", if *ty == NumTy::F32 { "fmodf" } else { "fmod" })
                         }
                         _ => return Err(format!("`{}`: operator {} on a float", self.name, op.name())),
@@ -1409,15 +1147,12 @@ impl FnEmit<'_, '_> {
                     CmpTy::Num(_) => format!("{a} {} {b}", cmp_op(*op)),
                     CmpTy::Str => match op {
                         CmpOp::Eq => {
-                            self.g.need("str_eq");
                             format!("str_eq({a}, {b})")
                         }
                         CmpOp::Ne => {
-                            self.g.need("str_eq");
                             format!("!str_eq({a}, {b})")
                         }
                         _ => {
-                            self.g.need("str_cmp");
                             format!("str_cmp({a}, {b}) {} 0", cmp_op(*op))
                         }
                     },
@@ -1463,18 +1198,15 @@ impl FnEmit<'_, '_> {
                 self.alloc_agg(*dst, *tag, fields)?;
             }
             Inst::GetField { dst, obj, idx } | Inst::EnumField { dst, obj, idx, .. } => {
-                self.g.need("objects");
                 let o = self.rd(*obj);
                 self.set_word(*dst, &format!("AGG({o})->f[{idx}]"));
             }
             Inst::SetField { obj, idx, src } => {
-                self.g.need("objects");
                 let o = self.rd(*obj);
                 let w = self.w(*src);
                 self.line(format!("AGG({o})->f[{idx}] = {w};"));
             }
             Inst::EnumTag { dst, obj } => {
-                self.g.need("objects");
                 let o = self.rd(*obj);
                 let c = cty(self.ty(*dst));
                 self.emit_set(*dst, &format!("({c})TAG({o})"));
@@ -1484,7 +1216,6 @@ impl FnEmit<'_, '_> {
                     return Err("NewArray with a non-array descriptor".into());
                 };
                 let is_ref = crate::ir::desc_is_ref(&prog.descs, *e) as u8;
-                self.g.need("arr_new");
                 let ws: Vec<String> = elems.iter().map(|&r| self.w(r)).collect();
                 self.with_obj(*dst, &format!("arr_new({}, {is_ref})", elems.len()), |me, v| {
                     for (i, w) in ws.iter().enumerate() {
@@ -1496,12 +1227,10 @@ impl FnEmit<'_, '_> {
                 });
             }
             Inst::ArrayGet { dst, arr, idx, .. } => {
-                self.g.need("arr_get");
                 let (a, i) = (self.rd(*arr), self.rd(*idx));
                 self.set_word(*dst, &format!("arr_get({a}, (i64){i})"));
             }
             Inst::ArraySet { arr, idx, src, .. } => {
-                self.g.need("arr_set");
                 let (a, i, w) = (self.rd(*arr), self.rd(*idx), self.w(*src));
                 self.line(format!("arr_set({a}, (i64){i}, {w});"));
             }
@@ -1510,7 +1239,6 @@ impl FnEmit<'_, '_> {
                     return Err("NewMap with a non-map descriptor".into());
                 };
                 let flags = map_flags(prog, *k, Some(*v));
-                self.g.needs_all(&["map_new", "map_put"]);
                 let ws: Vec<(String, String)> = entries.iter().map(|&(k, v)| (self.w(k), self.w(v))).collect();
                 self.with_obj(*dst, &format!("map_new({flags})"), |me, m| {
                     for (k, v) in &ws {
@@ -1519,19 +1247,16 @@ impl FnEmit<'_, '_> {
                 });
             }
             Inst::MapGet { dst, map, key } => {
-                self.g.need("map_get");
                 let (m, k) = (self.rd(*map), self.w(*key));
                 self.set_word(*dst, &format!("map_get({m}, {k})"));
             }
             Inst::MapSet { map, key, val } => {
-                self.g.need("map_put");
                 let (m, k, v) = (self.rd(*map), self.w(*key), self.w(*val));
                 self.line(format!("map_put({m}, {k}, {v});"));
             }
             Inst::NewSet { dst, desc, elems } => {
                 let TypeDesc::Set(e) = prog.desc(*desc) else { return Err("NewSet with a non-set descriptor".into()) };
                 let flags = map_flags(prog, *e, None);
-                self.g.needs_all(&["map_new", "map_put"]);
                 let ws: Vec<String> = elems.iter().map(|&r| self.w(r)).collect();
                 self.with_obj(*dst, &format!("map_new({flags})"), |me, m| {
                     for w in &ws {
@@ -1551,7 +1276,6 @@ impl FnEmit<'_, '_> {
                 self.emit_set(*dst, &e);
             }
             Inst::CallClosure { dst, callee, args } => {
-                self.g.need("objects");
                 let c = self.rd(*callee);
                 let tys: Vec<IrTy> = args.iter().map(|&r| self.ty(r)).collect();
                 let fp = self.g.fnptr(self.ty(*dst), &tys);
@@ -1561,7 +1285,6 @@ impl FnEmit<'_, '_> {
                 self.emit_set(*dst, &format!("(({fp})CLO({c})->fn)({})", call_args.join(", ")));
             }
             Inst::MakeClosure { dst, func, captures } => {
-                self.g.needs_all(&["clo_new", "objects"]);
                 let target = prog.func(*func);
                 let mut fname = self.g.names[func.index()].clone();
                 if !target.is_closure {
@@ -1587,16 +1310,13 @@ impl FnEmit<'_, '_> {
                 });
             }
             Inst::GetUpval { dst, idx } => {
-                self.g.need("objects");
                 self.set_word(*dst, &format!("CELL(up[{idx}])->v"));
             }
             Inst::SetUpval { idx, src } => {
-                self.g.need("objects");
                 let w = self.w(*src);
                 self.line(format!("CELL(up[{idx}])->v = {w};"));
             }
             Inst::CloseUpvals { regs } => {
-                self.g.needs_all(&["cell_new", "objects"]);
                 for r in regs {
                     if !self.pinned[r.index()] {
                         continue;
@@ -1623,7 +1343,6 @@ impl FnEmit<'_, '_> {
     }
 
     fn alloc_agg(&mut self, dst: VReg, tag: u32, fields: &[VReg]) -> Result<(), String> {
-        self.g.needs_all(&["agg_new", "objects"]);
         let mask = self.mask_of(fields)?;
         let ws: Vec<String> = fields.iter().map(|&r| self.w(r)).collect();
         let alloc = format!("agg_new({tag}, {}, {mask})", fields.len());
@@ -1660,7 +1379,6 @@ impl FnEmit<'_, '_> {
             TypeDesc::Str => "eq_str",
             _ => "eq_bits",
         };
-        self.g.need(name);
         name
     }
 
@@ -1672,7 +1390,6 @@ impl FnEmit<'_, '_> {
             TypeDesc::Str => "cmp_str",
             _ => "cmp_u64",
         };
-        self.g.need(name);
         name
     }
 
@@ -1692,35 +1409,27 @@ impl FnEmit<'_, '_> {
     /// Appends the text of register `r` (of type `d`) to the scratch buffer.
     fn put_reg(&mut self, d: DescId, r: VReg) -> String {
         let e = self.rd(r);
-        self.g.need("sbtype");
         // top-level strings and characters print raw
         match self.g.prog.desc(d) {
             TypeDesc::Num(NumTy::F64) => {
-                self.g.need("sb_float");
                 format!("sb_float(&rt_sb, {e}, 0);")
             }
             TypeDesc::Num(NumTy::F32) => {
-                self.g.need("sb_float");
                 format!("sb_float(&rt_sb, (f64){e}, 1);")
             }
             TypeDesc::Num(n) if n.is_signed() => {
-                self.g.need("sb_i64");
                 format!("sb_i64(&rt_sb, {e});")
             }
             TypeDesc::Num(_) => {
-                self.g.need("sb_u64");
                 format!("sb_u64(&rt_sb, {e});")
             }
             TypeDesc::Bool => {
-                self.g.need("sb_puts");
                 format!("sb_puts(&rt_sb, {e} ? \"true\" : \"false\");")
             }
             TypeDesc::Char => {
-                self.g.need("sb_cp");
                 format!("sb_cp(&rt_sb, {e});")
             }
             TypeDesc::Str => {
-                self.g.needs_all(&["sb_put", "objects"]);
                 format!("sb_put(&rt_sb, STR({e})->s, STR({e})->len);")
             }
             _ => {
@@ -1746,14 +1455,12 @@ impl FnEmit<'_, '_> {
         let int64 = |e: &str| format!("(i64){}", paren(e));
         macro_rules! call {
             ($piece:expr, $e:expr) => {{
-                self.g.need($piece);
                 let e: String = $e;
                 self.emit_set(dst, &e);
             }};
         }
         macro_rules! stmt {
             ($piece:expr, $s:expr) => {{
-                self.g.need($piece);
                 let s: String = $s;
                 self.line(s);
             }};
@@ -1773,15 +1480,12 @@ impl FnEmit<'_, '_> {
         match b {
             Print | Println => {
                 let nl = (b == Println) as u8;
-                self.g.need("objects");
                 match (args.first(), desc) {
                     (Some(&r), Some(d)) => {
                         if matches!(self.g.prog.desc(d), TypeDesc::Str) {
-                            self.g.need("out_str");
                             let s = self.rd(r);
                             self.line(format!("out_str({s}, {nl});"));
                         } else {
-                            self.g.need("out_sb");
                             let put = self.put_reg(d, r);
                             self.line(put);
                             self.line(format!("out_sb({nl});"));
@@ -1789,7 +1493,6 @@ impl FnEmit<'_, '_> {
                     }
                     _ => {
                         if nl == 1 {
-                            self.g.need("out_nl");
                             self.line("out_nl();");
                         }
                     }
@@ -1800,7 +1503,6 @@ impl FnEmit<'_, '_> {
             ReadLine => call!("rt_read_line", "rt_read_line()".into()),
             Args => call!("rt_args", "rt_args()".into()),
             SysExit => {
-                self.g.need("rt_sys_exit");
                 self.line(format!("rt_sys_exit({});", a[0]));
                 unit_result(self);
             }
@@ -1809,7 +1511,6 @@ impl FnEmit<'_, '_> {
             SysNowMs => call!("rt_sys_now_ms", "rt_sys_now_ms()".into()),
             SysTicksMs => call!("rt_sys_ticks_ms", "rt_sys_ticks_ms()".into()),
             SysSleep => {
-                self.g.need("rt_sys_sleep");
                 self.line(format!("rt_sys_sleep({});", a[0]));
                 unit_result(self);
             }
@@ -1830,12 +1531,10 @@ impl FnEmit<'_, '_> {
             TermHeight => call!("rt_term_height", "rt_term_height()".into()),
             TermIsTty => call!("rt_term_is_tty", "rt_term_is_tty()".into()),
             Panic => {
-                self.g.need("trap_panic");
                 self.line(format!("trap_panic({});", a[0]));
                 unit_result(self);
             }
             Assert => {
-                self.g.needs_all(&["trap_assert", "hint_expect"]);
                 let msg = a.get(1).cloned().unwrap_or_else(|| "NULL".into());
                 self.line(format!("if (UNLIKELY(!{})) trap_assert({msg});", a[0]));
                 unit_result(self);
@@ -1850,14 +1549,12 @@ impl FnEmit<'_, '_> {
                 let d = desc.ok_or("format without a descriptor")?;
                 let kind = self.fmt_kind(d)?;
                 let w = aw(self, 0);
-                self.g.need("objects");
                 call!("fmt_value", format!("fmt_value({kind}, {w}, {})", a[1]));
             }
 
             StrConcat => call!("str_cat", format!("str_cat({}, {})", a[0], a[1])),
             StrLen => call!("str_len", format!("str_len({})", a[0])),
             StrIsEmpty => {
-                self.g.need("objects");
                 self.emit_set(dst, &format!("STR({})->len == 0", a[0]));
             }
             StrChars => call!("str_chars", format!("str_chars({})", a[0])),
@@ -1886,11 +1583,9 @@ impl FnEmit<'_, '_> {
             StrIndexOf => call!("str_index_of", format!("str_index_of({}, {})", a[0], a[1])),
 
             ArrLen => {
-                self.g.need("objects");
                 result_cast!(format!("ARR({})->len", a[0]));
             }
             ArrIsEmpty => {
-                self.g.need("objects");
                 self.emit_set(dst, &format!("ARR({})->len == 0", a[0]));
             }
             ArrPush => {
@@ -1899,11 +1594,9 @@ impl FnEmit<'_, '_> {
                 unit_result(self);
             }
             ArrPop => {
-                self.g.need("arr_pop");
                 self.set_word(dst, &format!("arr_pop({})", a[0]));
             }
             ArrClear => {
-                self.g.need("objects");
                 self.line(format!("ARR({})->len = 0;", a[0]));
                 unit_result(self);
             }
@@ -1918,7 +1611,6 @@ impl FnEmit<'_, '_> {
                 unit_result(self);
             }
             ArrRemove => {
-                self.g.need("arr_remove");
                 self.set_word(dst, &format!("arr_remove({}, {})", a[0], int64(&a[1])));
             }
             ArrReverse => {
@@ -1937,11 +1629,9 @@ impl FnEmit<'_, '_> {
             ArrTryRemove => call!("arr_try_remove", format!("arr_try_remove({}, {})", a[0], int64(&a[1]))),
 
             MapLen | SetLen => {
-                self.g.need("objects");
                 result_cast!(format!("MAP({})->len", a[0]));
             }
             MapIsEmpty | SetIsEmpty => {
-                self.g.need("objects");
                 self.emit_set(dst, &format!("MAP({})->len == 0", a[0]));
             }
             MapInsert => {
@@ -1955,7 +1645,6 @@ impl FnEmit<'_, '_> {
             }
             MapGetOr => {
                 let (k, d) = (aw(self, 1), aw(self, 2));
-                self.g.need("map_get_or");
                 self.set_word(dst, &format!("map_get_or({}, {k}, {d})", a[0]));
             }
             MapGet => {
@@ -1987,8 +1676,7 @@ impl FnEmit<'_, '_> {
                     Some(TypeDesc::Num(n)) => *n,
                     other => return Err(format!("checked operation with payload {other:?}")),
                 };
-                let chk = self.g.chk_fn(b, ty, true);
-                self.g.needs_all(&["opt_some", "opt_none"]);
+                let chk = self.g.chk_fn(b, ty);
                 let rhs = match b {
                     CheckedNeg => String::new(),
                     CheckedShl | CheckedShr => format!(", {}", int64(&a[1])),
@@ -2018,7 +1706,6 @@ impl FnEmit<'_, '_> {
             Abs => {
                 let n = self.num_of(desc)?;
                 let e = if n.is_float() {
-                    self.g.need("hdr_math");
                     format!("{}({})", if n == NumTy::F32 { "fabsf" } else { "fabs" }, a[0])
                 } else if n.is_signed() {
                     let f = self.g.abs_fn(n);
@@ -2031,7 +1718,6 @@ impl FnEmit<'_, '_> {
             Pow => {
                 let n = self.num_of(desc)?;
                 let e = if n.is_float() {
-                    self.g.need("hdr_math");
                     format!("{}({}, {})", if n == NumTy::F32 { "powf" } else { "pow" }, a[0], a[1])
                 } else {
                     let f = self.g.pow_fn(n);
@@ -2044,12 +1730,7 @@ impl FnEmit<'_, '_> {
                 let (x, y) = (&a[0], &a[1]);
                 let want_max = b == Max;
                 let pick = if want_max { format!("{x} < {y} ? {y} : {x}") } else { format!("{x} < {y} ? {x} : {y}") };
-                let e = if n.is_float() {
-                    self.g.need("hdr_math");
-                    format!("isnan({x}) ? {y} : isnan({y}) ? {x} : ({pick})")
-                } else {
-                    pick
-                };
+                let e = if n.is_float() { format!("isnan({x}) ? {y} : isnan({y}) ? {x} : ({pick})") } else { pick };
                 self.emit_set(dst, &e);
             }
             Sqrt | Sin | Cos | Tan | Floor | Ceil | Round | Ln | Exp => {
@@ -2065,12 +1746,10 @@ impl FnEmit<'_, '_> {
                     Ln => "log",
                     _ => "exp",
                 };
-                self.g.need("hdr_math");
                 let f = if n == NumTy::F32 { format!("{base}f") } else { base.to_string() };
                 self.emit_set(dst, &format!("{f}({})", a[0]));
             }
             IsNan => {
-                self.g.need("hdr_math");
                 self.emit_set(dst, &format!("isnan({}) != 0", a[0]));
             }
             CharIsDigit => call!("cp_is_digit", format!("cp_is_digit({})", a[0])),

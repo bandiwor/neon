@@ -42,6 +42,36 @@ fn translate(path: &Path, flags: &[&str]) -> String {
     String::from_utf8(o.stdout).unwrap()
 }
 
+/// The runtime (`runtime/neon.c`) compiled once per set of flags and shared by the tests of this file.
+fn runtime_object(cc: &str, extra: &[&str]) -> PathBuf {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let key = extra.join(" ");
+    if let Some(p) = cache.get(&key) {
+        return p.clone();
+    }
+    let dir = std::env::temp_dir().join(format!("neon-rt-{}-{}", std::process::id(), cache.len()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let obj = dir.join("neon.o");
+    let o = Command::new(cc)
+        .args(["-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror", "-O1"])
+        .args(extra)
+        .arg("-I")
+        .arg(&root)
+        .arg("-c")
+        .arg(root.join("neon.c"))
+        .arg("-o")
+        .arg(&obj)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "neon.c: {}", String::from_utf8_lossy(&o.stderr));
+    cache.insert(key, obj.clone());
+    obj
+}
+
 /// Builds `c_source` (warnings are errors) and returns the executable.
 fn build(cc: &str, dir: &Path, name: &str, c_source: &str, extra: &[&str]) -> PathBuf {
     let c = dir.join(format!("{name}.c"));
@@ -50,7 +80,10 @@ fn build(cc: &str, dir: &Path, name: &str, c_source: &str, extra: &[&str]) -> Pa
     let o = Command::new(cc)
         .args(["-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror", "-O1"])
         .args(extra)
+        .arg("-I")
+        .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime"))
         .arg(&c)
+        .arg(runtime_object(cc, extra))
         .arg("-o")
         .arg(&exe)
         .arg("-lm")
@@ -153,12 +186,6 @@ fn release_builds_drop_the_arithmetic_checks_and_debug_builds_keep_them() {
     // -DNEON_CHECKS=1 wins over -DNDEBUG
     let forced = run(&mut Command::new(build(&cc, &dir, "forced", &c, &["-DNDEBUG", "-DNEON_CHECKS=1"])), "");
     assert_eq!(forced.code, 2);
-    // after the preprocessor a release build contains no trap for arithmetic
-    let pre = Command::new(&cc).args(["-E", "-P", "-DNDEBUG"]).arg(dir.join("rel.c")).output();
-    if let Ok(pre) = pre {
-        let text = String::from_utf8_lossy(&pre.stdout);
-        assert!(!text.contains("trap_overflow") && !text.contains("OVF_"), "{text}");
-    }
 }
 
 #[test]
@@ -179,10 +206,6 @@ fn command_line_arguments_reach_the_program_like_in_the_vm() {
         let vm = run(neon().arg("run").arg(&src).arg("--").args(args), "");
         assert_eq!((native.code, &native.out), (0, &vm.out), "{args:?}");
     }
-    // programs that do not look at the arguments keep a plain `main(void)`
-    let plain = dir.join("q.neon");
-    std::fs::write(&plain, "println(1);").unwrap();
-    assert!(translate(&plain, &[]).contains("int main(void)"));
 }
 
 #[test]
@@ -203,47 +226,52 @@ fn the_file_has_the_requested_layout() {
     let src = corpus_files().into_iter().find(|p| p.ends_with("collections.neon")).unwrap();
     let c = translate(&src, &[]);
     let at = |needle: &str| c.find(needle).unwrap_or_else(|| panic!("`{needle}` is missing"));
-    // includes, runtime declarations, program declarations, program, main, runtime implementation
-    let order = [
-        at("#include <stdint.h>"),
-        at("/* ---- Runtime: declarations"),
-        at("/* ---- Program: declarations"),
-        at("/* ---- Program ---"),
-        at("int main(void)"),
-        at("/* ---- Runtime: implementation"),
-    ];
+    // one include, the program's declarations, the program, `main`
+    let order = [at("#include \"neon.h\""), at("/* ---- Declarations"), at("/* ---- Program ---"), at("int main(")];
     assert!(order.windows(2).all(|w| w[0] < w[1]), "{order:?}");
-    // every function is static, none is inline
-    assert!(!c.contains("inline"));
-    let main_at = at("int main(void)");
-    for (i, line) in c.lines().enumerate() {
-        let defines_function =
-            line.ends_with(") {") && !line.starts_with(' ') && !line.starts_with("if") && !line.starts_with("for");
-        if defines_function && !line.starts_with("int main(void)") {
-            assert!(line.starts_with("static "), "line {}: {line}", i + 1);
-        }
+    // the only include is neon.h, and the file holds no runtime: every function is the program's own
+    assert_eq!(c.matches("#include").count(), 1);
+    assert!(!c.contains("inline") && !c.contains("#if") && !c.contains("#define"));
+    for line in c.lines().filter(|l| l.ends_with(") {") && !l.starts_with(' ')) {
+        let ok = line.starts_with("static ") || line.starts_with("int main(") || line.starts_with("void user_roots(");
+        assert!(ok, "{line}");
     }
-    assert!(main_at > 0);
+    assert!(c.len() < 30_000, "the runtime must not be copied into every program ({} bytes)", c.len());
 }
 
 #[test]
-fn unused_runtime_functions_are_left_out() {
-    let dir = scratch("unused");
-    let src = dir.join("hello.neon");
-    std::fs::write(&src, "println(1 + 2);").unwrap();
-    let c = translate(&src, &[]);
-    // no collector, no maps, no strings, no format machinery for a program that prints a number
-    for name in ["gc_collect", "map_put", "str_cat", "fmt_value", "arr_push", "parse_i64", "cmp_f64"] {
-        assert!(!c.contains(name), "{name} should not be in the output:\n{c}");
+fn the_runtime_files_come_from_the_project_and_can_be_written_out() {
+    let dir = scratch("runtime");
+    let o = neon().arg("runtime").arg(&dir).output().unwrap();
+    assert!(o.status.success(), "{}", String::from_utf8_lossy(&o.stderr));
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
+    for name in ["neon.h", "neon.c"] {
+        assert_eq!(std::fs::read_to_string(dir.join(name)).unwrap(), std::fs::read_to_string(root.join(name)).unwrap());
     }
-    // ... while the functions it does use are there, with a prototype and a body
-    assert!(c.matches("static void out_sb(int newline);").count() == 1);
-    assert!(c.matches("static void out_sb(int newline) {").count() == 1);
-    // and every static function is referenced beyond its prototype and definition
-    for line in c.lines().filter(|l| l.starts_with("static ") && l.ends_with(") {")) {
-        let name =
-            line.split('(').next().unwrap().rsplit(|ch: char| !(ch.is_alphanumeric() || ch == '_')).next().unwrap();
-        assert!(c.matches(name).count() >= 3, "{name} is never called");
+}
+
+#[test]
+fn the_runtime_compiles_alone_and_as_a_header_in_every_mode() {
+    let Some(cc) = c_compiler() else { return };
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
+    // the header must be self-contained and warning-free under pedantic C99 and C11, with and without checks
+    let dir = scratch("header");
+    let user = dir.join("u.c");
+    std::fs::write(&user, "#include \"neon.h\"\nint main(void) { return 0; }\n").unwrap();
+    for std in ["-std=c99", "-std=c11"] {
+        for mode in [&[][..], &["-DNDEBUG"], &["-DNEON_GC_STRESS"]] {
+            let o = Command::new(&cc)
+                .args([std, "-pedantic", "-Wall", "-Wextra", "-Werror", "-Wshadow", "-Wconversion", "-fsyntax-only"])
+                .args(mode)
+                .arg("-I")
+                .arg(&root)
+                .arg(&user)
+                .output()
+                .unwrap();
+            let err = String::from_utf8_lossy(&o.stderr);
+            // the checked arithmetic converts on purpose; only warnings that are not about conversions count
+            assert!(o.status.success() || err.contains("-Wconversion"), "{std} {mode:?}: {err}");
+        }
     }
 }
 

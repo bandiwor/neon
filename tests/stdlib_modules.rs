@@ -17,6 +17,36 @@ fn scratch(tag: &str) -> PathBuf {
     dir
 }
 
+/// The runtime (`runtime/neon.c`) compiled once per set of flags and shared by the tests of this file.
+fn runtime_object(cc: &str, extra: &[&str]) -> PathBuf {
+    use std::collections::HashMap;
+    use std::sync::{Mutex, OnceLock};
+    static CACHE: OnceLock<Mutex<HashMap<String, PathBuf>>> = OnceLock::new();
+    let root = Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime");
+    let mut cache = CACHE.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+    let key = extra.join(" ");
+    if let Some(p) = cache.get(&key) {
+        return p.clone();
+    }
+    let dir = std::env::temp_dir().join(format!("neon-rt-{}-{}", std::process::id(), cache.len()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let obj = dir.join("neon.o");
+    let o = Command::new(cc)
+        .args(["-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror", "-O1"])
+        .args(extra)
+        .arg("-I")
+        .arg(&root)
+        .arg("-c")
+        .arg(root.join("neon.c"))
+        .arg("-o")
+        .arg(&obj)
+        .output()
+        .unwrap();
+    assert!(o.status.success(), "neon.c: {}", String::from_utf8_lossy(&o.stderr));
+    cache.insert(key, obj.clone());
+    obj
+}
+
 fn c_compiler() -> Option<String> {
     let candidates = std::env::var("CC").into_iter().chain(["cc", "gcc", "clang"].map(String::from));
     candidates.into_iter().find(|c| {
@@ -56,9 +86,12 @@ fn same_everywhere(tag: &str, source: &str, stdin: &[u8], args: &[&str]) -> Ran 
         let cfile = dir.join("p.c");
         std::fs::write(&cfile, &c.stdout).unwrap();
         let exe = dir.join("p");
-        let o = Command::new(cc)
+        let o = Command::new(&cc)
             .args(["-std=c99", "-pedantic", "-Wall", "-Wextra", "-Werror", "-O1"])
+            .arg("-I")
+            .arg(Path::new(env!("CARGO_MANIFEST_DIR")).join("runtime"))
             .arg(&cfile)
+            .arg(runtime_object(&cc, &[]))
             .arg("-o")
             .arg(&exe)
             .arg("-lm")
