@@ -61,6 +61,7 @@ fn lower(prog: &mut sema::Program, interner: &Interner, diags: &mut DiagBag, map
         return None;
     }
     let mut ir = ir::lower_program(prog, interner, diags)?;
+    ir.c_sources = prog.c_sources.clone();
     // the files the debug information refers to
     ir.sources = map
         .iter()

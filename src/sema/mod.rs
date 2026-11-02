@@ -63,9 +63,15 @@ pub fn analyze_source(
 /// Runs declaration, signature and body checking over an already loaded graph.
 pub fn analyze_graph(graph: ModuleGraph, interner: &mut Interner, diags: &mut DiagBag) -> Program {
     let mut prog = Program::default();
+    let mut c_files: Vec<String> = Vec::new();
     for lm in &graph.modules {
         let module = collect::declare_module(&mut prog, interner, diags, lm);
         debug_assert_eq!(module, lm.id);
+        for c in &lm.c_files {
+            if !c_files.contains(c) {
+                c_files.push(c.clone());
+            }
+        }
         collect::resolve_signatures(&mut prog, interner, diags, module);
         check::check_module_init(&mut prog, interner, diags, module);
         let fns: Vec<FnId> = (0..prog.fns.len())
@@ -79,6 +85,15 @@ pub fn analyze_graph(graph: ModuleGraph, interner: &mut Interner, diags: &mut Di
             check::check_fn_body(&mut prog, interner, diags, f);
         }
     }
+    // the C files as `#include` paths: relative to the entry module's directory where they are below it
+    let entry_dir = graph.entry().map(|m| m.path.rsplit_once('/').map(|(d, _)| d.to_string()).unwrap_or_default());
+    prog.c_sources = c_files
+        .into_iter()
+        .map(|c| match entry_dir.as_deref() {
+            Some(d) if !d.is_empty() => c.strip_prefix(&format!("{d}/")).map(str::to_string).unwrap_or(c),
+            _ => c,
+        })
+        .collect();
     prog
 }
 

@@ -202,6 +202,7 @@ CONST_FN W f32_bits(f32 x);
 CONST_FN f32 bits_f32(W w);
 const char *utf8_skip(const char *p, const char *end, size_t n);
 Obj *str_new(const char *s, size_t n);
+Obj *str_from_c(const char *s);   /* from NUL-terminated C text; invalid UTF-8 becomes U+FFFD */
 Obj *str_cat(Obj *a, Obj *b);
 PURE_FN int str_eq(const Obj *a, const Obj *b);
 PURE_FN int str_cmp(const Obj *a, const Obj *b);

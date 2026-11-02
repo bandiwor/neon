@@ -330,6 +330,9 @@ pub struct IrFunc {
     pub dbg: Vec<RegDbg>,
     /// Where the function is defined, if known.
     pub loc: Option<SrcLoc>,
+    /// `extern fn`: the name of the C function that implements it. The body only reports that the
+    /// function exists in the C translation alone; it is never inlined.
+    pub ext: Option<String>,
     /// Types of the upvalues this closure reads (empty for plain functions).
     pub upvals: Vec<IrTy>,
     pub is_closure: bool,
@@ -347,6 +350,7 @@ impl IrFunc {
             pinned: Vec::new(),
             dbg: Vec::new(),
             loc: None,
+            ext: None,
             upvals: Vec::new(),
             is_closure: false,
             blocks: Vec::new(),
@@ -426,6 +430,8 @@ pub struct IrProgram {
     pub entry: FuncId,
     /// The source files, indexed by the file of a [`SrcLoc`] (empty when the IR was not built from files).
     pub sources: Vec<SrcFile>,
+    /// The C files of the program (`import "file.c";`), to `#include` into the translation.
+    pub c_sources: Vec<String>,
 }
 
 /// How one field sits inside the word of a [packed enum](PackedEnum).

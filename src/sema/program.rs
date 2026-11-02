@@ -72,6 +72,8 @@ pub struct FnDef {
     pub body: Option<NodeId>,
     /// A function without a body in a standard module: the builtin that implements it.
     pub native: Option<crate::builtin::Builtin>,
+    /// `extern fn`: implemented in a C file of the program (`import "file.c";`); it has no body.
+    pub external: bool,
     pub exported: bool,
     /// Parameter locals, filled in when the body is checked.
     pub param_locals: Vec<LocalId>,
@@ -569,6 +571,8 @@ pub struct Program {
     pub solve_cache: HashMap<(TraitId, Ty, Vec<Ty>), super::traits::Solved>,
     /// Which function a trait method call resolves to, for fully known arguments.
     pub resolve_cache: HashMap<(FnId, Vec<Ty>), Option<super::traits::Resolved>>,
+    /// The C files the program imports (`import "file.c";`), as paths to put in an `#include`.
+    pub c_sources: Vec<String>,
 }
 
 impl Program {

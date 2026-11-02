@@ -177,6 +177,10 @@ pub enum NodeKind {
         path: StrId,
         alias: Symbol,
     },
+    /// `import "file.c";`: a C source file that is part of the program (see `extern fn`).
+    ImportC {
+        path: StrId,
+    },
     /// `export <declaration>`
     Export {
         item: NodeId,
@@ -188,6 +192,8 @@ pub enum NodeKind {
         params: NodeList,
         ret: OptionNodeId,
         body: OptionNodeId,
+        /// `extern fn`: implemented in C, so there is no body.
+        external: bool,
     },
     /// `T: Bound + Bound` (`bounds` are type paths)
     GenericParam {

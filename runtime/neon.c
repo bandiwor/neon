@@ -419,6 +419,63 @@ Obj *str_new(const char *s, size_t n) {
     return &o->h;
 }
 
+/* The length of the well-formed UTF-8 sequence at p (0 if there is none). */
+static size_t utf8_valid_seq(const unsigned char *p, size_t left) {
+    unsigned b0 = p[0], lo = 0x80, hi = 0xBF;
+    size_t need, i;
+    if (b0 < 0x80) return 1;
+    if (b0 >= 0xC2 && b0 <= 0xDF) need = 1;
+    else if (b0 >= 0xE0 && b0 <= 0xEF) {
+        need = 2;
+        if (b0 == 0xE0) lo = 0xA0;
+        if (b0 == 0xED) hi = 0x9F;
+    } else if (b0 >= 0xF0 && b0 <= 0xF4) {
+        need = 3;
+        if (b0 == 0xF0) lo = 0x90;
+        if (b0 == 0xF4) hi = 0x8F;
+    } else return 0;
+    if (left <= need) return 0;
+    for (i = 1; i <= need; i++) {
+        if (p[i] < lo || p[i] > hi) return 0;
+        lo = 0x80;
+        hi = 0xBF;
+    }
+    return need + 1;
+}
+
+/* A string made from text a C function returned: bytes that are not well-formed UTF-8 become U+FFFD,
+ * so every Neon string is valid. */
+Obj *str_from_c(const char *s) {
+    const unsigned char *p = (const unsigned char *)s;
+    size_t n = strlen(s), i = 0, k, o = 0;
+    char *buf;
+    Obj *r;
+    int valid = 1;
+    while (i < n) {
+        k = utf8_valid_seq(p + i, n - i);
+        if (k == 0) { valid = 0; break; }
+        i += k;
+    }
+    if (valid) return str_new(s, n);
+    buf = (char *)rt_malloc(n * 3 + 1);
+    for (i = 0; i < n;) {
+        k = utf8_valid_seq(p + i, n - i);
+        if (k == 0) {
+            buf[o++] = (char)0xEF;
+            buf[o++] = (char)0xBF;
+            buf[o++] = (char)0xBD;
+            i++;
+        } else {
+            memcpy(buf + o, p + i, k);
+            o += k;
+            i += k;
+        }
+    }
+    r = str_new(buf, o);
+    free(buf);
+    return r;
+}
+
 Obj *str_cat(Obj *a, Obj *b) {
     GC_POINT();
     size_t n = STR(a)->len, m = STR(b)->len;

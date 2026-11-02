@@ -204,6 +204,10 @@ impl FnLower<'_, '_> {
         for (i, l) in params.iter().enumerate() {
             self.bind_param(*l, VReg(i as u32));
         }
+        if self.cx.prog.fns[fid.index()].external {
+            self.lower_extern(fid);
+            return;
+        }
         let body = body.expect("only functions with bodies are instantiated");
         let v = self.expr(body);
         let ty = self.node_ty(body);
@@ -212,6 +216,30 @@ impl FnLower<'_, '_> {
         } else {
             self.finish_with(v);
         }
+    }
+
+    /// An `extern fn`: the C translation calls the C function; anywhere else the call panics.
+    fn lower_extern(&mut self, fid: crate::sema::FnId) {
+        let name = self.cx.interner.resolve(self.cx.prog.fns[fid.index()].name).to_string();
+        // the parameters of a bodyless function have no locals: take their names from the declaration
+        let node = self.cx.prog.fns[fid.index()].node;
+        if let NodeKind::FnDecl { params, .. } = *self.ast.kind(node) {
+            for (i, &p) in self.ast.list(params).iter().enumerate() {
+                if let NodeKind::Param { name, .. } = *self.ast.kind(p) {
+                    let n = self.cx.interner.resolve(name).to_string();
+                    self.f.name_reg(VReg(i as u32), &n);
+                }
+            }
+        }
+        let idx = self.cx.string(&format!(
+            "`{name}` is an extern function (written in C): it exists in programs translated with `neon c`"
+        ));
+        let msg = self.new_reg(IrTy::Ref);
+        self.emit(Inst::Const { dst: msg, val: Const::Str(idx) });
+        let sink = self.new_reg(IrTy::Unit);
+        self.emit(Inst::Intrinsic { dst: sink, b: crate::builtin::Builtin::Panic, desc: None, args: vec![msg] });
+        self.terminate(Term::Unreachable);
+        self.f.ext = Some(name);
     }
 
     fn lower_closure(&mut self, node: NodeId) {

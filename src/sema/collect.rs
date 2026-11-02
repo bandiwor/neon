@@ -14,7 +14,7 @@ use super::ids::*;
 use super::loader::LoadedModule;
 use super::program::*;
 use super::typeres::TypeResolver;
-use super::types::Ty;
+use super::types::{Ty, TyKind};
 use crate::diag::{DiagBag, Diagnostic, Span};
 use crate::syntax::{Ast, Interner, Keyword, NodeId, NodeKind, Symbol};
 
@@ -75,9 +75,9 @@ fn new_fn(
     let id = FnId(prog.fns.len() as u32);
     let name_span = ast.name_span(node);
     let def = prog.symbols.add_def(name, DefKind::Fn(id), name_span, module);
-    let body = match *ast.kind(node) {
-        NodeKind::FnDecl { body, .. } => body.get(),
-        _ => None,
+    let (body, external) = match *ast.kind(node) {
+        NodeKind::FnDecl { body, external, .. } => (body.get(), external),
+        _ => (None, false),
     };
     // `export fn args() -> [string];` in the standard module `sys` is the builtin `sys.args`
     let native = match (body, owner) {
@@ -98,6 +98,7 @@ fn new_fn(
         has_self: false,
         body,
         native,
+        external,
         exported,
         param_locals: Vec::new(),
     });
@@ -144,6 +145,7 @@ pub fn declare_module(prog: &mut Program, interner: &mut Interner, diags: &mut D
         has_self: false,
         body: Some(ast.root()),
         native: None,
+        external: false,
         exported: false,
         param_locals: Vec::new(),
     });
@@ -331,7 +333,7 @@ fn declare_item(
             });
         }
         NodeKind::ConstDecl { .. } | NodeKind::Let { .. } | NodeKind::ExprStmt { .. } | NodeKind::Error => {}
-        NodeKind::ImportNamed { .. } | NodeKind::ImportAlias { .. } => {}
+        NodeKind::ImportNamed { .. } | NodeKind::ImportAlias { .. } | NodeKind::ImportC { .. } => {}
         _ => {
             if exported {
                 diags.report(
@@ -587,7 +589,7 @@ fn resolve_fn_sig(
     node: NodeId,
     self_ty: Option<Ty>,
 ) {
-    let NodeKind::FnDecl { generics: gen_nodes, params, ret, .. } = *ast.kind(node) else { return };
+    let NodeKind::FnDecl { generics: gen_nodes, params, ret, body, external, .. } = *ast.kind(node) else { return };
     let mut generics = prog.fns[id.index()].generics.clone();
     let own_start = generics.len() - ast.list(gen_nodes).len();
     let bounds = resolve_bounds(prog, interner, diags, ast, module, &generics, self_ty, gen_nodes, own_start);
@@ -635,11 +637,72 @@ fn resolve_fn_sig(
         }
         None => prog.types.unit(),
     };
+    if external {
+        check_extern_sig(prog, diags, ast, id, node, &generics, &ptys, ret_ty);
+    } else if body.get().is_none()
+        && prog.fns[id.index()].owner == FnOwner::Free
+        && prog.fns[id.index()].native.is_none()
+        && crate::stdlib::module_of(&prog.modules[module.index()].path).is_none()
+    {
+        diags.report(
+            Diagnostic::error(format!("function `{}` has no body", interner.resolve(prog.fns[id.index()].name)))
+                .with_code("E0239")
+                .with_label(ast.name_span(node), "needs a `{ .. }` body")
+                .with_note("a function written in C is declared with `extern fn name(..) -> T;`"),
+        );
+    }
     let f = &mut prog.fns[id.index()];
     f.generics = generics;
     f.params = ptys;
     f.ret = ret_ty;
     f.has_self = has_self;
+}
+
+/// What a C function can be declared with: numbers, `bool`, `char` and `string` as parameters, the same
+/// or nothing as the result. Nothing is passed that C could keep a pointer into beyond the call.
+fn check_extern_sig(
+    prog: &Program,
+    diags: &mut DiagBag,
+    ast: &Ast,
+    id: FnId,
+    node: NodeId,
+    generics: &Generics,
+    params: &[Ty],
+    ret: Ty,
+) {
+    let span = ast.name_span(node);
+    if prog.fns[id.index()].owner != FnOwner::Free {
+        diags.report(
+            Diagnostic::error("an `extern fn` must be a free function")
+                .with_code("E0238")
+                .with_label(span, "not allowed in an impl or trait"),
+        );
+        return;
+    }
+    if !generics.params.is_empty() {
+        diags.report(
+            Diagnostic::error("an `extern fn` cannot be generic")
+                .with_code("E0238")
+                .with_label(span, "C functions have one signature"),
+        );
+    }
+    let plain = |t: Ty| matches!(prog.types.kind(t), TyKind::Prim(_) | TyKind::Error);
+    for (i, &p) in params.iter().enumerate() {
+        if !plain(p) {
+            diags.report(
+                Diagnostic::error("an `extern fn` takes numbers, `bool`, `char` and `string` only")
+                    .with_code("E0238")
+                    .with_label(span, format!("parameter {} has another type", i + 1)),
+            );
+        }
+    }
+    if !plain(ret) && !matches!(prog.types.kind(ret), TyKind::Unit) {
+        diags.report(
+            Diagnostic::error("an `extern fn` returns a number, `bool`, `char`, `string` or nothing")
+                .with_code("E0238")
+                .with_label(span, "the result has another type"),
+        );
+    }
 }
 
 fn resolve_impl(prog: &mut Program, interner: &Interner, diags: &mut DiagBag, ast: &Ast, module: ModuleId, id: ImplId) {

@@ -1,0 +1,24 @@
+// A program with a C module.
+//
+//   neon c examples/c_module/main.neon -o main.c
+//   cc -O2 -I runtime -I examples/c_module main.c runtime/neon.c -o main -lm && ./main
+//
+// `neon run` cannot call C: it stops at the first extern function and says so.
+import "mathx.c";
+
+extern fn add(a: i64, b: i64) -> i64;
+extern fn hypot2(x: f64, y: f64) -> f64;
+extern fn is_even(n: i64) -> bool;
+extern fn call_count() -> i64;
+extern fn shout(text: string) -> string;
+
+fn main() {
+    println(add(2, 40));
+    println(hypot2(3.0, 4.0));
+    println(shout("hello, world"));
+    var evens = 0;
+    for i in 0..100 {
+        if is_even(add(i, 1)) { evens += 1; }
+    }
+    println(f"{evens} even sums, {call_count()} calls into C");
+}

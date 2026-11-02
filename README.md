@@ -560,6 +560,54 @@ platform headers); build it once and link it with every program.
   Not tried here for lack of a sysroot: a real cross build (the code assumes only C99, 8/16/32/64-bit
   integers, IEEE floats and 32- or 64-bit pointers).
 
+### C modules
+
+A program can call C. Import the C file and declare each function it provides with `extern fn`
+(`examples/c_module/`):
+
+```
+import "mathx.c";                              // a C file next to this one
+
+extern fn add(a: i64, b: i64) -> i64;
+extern fn shout(text: string) -> string;
+
+fn main() { println(add(2, 40)); println(shout("hello")); }
+```
+
+```c
+#include "neon.h"                              // i64, f64, bool, chr, ... and the runtime
+i64 add(i64 a, i64 b) { return a + b; }
+const char *shout(const char *text) { /* ... */ }
+```
+
+```sh
+neon c main.neon -o main.c
+cc -O2 -I runtime -I <dir of main.neon> main.c runtime/neon.c -o main -lm
+```
+
+How it stays safe:
+
+* **One translation unit.** The generated file `#include`s the C file, and after it repeats each
+  declaration in C types (`i64 add(i64 a, i64 b);`). A definition that does not match - another
+  parameter type, result type, arity, or none at all - is a C compile error (and `-Werror` clean builds
+  catch the rest), never an ABI mismatch that is undefined behavior at run time. The C compiler sees both
+  sides, so calls into the module can be inlined.
+* **A small, checked set of types.** Parameters and results are numbers (`i8`..`u64`, `f32`, `f64`),
+  `bool`, `char` (`chr`) and `string`; a result may also be nothing. Arrays, maps, structs, closures and
+  generics are rejected by the compiler (`E0238`), so C never holds a pointer into the collector's heap
+  beyond a call.
+* **Strings are copied at the border.** A `string` argument is a NUL-terminated UTF-8 `const char *`
+  valid for the call only (text with an embedded NUL is seen up to the NUL). A `string` result is a
+  `const char *` that is copied into a new Neon string right away (a static buffer is fine); invalid
+  UTF-8 becomes U+FFFD, and `NULL` ends the program with `runtime error: extern function `f`
+  returned NULL`, so every Neon string stays valid.
+* **The VM cannot run C.** `neon check` accepts the program; `neon run` stops at the first call of an
+  `extern fn` with a message that says so. The IR optimizer never inlines or reorders an extern call (it
+  is assumed to read, write, allocate and trap).
+* The C file must not call back into Neon, collect garbage (`gc_collect`) or keep Neon pointers; names
+  that the runtime owns (`str_new`, `add_i64`, ...) cannot be declared `extern fn`. A C module that
+  calls `abort` or has undefined behavior of its own is, as always, its author's responsibility.
+
 ### WebAssembly
 
 The compiler, analyzer and VM never touch `std::fs` or the process streams.
@@ -585,6 +633,9 @@ Highlights:
   -Werror -pedantic` (also with `-DNEON_GC_STRESS`), run and compared with the VM; run-time errors,
   `input()`/`read_line()` and the layout of the generated file (one include, no runtime copied into
   it) and of `runtime/` are checked as well. The test skips itself when there is no C compiler.
+* `tests/c_modules.rs` — C modules: calls into a C file in every build mode (also with the collector at
+  every safe-point), declarations that disagree with the definitions do not build, string checks, the
+  VM's message, diagnostics and the formatter.
 * `tests/phase9_math.rs` — boundary-value arithmetic for every numeric type,
   operator and cast, VM against interpreter.
 * `tests/phase8_gc.rs`, `src/gc/tests.rs` — collector behavior under restricted

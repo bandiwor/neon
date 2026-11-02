@@ -17,7 +17,7 @@ syn region  neonLineComment  start="//" end="$" contains=neonTodo,@Spell keepend
 syn region  neonBlockComment start="/\*" end="\*/" contains=neonBlockComment,neonTodo,@Spell
 
 " ---- keywords ---------------------------------------------------------------------------
-syn keyword neonDeclaration  let var const fn struct enum trait impl
+syn keyword neonDeclaration  let var const fn struct enum trait impl extern
 syn keyword neonInclude      import export as
 syn keyword neonConditional  if elif else match
 syn keyword neonRepeat       while loop for in

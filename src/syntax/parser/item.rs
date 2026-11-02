@@ -13,6 +13,9 @@ impl Parser<'_> {
                 self.bump();
                 let item = match self.peek() {
                     TokenKind::Kw(Keyword::Fn) => self.parse_fn()?,
+                    TokenKind::Ident(s) if s == sym::EXTERN && self.peek_at(1) == TokenKind::Kw(Keyword::Fn) => {
+                        self.parse_extern_fn()?
+                    }
                     TokenKind::Kw(Keyword::Struct) => self.parse_struct()?,
                     TokenKind::Kw(Keyword::Enum) => self.parse_enum()?,
                     TokenKind::Kw(Keyword::Trait) => self.parse_trait()?,
@@ -23,6 +26,9 @@ impl Parser<'_> {
             }
             TokenKind::Kw(Keyword::Import) => self.parse_import(),
             TokenKind::Kw(Keyword::Fn) => self.parse_fn(),
+            TokenKind::Ident(s) if s == sym::EXTERN && self.peek_at(1) == TokenKind::Kw(Keyword::Fn) => {
+                self.parse_extern_fn()
+            }
             TokenKind::Kw(Keyword::Struct) => self.parse_struct(),
             TokenKind::Kw(Keyword::Enum) => self.parse_enum(),
             TokenKind::Kw(Keyword::Trait) => self.parse_trait(),
@@ -38,6 +44,11 @@ impl Parser<'_> {
         self.bump();
         if let TokenKind::Str(path) = self.peek() {
             self.bump();
+            if self.at(TokenKind::Semi) {
+                // `import "file.c";`
+                self.bump();
+                return Ok(self.node(NodeKind::ImportC { path }, lo));
+            }
             self.expect_kw(Keyword::As)?;
             let (alias, alias_span) = self.expect_ident()?;
             self.expect_semi()?;
@@ -163,8 +174,19 @@ impl Parser<'_> {
 
     /// `fn name<G>(params) -> Ret { body }`; the body is replaced by `;` in a
     /// trait signature.
+    /// `extern fn name(params) -> T;` (after `extern`): a function written in C.
+    fn parse_extern_fn(&mut self) -> PResult<NodeId> {
+        let lo = self.cur_lo();
+        self.bump();
+        self.parse_fn_with(true, lo)
+    }
+
     pub(super) fn parse_fn(&mut self) -> PResult<NodeId> {
         let lo = self.cur_lo();
+        self.parse_fn_with(false, lo)
+    }
+
+    fn parse_fn_with(&mut self, external: bool, lo: u32) -> PResult<NodeId> {
         self.expect_kw(Keyword::Fn)?;
         let (name, name_span) = self.expect_ident()?;
         let generics = self.parse_generic_params()?;
@@ -183,6 +205,9 @@ impl Parser<'_> {
         }
         let ret = if self.eat(TokenKind::Arrow) { Some(self.parse_type()?) } else { None };
         let generics = self.parse_where(generics)?;
+        if external && self.at(TokenKind::LBrace) {
+            return Err(self.unexpected("E0112", "`;` (an extern function is written in C and has no body)"));
+        }
         let body = if self.at(TokenKind::LBrace) {
             Some(self.parse_block()?)
         } else {
@@ -192,7 +217,7 @@ impl Parser<'_> {
         let params = self.list(&params);
         Ok(self.node_n(
             name_span,
-            NodeKind::FnDecl { name, generics, params, ret: self.opt(ret), body: self.opt(body) },
+            NodeKind::FnDecl { name, generics, params, ret: self.opt(ret), body: self.opt(body), external },
             lo,
         ))
     }

@@ -152,6 +152,10 @@ fn touched_object(i: &Inst) -> Option<VReg> {
 /// terminate). Reads and writes of objects the function allocates and keeps to itself do not count:
 /// nothing outside can tell.
 fn local_effects(f: &IrFunc, escapes: &super::escape::ParamEscapes) -> Effects {
+    // a function written in C can do anything
+    if f.ext.is_some() {
+        return Effects::ALL;
+    }
     let none = FuncEffects::unknown();
     let classes = super::escape::classify(f, escapes);
     let mut e = Effects::NONE;

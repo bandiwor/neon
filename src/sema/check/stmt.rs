@@ -66,7 +66,7 @@ impl Checker<'_> {
                 self.is_never(t)
             }
             NodeKind::Error => false,
-            NodeKind::ImportNamed { .. } | NodeKind::ImportAlias { .. } => {
+            NodeKind::ImportNamed { .. } | NodeKind::ImportAlias { .. } | NodeKind::ImportC { .. } => {
                 self.err(
                     ast.span(s),
                     "E0303",

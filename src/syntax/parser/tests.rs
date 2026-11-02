@@ -391,6 +391,18 @@ fn traits_and_impls() {
 }
 
 #[test]
+fn extern_functions_and_c_imports() {
+    assert_eq!(module("import \"m.c\";"), "(module (import-c \"m.c\"))");
+    assert_eq!(module("extern fn add(a: i64) -> i64;"), "(module (extern fn add (a:i64) -> i64 ;))");
+    assert_eq!(module("export extern fn f();"), "(module (export (extern fn f () ;)))");
+    // `extern` stays usable as a name
+    assert_eq!(module("let extern = 1;"), "(module (let extern 1))");
+    // an extern function has no body
+    let p = parse("extern fn f() { 1 }");
+    assert!(p.diags.has_errors());
+}
+
+#[test]
 fn imports_exports_and_consts() {
     assert_eq!(module("import { sqrt, pow as power } from \"math\";"), "(module (import \"math\" sqrt pow:power))");
     assert_eq!(module("import {} from \"x\";"), "(module (import \"x\"))");

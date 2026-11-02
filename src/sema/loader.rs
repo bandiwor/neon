@@ -31,6 +31,8 @@ pub struct LoadedModule {
     pub ast: Arc<Ast>,
     /// The `Import*` node of each successfully resolved import, with its target.
     pub imports: Vec<(NodeId, ModuleId)>,
+    /// The C files this module imports (`import "file.c";`), as paths for an `#include`.
+    pub c_files: Vec<String>,
 }
 
 #[derive(Debug, Default)]
@@ -138,6 +140,7 @@ impl<'a> Loader<'a> {
             file,
             ast,
             imports: Vec::new(),
+            c_files: Vec::new(),
         });
         l.states.insert(PRELUDE_NAME.to_string(), State::Done(ModuleId(0)));
         l
@@ -151,8 +154,16 @@ impl<'a> Loader<'a> {
         let ast = Arc::new(parse_source(file, &text, self.interner, self.diags));
 
         let mut imports = Vec::new();
+        let mut c_files = Vec::new();
         let NodeKind::Module { items } = *ast.kind(ast.root()) else { unreachable!("root is a module") };
         for &item in ast.list(items) {
+            if let NodeKind::ImportC { path } = *ast.kind(item) {
+                let spec = ast.lits.str(path).to_string();
+                if let Some(found) = self.resolve_c_file(&canon, &spec, ast.span(item)) {
+                    c_files.push(found);
+                }
+                continue;
+            }
             let spec = match *ast.kind(item) {
                 NodeKind::ImportNamed { path, .. } | NodeKind::ImportAlias { path, .. } => {
                     ast.lits.str(path).to_string()
@@ -167,9 +178,31 @@ impl<'a> Loader<'a> {
 
         self.stack.pop();
         let id = ModuleId(self.graph.modules.len() as u32);
-        self.graph.modules.push(LoadedModule { id, path: canon.clone(), file, ast, imports });
+        self.graph.modules.push(LoadedModule { id, path: canon.clone(), file, ast, imports, c_files });
         self.states.insert(canon, State::Done(id));
         id
+    }
+
+    /// `import "mathlib.c";`: the file next to the importing module, which has to exist.
+    fn resolve_c_file(&mut self, importer: &str, spec: &str, span: Span) -> Option<String> {
+        let joined = self.vfs.resolve(importer, spec);
+        if !spec.ends_with(".c") {
+            self.diags.report(
+                Diagnostic::error(format!("`{spec}` is not a C source file"))
+                    .with_code("E0306")
+                    .with_label(span, "only `.c` files can be imported without a name"),
+            );
+            return None;
+        }
+        if !self.vfs.is_file(&joined) {
+            self.diags.report(
+                Diagnostic::error(format!("cannot find the C file `{spec}`"))
+                    .with_code("E0306")
+                    .with_label(span, format!("no file `{joined}`")),
+            );
+            return None;
+        }
+        Some(joined)
     }
 
     fn resolve_import(&mut self, importer: &str, spec: &str, span: Span) -> Option<ModuleId> {

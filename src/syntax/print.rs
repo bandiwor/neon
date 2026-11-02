@@ -112,6 +112,11 @@ impl Printer<'_> {
                     self.sym(a);
                 }
             }
+            ImportC { path } => {
+                self.open("import-c");
+                let _ = write!(self.out, " {:?}", self.ast.lits.str(path));
+                self.close();
+            }
             ImportAlias { path, alias } => {
                 self.open("import");
                 let _ = write!(self.out, " {:?} as ", self.ast.lits.str(path));
@@ -119,8 +124,8 @@ impl Printer<'_> {
                 self.close();
             }
             Export { item } => self.form("export", &[item]),
-            FnDecl { name, generics, params, ret, body } => {
-                self.open("fn ");
+            FnDecl { name, generics, params, ret, body, external } => {
+                self.open(if external { "extern fn " } else { "fn " });
                 self.sym(name);
                 self.generics(generics);
                 self.text(" (");

@@ -19,7 +19,7 @@ pub mod sym {
 
     pub(super) const PREDEFINED: &[&str] = &[
         "from", "set", "Tuple2", "Tuple3", "Tuple4", "Tuple5", "Tuple6", "Tuple7", "Tuple8", "T", "_0", "_1", "_2",
-        "_3", "_4", "_5", "_6", "_7", "_p0", "_p1", "_p2", "_p3", "_p4", "_p5", "_p6", "_p7", "where",
+        "_3", "_4", "_5", "_6", "_7", "_p0", "_p1", "_p2", "_p3", "_p4", "_p5", "_p6", "_p7", "where", "extern",
     ];
 
     const BASE: u32 = Keyword::ALL.len() as u32;
@@ -55,6 +55,9 @@ pub mod sym {
 
     /// `where` in `fn f<T>(x: T) where T: Ord { .. }`; still usable as a name.
     pub const WHERE: Symbol = Symbol(BASE + 26);
+
+    /// `extern` in `extern fn add(a: i64, b: i64) -> i64;`, a function written in C; still usable as a name.
+    pub const EXTERN: Symbol = Symbol(BASE + 27);
 
     /// The arity of the tuple type named `name` (`Tuple3` is 3), if it is one.
     pub fn tuple_arity(name: &str) -> Option<usize> {

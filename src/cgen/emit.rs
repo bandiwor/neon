@@ -338,6 +338,11 @@ impl<'p> Gen<'p> {
         for n in self.names.clone() {
             self.taken.insert(format!("{n}_clo"));
         }
+        for (i, f) in self.prog.funcs.iter().enumerate() {
+            if let (true, Some(c)) = (self.live[i], &f.ext) {
+                self.taken.insert(c.clone());
+            }
+        }
     }
 
     /// Enumerators for the fields of every struct and the variants of every enum (`Point_x`, `Shape_Circle`).
@@ -822,9 +827,78 @@ impl<'p> Gen<'p> {
 
     // ---- one function ---------------------------------------------------------------------------------
 
+    /// An `extern fn`: the C function from an imported C file, called through a small wrapper that
+    /// converts strings (`string` in, `const char *` to C; `const char *` back, copied into a Neon string).
+    fn emit_extern(&mut self, id: FuncId) -> Result<(String, String), String> {
+        let f = self.prog.func(id);
+        let cname = f.ext.clone().unwrap_or_default();
+        let name = self.names[id.index()].clone();
+        if names::c_ident(&cname).is_none() || names::reserved().contains(&cname) {
+            return Err(format!(
+                "extern fn `{cname}`: the name is not usable as a C function (it is not plain ASCII, or the Neon runtime owns it); rename the function"
+            ));
+        }
+        if self.names.contains(&cname) || self.gnames.contains(&cname) {
+            return Err(format!(
+                "extern fn `{cname}`: the name is also used by the generated program; rename the function"
+            ));
+        }
+        let mut c_params = Vec::new();
+        let mut params = Vec::new();
+        let mut args = Vec::new();
+        for i in 0..f.params as usize {
+            let ty = f.regs[i];
+            let pn = f.reg_name(VReg(i as u32)).and_then(names::c_ident).unwrap_or_else(|| format!("a{i}"));
+            let pn = if names::reserved().contains(&pn) { format!("{pn}_") } else { pn };
+            let pn = if params.iter().any(|(_, n): &(String, String)| *n == pn) { format!("{pn}{i}") } else { pn };
+            match ty {
+                IrTy::Ref => {
+                    c_params.push(format!("const char *{pn}"));
+                    params.push((format!("Obj *{pn}"), pn.clone()));
+                    args.push(format!("STR({pn})->s"));
+                }
+                IrTy::Unit | IrTy::Packed => return Err(format!("extern fn `{cname}`: a parameter of this type")),
+                t => {
+                    c_params.push(format!("{} {pn}", cty(t)));
+                    params.push((format!("{} {pn}", cty(t)), pn.clone()));
+                    args.push(pn);
+                }
+            }
+        }
+        let c_list = if c_params.is_empty() { "void".to_string() } else { c_params.join(", ") };
+        let w_list = if params.is_empty() {
+            "void".to_string()
+        } else {
+            params.iter().map(|p| p.0.clone()).collect::<Vec<_>>().join(", ")
+        };
+        let call = format!("{cname}({})", args.join(", "));
+        let (c_ret, w_ret, body) = match f.ret {
+            IrTy::Unit => ("void", "unit", format!("    {call};")),
+            IrTy::Ref => (
+                "const char *",
+                "Obj *",
+                format!(
+                    "    const char *r = {call};\n    if (UNLIKELY(r == NULL)) rt_fail(\"extern function `{cname}` returned NULL\");\n    return str_from_c(r);"
+                ),
+            ),
+            IrTy::Packed => return Err(format!("extern fn `{cname}`: a result of this type")),
+            t => (cty(t), cty(t), format!("    return {call};")),
+        };
+        let sep = if w_ret.ends_with('*') { "" } else { " " };
+        let header = format!("static {w_ret}{sep}{name}({w_list})");
+        let sep_c = if c_ret.ends_with('*') { "" } else { " " };
+        let text = format!(
+            "/* extern fn {cname}: written in C; this declaration must agree with its definition */\n{c_ret}{sep_c}{cname}({c_list});\n\n{header} {{\n{body}\n}}"
+        );
+        Ok((format!("{header};"), text))
+    }
+
     fn emit_func(&mut self, id: FuncId) -> Result<(String, String), String> {
         let prog = self.prog;
         let f = prog.func(id);
+        if f.ext.is_some() {
+            return self.emit_extern(id);
+        }
         let name = self.names[id.index()].clone();
         let order = block_layout(f);
         let nregs = f.regs.len();

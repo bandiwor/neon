@@ -3,6 +3,7 @@
 use super::{PResult, Parser, Recover};
 use crate::diag::Diagnostic;
 use crate::syntax::ast::{NodeId, NodeKind, OptionNodeId};
+use crate::syntax::interner::sym;
 use crate::syntax::token::{Keyword, TokenKind};
 
 /// Outcome of parsing one statement.
@@ -51,6 +52,9 @@ impl Parser<'_> {
                 Ok(Stmt::Empty)
             }
             TokenKind::Kw(Keyword::Let | Keyword::Var) => self.parse_let().map(Stmt::Node),
+            TokenKind::Ident(s) if s == sym::EXTERN && self.peek_at(1) == TokenKind::Kw(Keyword::Fn) => {
+                self.parse_item().map(Stmt::Node)
+            }
             TokenKind::Kw(
                 Keyword::Fn
                 | Keyword::Struct

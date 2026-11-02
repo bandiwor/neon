@@ -5,7 +5,7 @@ import { tagHighlighter, tags } from '@lezer/highlight';
 
 const KEYWORDS = new Set([
   'let', 'var', 'const', 'fn', 'return', 'if', 'else', 'elif', 'while', 'loop', 'for', 'in', 'break',
-  'continue', 'match', 'enum', 'struct', 'trait', 'impl', 'import', 'export', 'as', 'true', 'false', 'self', 'Self',
+  'continue', 'match', 'enum', 'struct', 'trait', 'impl', 'import', 'export', 'extern', 'as', 'true', 'false', 'self', 'Self',
 ]);
 const PRIMITIVES = new Set(['i8', 'i16', 'i32', 'i64', 'u8', 'u16', 'u32', 'u64', 'f32', 'f64', 'bool', 'char', 'string']);
 const OPERATORS = /^(?:->|=>|==|!=|<=|>=|&&|\|\||<<=?|>>=?|\.\.=?|[+\-*/%&|^]=?|[!<>=~?])/;
