@@ -110,6 +110,12 @@ impl fmt::Display for IrFunc {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         let params: Vec<_> = (0..self.params).map(|i| format!("v{i}: {}", ty_name(self.regs[i as usize]))).collect();
         writeln!(f, "fn {}({}) -> {} {{", self.name, params.join(", "), ty_name(self.ret))?;
+        // debug information: the source names of registers
+        let names: Vec<String> =
+            self.dbg.iter().enumerate().filter_map(|(i, d)| d.name.as_ref().map(|n| format!("v{i} = {n}"))).collect();
+        if !names.is_empty() {
+            writeln!(f, "  // names: {}", names.join(", "))?;
+        }
         for (i, b) in self.blocks.iter().enumerate() {
             writeln!(f, "  b{i}:")?;
             for inst in &b.insts {

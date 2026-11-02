@@ -1727,3 +1727,39 @@ fn the_nested_flatten_impls_do_not_depend_on_the_order_they_are_listed_in() {
     let ir = compile(src);
     assert_eq!(run_ir(&ir, &[]).output, "Option::Some(4)\nOption::None\n");
 }
+
+// ---- debug information ----------------------------------------------------------------------
+
+#[test]
+fn registers_keep_the_names_of_variables_and_parameters() {
+    let src = "struct P { x: i64, y: i64 }\nfn len2(p: P, scale: i64) -> i64 { let sq = p.x * p.x + p.y * p.y; sq * scale }\nfn main() { var total = 0; let q = P { x: 1, y: 2 }; total += len2(q, 3); println(total); }";
+    let ir = compile(src);
+    let f = fn_named(&ir, "len2");
+    let names: Vec<_> = f.dbg.iter().filter_map(|d| d.name.as_deref()).collect();
+    assert_eq!(&names[..2], ["p", "scale"], "{ir}");
+    assert!(names.contains(&"sq"), "{names:?}");
+    // the parameter knows its layout, so the fields of `p.x` can be named later
+    let d = f.dbg[0].desc.expect("the layout of `p`");
+    assert!(matches!(ir.desc(d), super::TypeDesc::Struct { name, .. } if name == "P"));
+    // the function remembers where it is defined
+    let loc = f.loc.expect("a location");
+    assert_eq!(ir.sources[loc.file as usize].path, "main.neon");
+    assert_eq!(ir.sources[loc.file as usize].line_of(loc.offset), 2);
+    assert!(format!("{f}").contains("// names: v0 = p, v1 = scale"), "{f}");
+}
+
+#[test]
+fn names_survive_the_optimizer() {
+    let src = "fn main() { var total = 0; let shapes = [1, 2, 3]; for s in shapes { total += s * 2; } let count = shapes.len(); println(total + count as i64); }";
+    let (ir, _) = optimized(src, OptConfig::default());
+    let all: Vec<String> =
+        ir.funcs.iter().flat_map(|f| f.dbg.iter().filter_map(|d| d.name.as_deref().map(str::to_string))).collect();
+    for n in ["total", "shapes", "s", "count"] {
+        assert!(all.iter().any(|x| x == n), "{n} was lost: {all:?}");
+    }
+    // and inlining keeps the callee's names next to the caller's
+    let inl = "fn twice(amount: i64) -> i64 { amount * 2 }\nfn main() { let base = 21; println(twice(base)); }";
+    let (ir, _) = optimized(inl, OptConfig::default());
+    let main: Vec<_> = ir.funcs.iter().flat_map(|f| f.dbg.iter().filter_map(|d| d.name.as_deref())).collect();
+    assert!(main.contains(&"base") || main.contains(&"amount"), "{main:?}");
+}

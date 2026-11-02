@@ -197,6 +197,9 @@ fn optimize_function(
 /// function order afterwards, so the result is the same whatever the number of threads.
 pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
     let mut stats = OptStats::default();
+    for f in &mut prog.funcs {
+        inherit_names(f);
+    }
     let simplify = |prog: &mut IrProgram, stats: &mut OptStats| {
         // what each function can do; the passes below only remove or move code, which can only
         // shrink the real effects, so the summaries stay sound while they run
@@ -257,4 +260,41 @@ pub fn optimize(prog: &mut IrProgram, cfg: &OptConfig) -> OptStats {
         simplify(prog, &mut stats);
     }
     stats
+}
+
+/// Debug information survives the copies the optimizer removes: `let p = <expr>` is lowered to
+/// `t = <expr>; p = t`, and when the move goes away only `t` is left, so `t` is given the name of `p`
+/// (a single-assignment temporary only: it is the same value for as long as it lives).
+fn inherit_names(f: &mut IrFunc) {
+    let mut defs = vec![0u32; f.regs.len()];
+    for d in defs.iter_mut().take(f.params as usize) {
+        *d = 1;
+    }
+    for i in f.blocks.iter().flat_map(|b| &b.insts) {
+        if let Some(d) = i.def() {
+            defs[d.index()] += 1;
+        }
+    }
+    for _ in 0..3 {
+        let mut changed = false;
+        for bi in 0..f.blocks.len() {
+            for ii in 0..f.blocks[bi].insts.len() {
+                let Inst::Move { dst, src } = f.blocks[bi].insts[ii] else { continue };
+                let (d, s) = (dst.index(), src.index());
+                if defs[s] != 1 || s < f.params as usize || f.dbg[s].name.is_some() {
+                    continue;
+                }
+                if f.dbg[d].name.is_some() {
+                    f.dbg[s].name = f.dbg[d].name.clone();
+                    if f.dbg[s].desc.is_none() {
+                        f.dbg[s].desc = f.dbg[d].desc;
+                    }
+                    changed = true;
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
 }

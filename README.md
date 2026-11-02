@@ -516,7 +516,15 @@ the checked arithmetic of every integer type as `static inline` functions (`add_
 collector, strings, arrays, maps, formatting, input and the `sys` / `fs` / `term` modules (with the
 platform headers); build it once and link it with every program.
 
-* Registers become typed locals (`int32_t v3`, `Obj *v7`); containers hold 64-bit words.
+* **Debug information.** Lowering records the names of variables, parameters and loop variables in the
+  IR (`neon ir` prints them as `// names: v0 = p, v1 = scale`), the optimizer keeps them when it removes
+  copies and inlines, and the C file uses them: `i64 total`, `Obj *shapes`, parameters as written, a clash
+  with a C keyword, a runtime name or another variable gets a suffix (`int_2`, `x_2`); temporaries are
+  `t<n>`. Fields and variants have names too: the file declares `enum { Point_x, Point_y };` and
+  `enum { Shape_Circle, Shape_Rect };` and uses `AGG(p)->f[Point_y]`, `TAG(s) == Shape_Circle`. A comment
+  above every function says where it comes from (`/* dist (geometry.neon:12) */`), so a C debugger shows
+  Neon names for functions, parameters and locals.
+* Registers become typed locals (`i32 t3`, `Obj *t7`); containers hold 64-bit words.
   Control flow is `goto` in the layout order of the bytecode compiler, so most jumps are
   fall-throughs. Single-assignment constants are folded into their uses.
 * Integer arithmetic traps like the VM does (`add_i32`, `div_i64`, ... use

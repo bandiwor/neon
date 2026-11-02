@@ -79,7 +79,7 @@ impl SourceFile {
         self.text.is_empty()
     }
 
-    fn line_starts(&self) -> &[u32] {
+    pub fn line_starts(&self) -> &[u32] {
         self.line_starts.get_or_init(|| {
             let mut starts = vec![0u32];
             for (i, b) in self.text.bytes().enumerate() {

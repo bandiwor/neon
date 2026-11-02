@@ -20,6 +20,9 @@ pub fn verify_func(p: &IrProgram, f: &IrFunc) -> Result<(), String> {
     if f.pinned.len() != f.regs.len() {
         return Err("pinned/regs length mismatch".into());
     }
+    if f.dbg.len() != f.regs.len() {
+        return Err("debug info/regs length mismatch".into());
+    }
     if f.params as usize > f.regs.len() {
         return Err("more parameters than registers".into());
     }

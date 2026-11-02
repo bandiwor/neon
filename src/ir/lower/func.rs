@@ -170,6 +170,14 @@ pub(super) fn lower_instance(cx: &mut Lowerer<'_>, id: FuncId, key: FuncKey) {
     };
     let entry = fl.f.new_block();
     fl.cur = entry;
+    let span = match &key {
+        FuncKey::Fn(fid, _) => {
+            let d = &fl.cx.prog.fns[fid.index()];
+            (d.owner != FnOwner::ModuleInit).then_some(d.name_span)
+        }
+        FuncKey::Closure(_, node, _) => Some(fl.ast.span(*node)),
+    };
+    fl.f.loc = span.filter(|s| *s != crate::diag::Span::DUMMY).map(|s| SrcLoc { file: s.file.0, offset: s.lo });
     match key {
         FuncKey::Fn(fid, _) => fl.lower_fn(fid),
         FuncKey::Closure(_, node, _) => fl.lower_closure(node),
@@ -225,6 +233,7 @@ impl FnLower<'_, '_> {
     }
 
     fn bind_param(&mut self, l: LocalId, reg: VReg) {
+        self.debug_local(l, reg);
         self.locals.insert(l, Slot::Reg(reg));
         if self.cx.prog.locals[l.index()].captured {
             self.f.pinned[reg.index()] = true;
@@ -357,6 +366,7 @@ impl FnLower<'_, '_> {
         let ty = self.subst(ty);
         let ir = self.cx.ir_ty(ty);
         let reg = self.new_reg(ir);
+        self.debug_local(l, reg);
         self.locals.insert(l, Slot::Reg(reg));
         if self.cx.prog.locals[l.index()].captured {
             self.f.pinned[reg.index()] = true;
@@ -365,6 +375,25 @@ impl FnLower<'_, '_> {
             }
         }
         reg
+    }
+
+    /// Debug information for the register of a variable: its name and, for a struct or an enum, its layout.
+    fn debug_local(&mut self, l: LocalId, reg: VReg) {
+        let (name, ty) = {
+            let d = &self.cx.prog.locals[l.index()];
+            (self.cx.interner.resolve(d.name).to_string(), d.ty)
+        };
+        self.f.name_reg(reg, &name);
+        let ty = self.subst(ty);
+        self.note_layout(reg, ty);
+    }
+
+    /// Records that `reg` holds a value of the struct or enum type `ty` (for field and variant names).
+    pub fn note_layout(&mut self, reg: VReg, ty: Ty) {
+        if matches!(self.cx.prog.types.kind(ty), crate::sema::TyKind::Adt(..)) {
+            let d = self.cx.desc(ty);
+            self.f.dbg[reg.index()].desc = Some(d);
+        }
     }
 
     pub fn slot_of(&mut self, l: LocalId) -> Slot {

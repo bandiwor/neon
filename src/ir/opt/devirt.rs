@@ -157,6 +157,12 @@ fn lift(t: &IrFunc) -> IrFunc {
         .chain(std::iter::repeat_n(false, c))
         .chain(t.pinned[p..].iter().copied())
         .collect();
+    g.dbg = t.dbg[..p]
+        .iter()
+        .cloned()
+        .chain(std::iter::repeat_n(RegDbg::default(), c))
+        .chain(t.dbg[p..].iter().cloned())
+        .collect();
     g.params = (p + c) as u32;
     let mut newly_pinned = Vec::new();
     for b in &mut g.blocks {

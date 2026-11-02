@@ -6,6 +6,7 @@
 //! constants, functions, and `main`.
 
 mod emit;
+mod names;
 
 use std::fmt::Write as _;
 
@@ -32,6 +33,9 @@ pub fn emit_c(prog: &IrProgram) -> Result<String, String> {
     section(&mut s, "Declarations");
     for t in &out.typedefs {
         let _ = writeln!(s, "{t}");
+    }
+    for e in &out.enums {
+        let _ = writeln!(s, "{e}");
     }
     for g in &out.globals {
         let _ = writeln!(s, "{g}");
@@ -73,6 +77,7 @@ pub fn emit_c(prog: &IrProgram) -> Result<String, String> {
         s.push_str(b);
         s.push_str("\n\n");
     }
+    s.pop();
 
     // ---- main ------------------------------------------------------------------------------------------
     section(&mut s, "Entry point");
@@ -182,6 +187,52 @@ mod tests {
         assert!(c.contains("DEPTH_ENTER();"));
         let d = c_of("fn main() { let x = 3.0; println(x * x + 1.0); }");
         assert!(!d.contains("DEPTH_ENTER"));
+    }
+
+    fn c_unoptimized(src: &str) -> String {
+        let opts = Options { opt: crate::ir::OptConfig::none(), ..Options::default() };
+        let c = compile_source("t.neon", src, &MemVfs::new(), &opts);
+        assert!(!c.diags.has_errors(), "{}", c.render_diagnostics());
+        emit_c(c.ir.as_ref().unwrap()).unwrap()
+    }
+
+    #[test]
+    fn variables_parameters_fields_and_variants_keep_their_names() {
+        let c = c_unoptimized(
+            "struct Point { x: i64, y: i64 }\n\
+             enum Shape { Circle(i64), Dot }\n\
+             fn dist(p: Point, scale: i64) -> i64 { (p.x * p.x + p.y * p.y) * scale }\n\
+             fn area(s: Shape) -> i64 { match s { Shape::Circle(r) => r * r, Shape::Dot => 0 } }\n\
+             fn main() { var total = 0; let pt = Point { x: 3, y: 4 }; for k in 0..3 { total += dist(pt, k); }\n\
+             println(total + area(Shape::Circle(2))); }",
+        );
+        for name in ["n_dist(Obj *p, i64 scale)", "n_area(Obj *s)", "total", "pt", "Point_x", "Point_y", "Shape_Circle"]
+        {
+            assert!(c.contains(name), "{name} is missing:\n{c}");
+        }
+        assert!(c.contains("enum { Point_x, Point_y };") && c.contains("AGG(p)->f[Point_y]"), "{c}");
+        assert!(c.contains("TAG(s) != Shape_Circle") && c.contains("agg_new(Shape_Circle"), "{c}");
+        // where each function comes from
+        assert!(c.contains("/* dist (t.neon:3) */") && c.contains("/* area (t.neon:4) */"), "{c}");
+        // no register numbers for what has a name
+        assert!(!c.contains(" v1") && !c.contains("(v0"), "{c}");
+    }
+
+    #[test]
+    fn names_that_clash_with_c_are_made_safe() {
+        let c = c_unoptimized(
+            "fn f(int: i64, Obj: i64, t: i64, len: i64) -> i64 { let main = int + Obj; let x = t; let x = x + len; main + x }\n\
+             fn main() { println(f(1, 2, 3, 4)); }",
+        );
+        // keywords and the runtime's own names get a suffix; harmless names (`len`) stay
+        assert!(
+            c.contains("i64 int_2") && c.contains("Obj_2") && c.contains("i64 t_2") && c.contains("i64 len"),
+            "{c}"
+        );
+        assert!(c.contains("main_2") || !c.contains("i64 main "), "{c}");
+        // unicode names are not C identifiers: they fall back to temporaries
+        let u = c_unoptimized("fn main() { let привет = 5; println(привет + 1); }");
+        assert!(!u.contains("привет") && u.contains("n_start") || u.contains("n_main"), "{u}");
     }
 
     #[test]

@@ -6,9 +6,10 @@
 //! locals the collector learns about through a per-call `Frame`; a variable captured by a closure
 //! lives in a heap `Cell` shared with the closure.
 
-use std::collections::{BTreeMap, BTreeSet, HashMap};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 use std::fmt::Write as _;
 
+use super::names;
 use crate::builtin::Builtin;
 use crate::compiler::block_layout;
 use crate::effects::Effects;
@@ -31,6 +32,22 @@ pub struct Gen<'p> {
     fnptrs: Vec<(String, String)>,
     /// Plain functions used as closure values: they get a wrapper taking the (unused) cell array.
     wrappers: BTreeSet<usize>,
+    /// Names of the program level (functions, globals, field and variant enumerators): no local takes them.
+    taken: HashSet<String>,
+    /// Field and variant enumerators per descriptor (a struct's fields, an enum's variants); descriptors of
+    /// the same name and shape share one set.
+    layouts: HashMap<usize, Layout>,
+    layouts_used: BTreeSet<usize>,
+}
+
+/// The names of the fields of a struct, or of the variants of an enum, as C enumerators.
+#[derive(Debug, Clone)]
+struct Layout {
+    /// The descriptor that owns the enumerators.
+    owner: usize,
+    is_enum: bool,
+    type_name: String,
+    items: Vec<String>,
 }
 
 /// The pieces of the generated program, before they are put in order.
@@ -41,6 +58,8 @@ pub struct Output {
     pub globals: Vec<String>,
     pub strs: Vec<u32>,
     pub ref_globals: Vec<String>,
+    /// `enum { Point_x, Point_y };`: the names of the fields and variants the program uses.
+    pub enums: Vec<String>,
     pub entry: String,
 }
 
@@ -117,6 +136,49 @@ fn ret_cty(t: IrTy) -> &'static str {
     } else {
         cty(t)
     }
+}
+
+/// `f(x)` -> `x` when the whole of `e` is that one call.
+fn unwrap_call<'a>(e: &'a str, f: &str) -> Option<&'a str> {
+    let inner = e.strip_prefix(f)?.strip_prefix('(')?.strip_suffix(')')?;
+    let mut depth = 0i32;
+    for c in inner.chars() {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth < 0 {
+                    return None;
+                }
+            }
+            _ => {}
+        }
+    }
+    (depth == 0).then_some(inner)
+}
+
+/// The negation of a condition, without parentheses where it does not need them.
+/// A word as an object pointer (`O2W(x)` is just `x`).
+fn w2o(w: &str) -> String {
+    match unwrap_call(w, "O2W") {
+        Some(inner) => inner.to_string(),
+        None => format!("W2O({w})"),
+    }
+}
+
+fn negate(cond: &str) -> String {
+    if cond.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return format!("!{cond}");
+    }
+    if let Some(rest) = cond.strip_prefix('!') {
+        if rest.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+            return rest.to_string();
+        }
+    }
+    if cond.starts_with("TAG(") && !cond.contains("&&") && !cond.contains("||") && cond.matches(" == ").count() == 1 {
+        return cond.replace(" == ", " != ");
+    }
+    format!("!({cond})")
 }
 
 fn paren(e: &str) -> String {
@@ -210,6 +272,9 @@ impl<'p> Gen<'p> {
             printer_todo: Vec::new(),
             fnptrs: Vec::new(),
             wrappers: BTreeSet::new(),
+            taken: HashSet::new(),
+            layouts: HashMap::new(),
+            layouts_used: BTreeSet::new(),
         }
     }
 
@@ -267,6 +332,61 @@ impl<'p> Gen<'p> {
             }
             self.gnames.push(name);
         }
+        for n in self.names.iter().chain(&self.gnames) {
+            self.taken.insert(n.clone());
+        }
+        for n in self.names.clone() {
+            self.taken.insert(format!("{n}_clo"));
+        }
+    }
+
+    /// Enumerators for the fields of every struct and the variants of every enum (`Point_x`, `Shape_Circle`).
+    fn build_layouts(&mut self) {
+        let mut type_bases: HashSet<String> = HashSet::new();
+        let mut by_shape: HashMap<(bool, String, Vec<String>), usize> = HashMap::new();
+        for (i, d) in self.prog.descs.iter().enumerate() {
+            let (is_enum, name, items): (bool, &String, Vec<&String>) = match d {
+                TypeDesc::Struct { name, fields } => (false, name, fields.iter().map(|f| &f.0).collect()),
+                TypeDesc::Enum { name, variants } => (true, name, variants.iter().map(|v| &v.0).collect()),
+                _ => continue,
+            };
+            let key = (is_enum, name.clone(), items.iter().map(|s| s.to_string()).collect::<Vec<_>>());
+            if let Some(&owner) = by_shape.get(&key) {
+                let l = self.layouts[&owner].clone();
+                self.layouts.insert(i, l);
+                continue;
+            }
+            let base = names::c_ident(name).unwrap_or_else(|| format!("T{i}"));
+            let mut type_name = base.clone();
+            let mut n = 2;
+            while !type_bases.insert(type_name.clone()) {
+                type_name = format!("{base}_{n}");
+                n += 1;
+            }
+            let items: Vec<String> = items
+                .iter()
+                .enumerate()
+                .map(|(k, it)| {
+                    let id = names::c_ident(it).unwrap_or_else(|| k.to_string());
+                    names::unique(&format!("{type_name}_{id}"), &mut self.taken)
+                })
+                .collect();
+            by_shape.insert(key, i);
+            self.layouts.insert(i, Layout { owner: i, is_enum, type_name, items });
+        }
+    }
+
+    /// The enumerator declarations of the layouts the program used.
+    fn layout_decls(&self) -> Vec<String> {
+        self.layouts_used
+            .iter()
+            .map(|d| {
+                let l = &self.layouts[d];
+                let what = if l.is_enum { "variants of enum" } else { "fields of struct" };
+                let list = l.items.join(", ");
+                format!("enum {{ {list} }};   /* {what} {} */", l.type_name)
+            })
+            .collect()
     }
 
     /// Functions that can end up calling themselves (or call closures) get a recursion guard.
@@ -313,6 +433,7 @@ impl<'p> Gen<'p> {
 
     fn as_word(&mut self, t: IrTy, e: &str) -> String {
         match t {
+            IrTy::Num(NumTy::I64) => format!("(W){}", paren(e)),
             IrTy::Num(n) if n.is_signed() => format!("(W)(i64){}", paren(e)),
             IrTy::Num(NumTy::F64) => {
                 format!("f64_bits({e})")
@@ -321,9 +442,10 @@ impl<'p> Gen<'p> {
                 format!("f32_bits({e})")
             }
             IrTy::Num(_) | IrTy::Bool | IrTy::Char => format!("(W){}", paren(e)),
-            IrTy::Ref => {
-                format!("O2W({e})")
-            }
+            IrTy::Ref => match unwrap_call(e, "W2O") {
+                Some(inner) => inner.to_string(),
+                None => format!("O2W({e})"),
+            },
             IrTy::Unit => "0".into(),
             IrTy::Packed => unreachable!("packed enums are legalized before code generation"),
         }
@@ -331,6 +453,7 @@ impl<'p> Gen<'p> {
 
     fn of_word(&mut self, t: IrTy, e: &str) -> String {
         match t {
+            IrTy::Num(NumTy::I64) => format!("(i64){}", paren(e)),
             IrTy::Num(n) if n.is_signed() => format!("({})(i64){}", num_cty(n), paren(e)),
             IrTy::Num(NumTy::F64) => {
                 format!("bits_f64({e})")
@@ -341,9 +464,10 @@ impl<'p> Gen<'p> {
             IrTy::Num(n) => format!("({}){}", num_cty(n), paren(e)),
             IrTy::Bool => format!("(u8){}", paren(e)),
             IrTy::Char => format!("(u32){}", paren(e)),
-            IrTy::Ref => {
-                format!("W2O({e})")
-            }
+            IrTy::Ref => match unwrap_call(e, "O2W") {
+                Some(inner) => inner.to_string(),
+                None => format!("W2O({e})"),
+            },
             IrTy::Unit => "0".into(),
             IrTy::Packed => unreachable!("packed enums are legalized before code generation"),
         }
@@ -462,14 +586,15 @@ impl<'p> Gen<'p> {
                 format!("sb_cp(&rt_sb, (u32){w});")
             }
             TypeDesc::Str if nested => {
-                format!("sb_dbg_str(&rt_sb, W2O({w}));")
+                format!("sb_dbg_str(&rt_sb, {});", w2o(w))
             }
             TypeDesc::Str => {
-                format!("sb_put(&rt_sb, STR(W2O({w}))->s, STR(W2O({w}))->len);")
+                let o = w2o(w);
+                format!("sb_put(&rt_sb, STR({o})->s, STR({o})->len);")
             }
             _ if crate::ir::packed_enum(&prog.descs, d).is_some() => format!("{}({w});", self.printer(d)),
             _ => {
-                format!("{}(W2O({w}));", self.printer(d))
+                format!("{}({});", self.printer(d), w2o(w))
             }
         }
     }
@@ -628,6 +753,7 @@ impl<'p> Gen<'p> {
         self.find_live();
         self.assign_names();
         self.find_guarded();
+        self.build_layouts();
         let mut fn_protos = Vec::new();
         let mut fn_bodies = Vec::new();
         for i in 0..self.prog.funcs.len() {
@@ -669,6 +795,7 @@ impl<'p> Gen<'p> {
             globals,
             strs: self.strs.clone(),
             ref_globals,
+            enums: self.layout_decls(),
             entry: self.names[self.prog.entry.index()].clone(),
         };
         Ok(out)
@@ -750,14 +877,39 @@ impl<'p> Gen<'p> {
             })
             .collect();
 
+        // names: the source's where the debug information has them, `t<n>` for temporaries
+        let mut taken = self.taken.clone();
+        let mut vn: Vec<String> = vec![String::new(); nregs];
+        let mut cn: Vec<String> = vec![String::new(); nregs];
+        // only registers that become variables get a name (a folded constant does not)
+        let alive: Vec<bool> = (0..nregs)
+            .map(|i| (used[i] || i < params || (pinned[i] && defined[i])) && (i < params || consts[i].is_none()))
+            .collect();
+        for i in (0..nregs).filter(|&i| alive[i]) {
+            if let Some(base) = f.reg_name(VReg(i as u32)).and_then(names::c_ident) {
+                vn[i] = names::unique(&base, &mut taken);
+                if pinned[i] {
+                    cn[i] = names::unique(&format!("{}_cell", vn[i]), &mut taken);
+                }
+            }
+        }
+        for i in (0..nregs).filter(|&i| alive[i]) {
+            if vn[i].is_empty() {
+                vn[i] = names::unique(&format!("t{i}"), &mut taken);
+            }
+            if pinned[i] && cn[i].is_empty() {
+                cn[i] = names::unique(&format!("c{i}"), &mut taken);
+            }
+        }
+        let lay = infer_layouts(prog, f);
+
         // signature
         let mut sig_params = Vec::new();
         if f.is_closure {
             sig_params.push("Obj **up".to_string());
         }
-        for (i, &is_pinned) in pinned.iter().enumerate().take(params) {
-            let pn = if is_pinned { format!("p{i}") } else { format!("v{i}") };
-            sig_params.push(format!("{}{}{pn}", cty(f.regs[i]), if f.regs[i] == IrTy::Ref { "" } else { " " }));
+        for (pn, &ty) in vn.iter().zip(&f.regs).take(params) {
+            sig_params.push(format!("{}{}{pn}", cty(ty), if ty == IrTy::Ref { "" } else { " " }));
         }
         if sig_params.is_empty() {
             sig_params.push("void".into());
@@ -787,12 +939,12 @@ impl<'p> Gen<'p> {
             }
             if pinned[i] {
                 cells.push(i);
-                roots.push(format!("&c{i}"));
+                roots.push(format!("&{}", cn[i]));
                 continue;
             }
             if i < params {
                 if f.regs[i] == IrTy::Ref {
-                    roots.push(format!("&v{i}"));
+                    roots.push(format!("&{}", vn[i]));
                 }
                 continue;
             }
@@ -803,13 +955,13 @@ impl<'p> Gen<'p> {
                 continue; // the unit value is the constant 0 and needs no variable
             }
             let (t, init) = if f.regs[i] == IrTy::Ref {
-                ("Obj", format!("*v{i} = NULL"))
+                ("Obj", format!("*{} = NULL", vn[i]))
             } else {
-                (cty(f.regs[i]), format!("v{i} = 0"))
+                (cty(f.regs[i]), format!("{} = 0", vn[i]))
             };
             locals.entry(t).or_default().push(init);
             if f.regs[i] == IrTy::Ref {
-                roots.push(format!("&v{i}"));
+                roots.push(format!("&{}", vn[i]));
             }
         }
         let need_frame = may_gc && !roots.is_empty();
@@ -825,6 +977,9 @@ impl<'p> Gen<'p> {
             frame: need_frame,
             guarded,
             name: name.clone(),
+            vn: vn.clone(),
+            cn: cn.clone(),
+            lay,
         };
         // layout / labels
         let mut targets = vec![false; f.blocks.len()];
@@ -846,12 +1001,22 @@ impl<'p> Gen<'p> {
         let body_lines = fe.out;
 
         let mut text = String::new();
+        if let Some(loc) = f.loc.and_then(|l| prog.sources.get(l.file as usize).map(|src| (src, l))) {
+            let (src, l) = loc;
+            let _ = writeln!(
+                text,
+                "/* {} ({}:{}) */",
+                f.name.replace("*/", "* /"),
+                src.path.replace("*/", "* /"),
+                src.line_of(l.offset)
+            );
+        }
         let _ = writeln!(text, "{header} {{");
         for (t, vars) in &locals {
             let _ = writeln!(text, "    {t} {};", vars.join(", "));
         }
         if !cells.is_empty() {
-            let list: Vec<String> = cells.iter().map(|i| format!("*c{i} = NULL")).collect();
+            let list: Vec<String> = cells.iter().map(|&i| format!("*{} = NULL", cn[i])).collect();
             let _ = writeln!(text, "    Obj {};", list.join(", "));
         }
         if need_frame {
@@ -865,18 +1030,18 @@ impl<'p> Gen<'p> {
         }
         for (i, &is_pinned) in pinned.iter().enumerate().take(params) {
             if (!used[i] || f.regs[i] == IrTy::Unit) && !is_pinned {
-                let _ = writeln!(text, "    (void)v{i};");
+                let _ = writeln!(text, "    (void){};", vn[i]);
             }
         }
         for &i in &cells {
             let ty = f.regs[i];
             let init = if i < params {
-                let w = self.as_word(ty, &format!("p{i}"));
+                let w = self.as_word(ty, &vn[i]);
                 format!("cell_new({}, {w})", (ty == IrTy::Ref) as u8)
             } else {
                 format!("cell_new({}, 0)", (ty == IrTy::Ref) as u8)
             };
-            let _ = writeln!(text, "    c{i} = {init};");
+            let _ = writeln!(text, "    {} = {init};", cn[i]);
         }
         // a blank line after a jump and before a label; a jump right before a label gets just one
         let is_label = |l: &str| l.ends_with(':') && l.starts_with('B') && !l.contains(' ');
@@ -898,6 +1063,53 @@ impl<'p> Gen<'p> {
         text.push('}');
         Ok((proto, text))
     }
+}
+
+/// The struct or enum descriptor each register points to, as far as the program says: what lowering
+/// recorded for variables, the descriptors of `new_struct` / `new_enum`, copies, and the fields of structs.
+fn infer_layouts(prog: &IrProgram, f: &IrFunc) -> Vec<Option<usize>> {
+    let mut lay: Vec<Option<usize>> = f.dbg.iter().map(|d| d.desc.map(|x| x.index())).collect();
+    lay.resize(f.regs.len(), None);
+    let is_adt = |d: DescId| matches!(prog.desc(d), TypeDesc::Struct { .. } | TypeDesc::Enum { .. });
+    for _ in 0..4 {
+        let mut changed = false;
+        let mut set = |lay: &mut Vec<Option<usize>>, r: VReg, d: Option<usize>| {
+            if lay[r.index()].is_none() && d.is_some() {
+                lay[r.index()] = d;
+                changed = true;
+            }
+        };
+        for b in &f.blocks {
+            for inst in &b.insts {
+                match inst {
+                    Inst::NewStruct { dst, desc, .. } | Inst::NewEnum { dst, desc, .. } => {
+                        set(&mut lay, *dst, Some(desc.index()))
+                    }
+                    Inst::Move { dst, src } => {
+                        let (a, c) = (lay[dst.index()], lay[src.index()]);
+                        set(&mut lay, *dst, c);
+                        set(&mut lay, *src, a);
+                    }
+                    Inst::GetField { dst, obj, idx } => {
+                        if let Some(o) = lay[obj.index()] {
+                            if let TypeDesc::Struct { fields, .. } = prog.desc(DescId(o as u32)) {
+                                if let Some(&(_, fd)) = fields.get(*idx as usize) {
+                                    if is_adt(fd) {
+                                        set(&mut lay, *dst, Some(fd.index()));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        if !changed {
+            break;
+        }
+    }
+    lay
 }
 
 /// Does this instruction allocate heap objects (so the collector may run just before it)?
@@ -926,6 +1138,11 @@ struct FnEmit<'a, 'p> {
     frame: bool,
     guarded: bool,
     name: String,
+    /// The C names of the registers' values and of the cells of captured registers.
+    vn: Vec<String>,
+    cn: Vec<String>,
+    /// The struct or enum layout (descriptor) a register points to, where known.
+    lay: Vec<Option<usize>>,
 }
 
 impl FnEmit<'_, '_> {
@@ -935,6 +1152,32 @@ impl FnEmit<'_, '_> {
 
     fn ty(&self, r: VReg) -> IrTy {
         self.f.regs[r.index()]
+    }
+
+    /// The enumerator for field `idx` of the struct `obj` points to, or the plain number.
+    fn field_ref(&mut self, obj: VReg, idx: u32) -> String {
+        let l = self.lay[obj.index()].and_then(|d| self.g.layouts.get(&d));
+        match l {
+            Some(l) if !l.is_enum && (idx as usize) < l.items.len() => {
+                let (owner, name) = (l.owner, l.items[idx as usize].clone());
+                self.g.layouts_used.insert(owner);
+                name
+            }
+            _ => idx.to_string(),
+        }
+    }
+
+    /// The enumerator for variant `tag` of the enum with descriptor `desc` (or of the enum `obj` points to).
+    fn tag_ref(&mut self, desc: Option<usize>, tag: u32) -> String {
+        let l = desc.and_then(|d| self.g.layouts.get(&d));
+        match l {
+            Some(l) if l.is_enum && (tag as usize) < l.items.len() => {
+                let (owner, name) = (l.owner, l.items[tag as usize].clone());
+                self.g.layouts_used.insert(owner);
+                name
+            }
+            _ => tag.to_string(),
+        }
     }
 
     fn rd(&mut self, r: VReg) -> String {
@@ -947,9 +1190,10 @@ impl FnEmit<'_, '_> {
         }
         if self.pinned[r.index()] {
             let ty = self.ty(r);
-            self.g.of_word(ty, &format!("CELL(c{})->v", r.index()))
+            let c = self.cn[r.index()].clone();
+            self.g.of_word(ty, &format!("CELL({c})->v"))
         } else {
-            format!("v{}", r.index())
+            self.vn[r.index()].clone()
         }
     }
 
@@ -965,7 +1209,7 @@ impl FnEmit<'_, '_> {
         if self.pinned[dst.index()] {
             let ty = self.ty(dst);
             let w = self.g.as_word(ty, expr);
-            return format!("CELL(c{})->v = {w};", dst.index());
+            return format!("CELL({})->v = {w};", self.cn[dst.index()]);
         }
         if !self.used[dst.index()] || self.ty(dst) == IrTy::Unit {
             // nothing reads the result: keep the call, drop plain expressions
@@ -981,7 +1225,7 @@ impl FnEmit<'_, '_> {
                 String::new()
             };
         }
-        format!("v{} = {expr};", dst.index())
+        format!("{} = {expr};", self.vn[dst.index()])
     }
 
     fn emit_set(&mut self, dst: VReg, expr: &str) {
@@ -1026,7 +1270,7 @@ impl FnEmit<'_, '_> {
             self.line(format!("    {s}"));
             self.line("}");
         } else {
-            let v = format!("v{}", dst.index());
+            let v = self.vn[dst.index()].clone();
             self.line(format!("{v} = {alloc};"));
             f(self, &v);
         }
@@ -1057,7 +1301,8 @@ impl FnEmit<'_, '_> {
             }
             Term::BranchTag { obj, tag, then, els } => {
                 let o = self.rd(*obj);
-                self.branch(format!("TAG({o}) == {tag}"), *then, *els, next);
+                let t = self.tag_ref(self.lay[obj.index()], *tag);
+                self.branch(format!("TAG({o}) == {t}"), *then, *els, next);
             }
             Term::Return(r) => {
                 let unit = self.f.ret == IrTy::Unit;
@@ -1079,7 +1324,7 @@ impl FnEmit<'_, '_> {
                 self.line(format!("goto B{};", then.index()));
             }
         } else if Some(then) == next {
-            self.line(format!("if (!({cond})) goto B{};", els.index()));
+            self.line(format!("if ({}) goto B{};", negate(&cond), els.index()));
         } else if Some(els) == next {
             self.line(format!("if ({cond}) goto B{};", then.index()));
         } else {
@@ -1191,20 +1436,27 @@ impl FnEmit<'_, '_> {
                 self.emit_set(*dst, &e);
             }
 
-            Inst::NewStruct { dst, fields, .. } => {
-                self.alloc_agg(*dst, 0, fields)?;
+            Inst::NewStruct { dst, desc, fields } => {
+                self.alloc_agg(*dst, Some(desc.index()), "0".into(), fields)?;
             }
-            Inst::NewEnum { dst, tag, fields, .. } => {
-                self.alloc_agg(*dst, *tag, fields)?;
+            Inst::NewEnum { dst, desc, tag, fields } => {
+                let t = self.tag_ref(Some(desc.index()), *tag);
+                self.alloc_agg(*dst, None, t, fields)?;
             }
-            Inst::GetField { dst, obj, idx } | Inst::EnumField { dst, obj, idx, .. } => {
+            Inst::GetField { dst, obj, idx } => {
+                let o = self.rd(*obj);
+                let fld = self.field_ref(*obj, *idx);
+                self.set_word(*dst, &format!("AGG({o})->f[{fld}]"));
+            }
+            Inst::EnumField { dst, obj, idx, .. } => {
                 let o = self.rd(*obj);
                 self.set_word(*dst, &format!("AGG({o})->f[{idx}]"));
             }
             Inst::SetField { obj, idx, src } => {
                 let o = self.rd(*obj);
                 let w = self.w(*src);
-                self.line(format!("AGG({o})->f[{idx}] = {w};"));
+                let fld = self.field_ref(*obj, *idx);
+                self.line(format!("AGG({o})->f[{fld}] = {w};"));
             }
             Inst::EnumTag { dst, obj } => {
                 let o = self.rd(*obj);
@@ -1298,7 +1550,7 @@ impl FnEmit<'_, '_> {
                             if !self.pinned[r.index()] {
                                 return Err(format!("`{}`: captured register v{} is not pinned", self.name, r.index()));
                             }
-                            format!("c{}", r.index())
+                            self.cn[r.index()].clone()
                         }
                         Capture::Upvalue(i) => format!("up[{i}]"),
                     });
@@ -1323,7 +1575,8 @@ impl FnEmit<'_, '_> {
                     }
                     let is_ref = (self.ty(*r) == IrTy::Ref) as u8;
                     // closures keep the old cell; the function continues with a fresh one
-                    self.line(format!("c{0} = cell_new({is_ref}, CELL(c{0})->v);", r.index()));
+                    let c = self.cn[r.index()].clone();
+                    self.line(format!("{c} = cell_new({is_ref}, CELL({c})->v);"));
                 }
             }
             Inst::GetGlobal { dst, slot } => {
@@ -1342,13 +1595,23 @@ impl FnEmit<'_, '_> {
         Ok(())
     }
 
-    fn alloc_agg(&mut self, dst: VReg, tag: u32, fields: &[VReg]) -> Result<(), String> {
+    /// Allocates a struct (`layout`: its descriptor, whose field names the stores use) or an enum variant.
+    fn alloc_agg(&mut self, dst: VReg, layout: Option<usize>, tag: String, fields: &[VReg]) -> Result<(), String> {
         let mask = self.mask_of(fields)?;
         let ws: Vec<String> = fields.iter().map(|&r| self.w(r)).collect();
+        let names: Vec<String> = (0..fields.len())
+            .map(|i| match layout.and_then(|d| self.g.layouts.get(&d)) {
+                Some(l) if !l.is_enum && i < l.items.len() => {
+                    self.g.layouts_used.insert(l.owner);
+                    l.items[i].clone()
+                }
+                _ => i.to_string(),
+            })
+            .collect();
         let alloc = format!("agg_new({tag}, {}, {mask})", fields.len());
         self.with_obj(dst, &alloc, |me, v| {
-            for (i, w) in ws.iter().enumerate() {
-                me.line(format!("AGG({v})->f[{i}] = {w};"));
+            for (n, w) in names.iter().zip(&ws) {
+                me.line(format!("AGG({v})->f[{n}] = {w};"));
             }
         });
         Ok(())
@@ -1690,7 +1953,7 @@ impl FnEmit<'_, '_> {
                 let target = if self.pinned[dst.index()] || !self.used[dst.index()] {
                     "o".to_string()
                 } else {
-                    format!("v{}", dst.index())
+                    self.vn[dst.index()].clone()
                 };
                 if target == "o" {
                     self.line("    Obj *o;");

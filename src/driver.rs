@@ -42,7 +42,7 @@ pub fn compile_ir(entry: &str, vfs: &dyn Vfs) -> Compiled {
     let mut interner = Interner::new();
     let mut diags = DiagBag::new();
     let mut prog = sema::analyze(entry, vfs, &mut map, &mut interner, &mut diags);
-    let ir = lower(&mut prog, &interner, &mut diags);
+    let ir = lower(&mut prog, &interner, &mut diags, &map);
     Compiled { map, interner, diags, ir, bytecode: None }
 }
 
@@ -52,15 +52,20 @@ pub fn compile_ir_source(name: &str, text: &str, vfs: &dyn Vfs) -> Compiled {
     let mut interner = Interner::new();
     let mut diags = DiagBag::new();
     let mut prog = sema::analyze_source(name, text, vfs, &mut map, &mut interner, &mut diags);
-    let ir = lower(&mut prog, &interner, &mut diags);
+    let ir = lower(&mut prog, &interner, &mut diags, &map);
     Compiled { map, interner, diags, ir, bytecode: None }
 }
 
-fn lower(prog: &mut sema::Program, interner: &Interner, diags: &mut DiagBag) -> Option<IrProgram> {
+fn lower(prog: &mut sema::Program, interner: &Interner, diags: &mut DiagBag, map: &SourceMap) -> Option<IrProgram> {
     if diags.has_errors() {
         return None;
     }
-    let ir = ir::lower_program(prog, interner, diags)?;
+    let mut ir = ir::lower_program(prog, interner, diags)?;
+    // the files the debug information refers to
+    ir.sources = map
+        .iter()
+        .map(|(_, f)| ir::SrcFile { path: f.name().to_string(), line_starts: f.line_starts().to_vec() })
+        .collect();
     debug_assert!(ir::verify_program(&ir).is_ok(), "lowering produced invalid IR: {:?}", ir::verify_program(&ir));
     Some(ir)
 }

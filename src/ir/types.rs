@@ -284,6 +284,38 @@ pub struct Block {
     pub term: Term,
 }
 
+/// What the source said about a register: the variable's or parameter's name and, for a struct or an
+/// enum, the layout the register points to (so that field and variant names survive into the C code).
+/// Debug information only: no pass may depend on it.
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct RegDbg {
+    pub name: Option<std::sync::Arc<str>>,
+    pub desc: Option<DescId>,
+}
+
+/// Where a function starts in the source: a file (index into [`IrProgram::sources`]) and a 1-based line.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SrcLoc {
+    pub file: u32,
+    /// Byte offset in the file; [`IrProgram::sources`] turns it into a line.
+    pub offset: u32,
+}
+
+/// A source file as the debug information refers to it.
+#[derive(Debug, Clone, Default)]
+pub struct SrcFile {
+    pub path: String,
+    /// Byte offset where every line starts.
+    pub line_starts: Vec<u32>,
+}
+
+impl SrcFile {
+    /// The 1-based line containing `offset`.
+    pub fn line_of(&self, offset: u32) -> u32 {
+        self.line_starts.partition_point(|&s| s <= offset).max(1) as u32
+    }
+}
+
 #[derive(Debug, Clone)]
 pub struct IrFunc {
     pub name: String,
@@ -294,6 +326,10 @@ pub struct IrFunc {
     pub regs: Vec<IrTy>,
     /// Registers captured by a closure: they need a stable frame slot until closed.
     pub pinned: Vec<bool>,
+    /// Debug information of every register (parallel to `regs`).
+    pub dbg: Vec<RegDbg>,
+    /// Where the function is defined, if known.
+    pub loc: Option<SrcLoc>,
     /// Types of the upvalues this closure reads (empty for plain functions).
     pub upvals: Vec<IrTy>,
     pub is_closure: bool,
@@ -309,6 +345,8 @@ impl IrFunc {
             ret: IrTy::Unit,
             regs: Vec::new(),
             pinned: Vec::new(),
+            dbg: Vec::new(),
+            loc: None,
             upvals: Vec::new(),
             is_closure: false,
             blocks: Vec::new(),
@@ -318,7 +356,19 @@ impl IrFunc {
     pub fn new_reg(&mut self, ty: IrTy) -> VReg {
         self.regs.push(ty);
         self.pinned.push(false);
+        self.dbg.push(RegDbg::default());
         VReg(self.regs.len() as u32 - 1)
+    }
+
+    /// Records the source name of a register.
+    pub fn name_reg(&mut self, r: VReg, name: &str) {
+        if !name.is_empty() {
+            self.dbg[r.index()].name = Some(name.into());
+        }
+    }
+
+    pub fn reg_name(&self, r: VReg) -> Option<&str> {
+        self.dbg.get(r.index())?.name.as_deref()
     }
 
     pub fn new_block(&mut self) -> BlockId {
@@ -374,6 +424,8 @@ pub struct IrProgram {
     pub globals: Vec<GlobalInfo>,
     /// Runs every module's top-level code, then `main` if defined.
     pub entry: FuncId,
+    /// The source files, indexed by the file of a [`SrcLoc`] (empty when the IR was not built from files).
+    pub sources: Vec<SrcFile>,
 }
 
 /// How one field sits inside the word of a [packed enum](PackedEnum).

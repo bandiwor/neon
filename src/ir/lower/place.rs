@@ -38,6 +38,8 @@ impl FnLower<'_, '_> {
             },
             NodeKind::Field { base, .. } => {
                 let obj = self.expr_fast(base);
+                let bt = self.node_ty(base);
+                self.note_layout(obj, bt);
                 let idx = self.cx.prog.modules[self.module.index()].info.field_indices[&target];
                 let ty = self.ir_ty_of_node(target);
                 Place::Field { obj, idx, ty }

@@ -60,6 +60,7 @@ fn splice(caller: &mut IrFunc, bi: usize, ii: usize, dst: VReg, args: &[VReg], c
     let block_base = caller.blocks.len() as u32;
     caller.regs.extend(callee.regs.iter().copied());
     caller.pinned.extend(std::iter::repeat_n(false, callee.regs.len()));
+    caller.dbg.extend(callee.dbg.iter().cloned());
     let map_reg = |r: VReg| VReg(r.0 + reg_base);
     let map_block = |b: BlockId| BlockId(b.0 + block_base);
 

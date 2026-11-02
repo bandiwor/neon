@@ -148,6 +148,8 @@ impl FnLower<'_, '_> {
             }
             NodeKind::Field { base, .. } => {
                 let obj = self.expr_fast(base);
+                let bt = self.node_ty(base);
+                self.note_layout(obj, bt);
                 let idx = self.cx.prog.modules[self.module.index()].info.field_indices[&id];
                 let dst = self.new_reg_for(id);
                 self.emit(Inst::GetField { dst, obj, idx });

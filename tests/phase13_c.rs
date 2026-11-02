@@ -145,6 +145,46 @@ fn every_corpus_program_prints_the_same_as_the_vm() {
 }
 
 #[test]
+fn names_from_the_source_never_clash_with_c() {
+    let Some(cc) = c_compiler() else { return };
+    // locals, parameters, fields and variants named like C keywords, runtime types, macros, library
+    // functions and the generator's own variables; shadowing; a name that is not a C identifier
+    let src = r#"
+struct Obj { len: i64, int: i64, next: i64 }
+enum Kind { FRAME(i64), AGG, Point_x }
+struct Point { x: i64, Point_x: i64 }
+fn work(int: i64, sizeof: i64, printf: i64, fr: i64, up: i64, o: i64, t: i64) -> i64 {
+    let main = int + sizeof;
+    let x = printf + fr;
+    let x = x * up;
+    let sin = o - t;
+    main + x + sin
+}
+fn shape(k: Kind) -> i64 { match k { Kind::FRAME(n) => n, Kind::AGG => 7, Kind::Point_x => 9 } }
+fn main() {
+    let объект = Obj { len: 3, int: 4, next: 5 };
+    var NULL = 0;
+    for stdout in 0..3 { NULL += work(stdout, 2, 3, 4, 5, 6, 7) + объект.len; }
+    let p = Point { x: 1, Point_x: 2 };
+    var double = p.x + p.Point_x;
+    double += shape(Kind::FRAME(10)) + shape(Kind::AGG) + shape(Kind::Point_x);
+    println(NULL + double + объект.next + объект.int);
+}
+"#;
+    for flags in [&[][..], &["--no-opt"]] {
+        let dir = scratch("names");
+        let p = dir.join("p.neon");
+        std::fs::write(&p, src).unwrap();
+        let c = translate(&p, flags);
+        let exe = build(&cc, &dir, "p", &c, &[]);
+        let native = run(&mut Command::new(exe), "");
+        let vm = run(neon().arg("run").arg(&p), "");
+        assert_eq!(vm.code, 0, "{}", vm.err);
+        assert_eq!((native.code, &native.out), (0, &vm.out), "{flags:?}: {}", native.err);
+    }
+}
+
+#[test]
 fn runtime_errors_end_like_the_vms() {
     let Some(cc) = c_compiler() else { return };
     let cases = [
