@@ -150,9 +150,20 @@ pub enum TyKind {
     Infer(InferVar),
 }
 
+/// What is known about a type without looking inside it again: it is worked out once, when the type is
+/// interned (children are interned before their parents), so asking is O(1).
+#[derive(Debug, Clone, Copy, Default)]
+struct TyInfo {
+    has_param: bool,
+    has_infer: bool,
+    /// Nesting depth: a primitive is 0, `[i64]` is 1, `Option<[i64]>` is 2.
+    depth: u32,
+}
+
 #[derive(Debug)]
 pub struct TypeTable {
     kinds: Vec<TyKind>,
+    info: Vec<TyInfo>,
     map: HashMap<TyKind, Ty>,
     prims: [Ty; 13],
     unit: Ty,
@@ -170,6 +181,7 @@ impl TypeTable {
     pub fn new() -> TypeTable {
         let mut t = TypeTable {
             kinds: Vec::new(),
+            info: Vec::new(),
             map: HashMap::default(),
             prims: [Ty(0); 13],
             unit: Ty(0),
@@ -190,9 +202,43 @@ impl TypeTable {
             return ty;
         }
         let ty = Ty(self.kinds.len() as u32);
+        let info = self.info_of(&kind);
         self.kinds.push(kind.clone());
+        self.info.push(info);
         self.map.insert(kind, ty);
         ty
+    }
+
+    fn info_of(&self, kind: &TyKind) -> TyInfo {
+        let mut info = TyInfo::default();
+        let mut add = |t: Ty| {
+            let c = self.info[t.0 as usize];
+            info.has_param |= c.has_param;
+            info.has_infer |= c.has_infer;
+            info.depth = info.depth.max(c.depth + 1);
+        };
+        match kind {
+            TyKind::Array(e) | TyKind::Set(e) => add(*e),
+            TyKind::Map(k, v) => {
+                add(*k);
+                add(*v);
+            }
+            TyKind::Fn(ps, r) => {
+                ps.iter().for_each(|&p| add(p));
+                add(*r);
+            }
+            TyKind::Adt(_, a) => a.iter().for_each(|&p| add(p)),
+            TyKind::Param(_) => info.has_param = true,
+            TyKind::Infer(_) => info.has_infer = true,
+            _ => {}
+        }
+        info
+    }
+
+    /// How deeply the type nests (`Option<[Option<i64>]>` is 3): generic code that builds ever larger
+    /// types for itself is cut off by this.
+    pub fn depth(&self, ty: Ty) -> u32 {
+        self.info[ty.0 as usize].depth
     }
 
     pub fn kind(&self, ty: Ty) -> &TyKind {
@@ -275,9 +321,10 @@ impl TypeTable {
         )
     }
 
-    /// Replaces `Param(i)` by `args[i]` throughout `ty`.
+    /// Replaces `Param(i)` by `args[i]` throughout `ty`. A type that mentions no parameter is returned as
+    /// it is, without being walked; a part that does not change is not interned again.
     pub fn subst(&mut self, ty: Ty, args: &[Ty]) -> Ty {
-        if args.is_empty() {
+        if args.is_empty() || !self.info[ty.0 as usize].has_param {
             return ty;
         }
         match self.kind(ty).clone() {
@@ -310,26 +357,18 @@ impl TypeTable {
 
     /// Whether the type mentions a generic parameter.
     pub fn has_param(&self, ty: Ty) -> bool {
-        match self.kind(ty) {
-            TyKind::Param(_) => true,
-            TyKind::Array(e) | TyKind::Set(e) => self.has_param(*e),
-            TyKind::Map(k, v) => self.has_param(*k) || self.has_param(*v),
-            TyKind::Fn(ps, r) => ps.iter().any(|&p| self.has_param(p)) || self.has_param(*r),
-            TyKind::Adt(_, a) => a.iter().any(|&p| self.has_param(p)),
-            _ => false,
-        }
+        self.info[ty.0 as usize].has_param
     }
 
     /// Whether the type mentions an unresolved inference variable.
     pub fn has_infer(&self, ty: Ty) -> bool {
-        match self.kind(ty) {
-            TyKind::Infer(_) => true,
-            TyKind::Array(e) | TyKind::Set(e) => self.has_infer(*e),
-            TyKind::Map(k, v) => self.has_infer(*k) || self.has_infer(*v),
-            TyKind::Fn(ps, r) => ps.iter().any(|&p| self.has_infer(p)) || self.has_infer(*r),
-            TyKind::Adt(_, a) => a.iter().any(|&p| self.has_infer(p)),
-            _ => false,
-        }
+        self.info[ty.0 as usize].has_infer
+    }
+
+    /// No parameters and no inference variables: the type is fully known.
+    pub fn is_ground(&self, ty: Ty) -> bool {
+        let i = self.info[ty.0 as usize];
+        !i.has_param && !i.has_infer
     }
 
     /// Renders a type; `adt_name` and `param_name` supply user-facing names.

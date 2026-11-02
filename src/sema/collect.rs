@@ -285,6 +285,10 @@ fn declare_item(
                     methods.push(fid);
                 }
             }
+            for &m in &methods {
+                let mname = prog.fns[m.index()].name;
+                prog.impl_index.add_trait_method(mname, id);
+            }
             prog.traits.push(TraitDef {
                 name,
                 module,
@@ -680,12 +684,78 @@ fn resolve_impl(prog: &mut Program, interner: &Interner, diags: &mut DiagBag, as
         resolve_fn_sig(prog, interner, diags, ast, module, m, node, Some(self_t));
     }
 
+    let head = Head::of(&prog.types, self_t);
     match &trait_r {
-        None => prog.impl_index.inherent.push(id),
+        None => {
+            let names: Vec<Symbol> = methods.iter().map(|&m| prog.fns[m.index()].name).collect();
+            // `impl W<i64> { fn get }` next to `impl<T> W<T> { fn get }` is fine (the narrower one wins); two
+            // that cannot be told apart are not
+            for &name in &names {
+                let others: Vec<ImplId> =
+                    prog.impl_index.inherent_candidates(name, head).iter().copied().filter(|&o| o != id).collect();
+                for o in others {
+                    report_overlap(prog, interner, diags, id, o, OverlapKind::Method(name));
+                }
+            }
+            prog.impl_index.add_inherent_impl(head, &names, id);
+        }
         Some(tr) => {
-            prog.impl_index.by_trait.entry(tr.trait_id).or_default().push(id);
+            let others = prog.impl_index.trait_candidates(tr.trait_id, head);
+            for o in others {
+                report_overlap(prog, interner, diags, id, o, OverlapKind::Trait(tr.trait_id));
+            }
+            prog.impl_index.add_trait_impl(tr.trait_id, head, id);
             validate_impl(prog, interner, diags, ast, id, tr);
         }
+    }
+}
+
+enum OverlapKind {
+    Trait(TraitId),
+    Method(Symbol),
+}
+
+/// Reports impl `new` if it cannot be told apart from the earlier impl `old` (E0270, E0271).
+fn report_overlap(
+    prog: &mut Program,
+    interner: &Interner,
+    diags: &mut DiagBag,
+    new: ImplId,
+    old: ImplId,
+    what: OverlapKind,
+) {
+    let verdict = super::traits::impls_overlap(prog, new, old);
+    let shown = |prog: &Program, id: ImplId| {
+        let t = prog.impls[id.index()].self_ty;
+        prog.types.display(
+            t,
+            &|a| interner.resolve(prog.adts[a.index()].name).to_string(),
+            &|i| format!("T{i}"),
+            &|v| format!("?{}", v.0),
+        )
+    };
+    let (new_span, old_span) = (prog.impls[new.index()].span, prog.impls[old.index()].span);
+    let ty = shown(prog, new);
+    let (subject, tail) = match what {
+        OverlapKind::Trait(t) => (format!("trait `{}`", interner.resolve(prog.traits[t.index()].name)), String::new()),
+        OverlapKind::Method(m) => (format!("method `{}`", interner.resolve(m)), String::new()),
+    };
+    let _ = tail;
+    match verdict {
+        super::traits::Overlap::Identical => diags.report(
+            Diagnostic::error(format!("conflicting implementations of {subject} for `{ty}`"))
+                .with_code("E0272")
+                .with_label(new_span, "this impl")
+                .with_secondary(old_span, "is the same as this one"),
+        ),
+        super::traits::Overlap::Ambiguous => diags.report(
+            Diagnostic::error(format!("implementations of {subject} overlap, and neither is more specific"))
+                .with_code("E0273")
+                .with_label(new_span, "this impl")
+                .with_secondary(old_span, "covers some of the same types")
+                .with_note("make one of them narrower, so that it names a type the other one only abbreviates"),
+        ),
+        _ => {}
     }
 }
 

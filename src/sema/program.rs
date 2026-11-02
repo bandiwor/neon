@@ -5,8 +5,7 @@ use crate::fx::FxHashMap as HashMap;
 use std::sync::Arc;
 
 use super::ids::*;
-use super::types::TyKind;
-use super::types::{Ty, TypeTable};
+use super::types::{Prim, Ty, TyKind, TypeTable};
 use crate::builtin::Builtin;
 use crate::diag::{FileId, Span};
 use crate::syntax::{Ast, Interner, NodeId, Symbol};
@@ -256,6 +255,8 @@ pub enum IterKind {
     MapKeys,
     /// A lazy `Iter<T>` or a `Range` value: the loop is fused with the pipeline that produces it.
     Lazy,
+    /// A value of a type that implements `Iterator<T>`: the loop calls its `next` until it says `None`.
+    User,
 }
 
 /// Per-module typing results, indexed by that module's `NodeId`s.
@@ -386,10 +387,12 @@ pub enum LangTrait {
     Eq,
     Ord,
     Display,
+    /// `for x in value`: a value that hands out its elements one at a time.
+    Iterator,
 }
 
 impl LangTrait {
-    pub const ALL: [(LangTrait, &'static str); 15] = [
+    pub const ALL: [(LangTrait, &'static str); 16] = [
         (LangTrait::Add, "Add"),
         (LangTrait::Sub, "Sub"),
         (LangTrait::Mul, "Mul"),
@@ -405,6 +408,7 @@ impl LangTrait {
         (LangTrait::Eq, "Eq"),
         (LangTrait::Ord, "Ord"),
         (LangTrait::Display, "Display"),
+        (LangTrait::Iterator, "Iterator"),
     ];
 }
 
@@ -449,11 +453,102 @@ pub enum LazyOwner {
 
 // ---- the program ----------------------------------------------------------------------
 
+/// The outermost constructor of a type: what an impl is filed under, so a lookup only looks at the impls
+/// that could possibly apply instead of at every impl of the program.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum Head {
+    Prim(Prim),
+    Unit,
+    Array,
+    Set,
+    Map,
+    Fn(usize),
+    Adt(AdtId),
+}
+
+impl Head {
+    /// The head of a type, or `None` for one that is not known yet or stands for any type (a generic
+    /// parameter, an inference variable).
+    pub fn of(types: &TypeTable, ty: Ty) -> Option<Head> {
+        match types.kind(ty) {
+            TyKind::Prim(p) => Some(Head::Prim(*p)),
+            TyKind::Unit => Some(Head::Unit),
+            TyKind::Array(_) => Some(Head::Array),
+            TyKind::Set(_) => Some(Head::Set),
+            TyKind::Map(..) => Some(Head::Map),
+            TyKind::Fn(ps, _) => Some(Head::Fn(ps.len())),
+            TyKind::Adt(id, _) => Some(Head::Adt(*id)),
+            TyKind::Never | TyKind::Error | TyKind::Param(_) | TyKind::Infer(_) => None,
+        }
+    }
+}
+
 /// Which impls exist, for method and trait lookup.
 #[derive(Debug, Default)]
 pub struct ImplIndex {
     pub by_trait: HashMap<TraitId, Vec<ImplId>>,
     pub inherent: Vec<ImplId>,
+    /// Trait impls by trait and head of the self type; `None` is a blanket impl (`impl<T> Tr for T`).
+    by_trait_head: HashMap<(TraitId, Option<Head>), Vec<ImplId>>,
+    /// Inherent impls by method name and head of the self type.
+    inherent_by_name: HashMap<(Symbol, Head), Vec<ImplId>>,
+    /// The same, by name alone (a receiver whose type is not known yet).
+    inherent_by_name_any: HashMap<Symbol, Vec<ImplId>>,
+    /// The traits that have a method of this name.
+    trait_methods: HashMap<Symbol, Vec<TraitId>>,
+}
+
+impl ImplIndex {
+    pub fn add_trait_impl(&mut self, trait_id: TraitId, head: Option<Head>, id: ImplId) {
+        self.by_trait.entry(trait_id).or_default().push(id);
+        self.by_trait_head.entry((trait_id, head)).or_default().push(id);
+    }
+
+    pub fn add_inherent_impl(&mut self, head: Option<Head>, names: &[Symbol], id: ImplId) {
+        self.inherent.push(id);
+        for &n in names {
+            self.inherent_by_name_any.entry(n).or_default().push(id);
+            if let Some(h) = head {
+                self.inherent_by_name.entry((n, h)).or_default().push(id);
+            }
+        }
+    }
+
+    pub fn add_trait_method(&mut self, name: Symbol, trait_id: TraitId) {
+        let v = self.trait_methods.entry(name).or_default();
+        if !v.contains(&trait_id) {
+            v.push(trait_id);
+        }
+    }
+
+    /// The impls of `trait_id` that can apply to a self type with this head, in definition order.
+    pub fn trait_candidates(&self, trait_id: TraitId, head: Option<Head>) -> Vec<ImplId> {
+        let Some(h) = head else { return self.by_trait.get(&trait_id).cloned().unwrap_or_default() };
+        let exact = self.by_trait_head.get(&(trait_id, Some(h)));
+        let blanket = self.by_trait_head.get(&(trait_id, None));
+        match (exact, blanket) {
+            (Some(a), Some(b)) => {
+                let mut all: Vec<ImplId> = a.iter().chain(b).copied().collect();
+                all.sort_unstable();
+                all
+            }
+            (Some(a), None) | (None, Some(a)) => a.clone(),
+            (None, None) => Vec::new(),
+        }
+    }
+
+    /// The inherent impls that have a method called `name` and can apply to this head.
+    pub fn inherent_candidates(&self, name: Symbol, head: Option<Head>) -> &[ImplId] {
+        let found = match head {
+            Some(h) => self.inherent_by_name.get(&(name, h)),
+            None => self.inherent_by_name_any.get(&name),
+        };
+        found.map_or(&[], Vec::as_slice)
+    }
+
+    pub fn traits_with_method(&self, name: Symbol) -> &[TraitId] {
+        self.trait_methods.get(&name).map_or(&[], Vec::as_slice)
+    }
 }
 
 #[derive(Debug, Default)]
@@ -470,6 +565,10 @@ pub struct Program {
     pub lang: LangItems,
     pub lang_adts: LangAdts,
     pub impl_index: ImplIndex,
+    /// Answers to questions the solver was asked about fully known types (they never change).
+    pub solve_cache: HashMap<(TraitId, Ty, Vec<Ty>), super::traits::Solved>,
+    /// Which function a trait method call resolves to, for fully known arguments.
+    pub resolve_cache: HashMap<(FnId, Vec<Ty>), Option<super::traits::Resolved>>,
 }
 
 impl Program {

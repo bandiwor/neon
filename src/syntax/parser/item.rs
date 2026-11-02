@@ -78,6 +78,56 @@ impl Parser<'_> {
         Ok(self.node(NodeKind::ImportNamed { names, path }, lo))
     }
 
+    /// `where T: A + B, U: C` after the header of an item: more bounds for its generic parameters, the
+    /// same as writing them in `<..>`. Returns the parameters with the bounds added.
+    fn parse_where(&mut self, generics: NodeList) -> PResult<NodeList> {
+        if self.peek() != TokenKind::Ident(sym::WHERE) {
+            return Ok(generics);
+        }
+        self.bump();
+        let mut params: Vec<NodeId> = self.ast.list(generics).to_vec();
+        loop {
+            let (name, name_span) = self.expect_ident()?;
+            self.expect(TokenKind::Colon)?;
+            let mut added = Vec::new();
+            loop {
+                added.push(self.parse_path(true)?);
+                if !self.eat(TokenKind::Plus) {
+                    break;
+                }
+            }
+            let at = params
+                .iter()
+                .position(|&p| matches!(self.ast.kind(p), NodeKind::GenericParam { name: n, .. } if *n == name));
+            match at {
+                Some(i) => {
+                    let old = params[i];
+                    let NodeKind::GenericParam { name, bounds } = *self.ast.kind(old) else { unreachable!() };
+                    let mut all: Vec<NodeId> = self.ast.list(bounds).to_vec();
+                    all.extend(added);
+                    let bounds = self.list(&all);
+                    let (span, name_span) = (self.ast.span(old), self.ast.name_span(old));
+                    let new = self.ast.push(NodeKind::GenericParam { name, bounds }, span);
+                    self.ast.set_name_span(new, name_span);
+                    params[i] = new;
+                }
+                None => {
+                    self.error_at(
+                        name_span,
+                        "E0111",
+                        "`where` can only add bounds to a generic parameter of this item".to_string(),
+                        "not a generic parameter here".to_string(),
+                    );
+                }
+            }
+            // a comma, and then either another predicate or the end of the clause
+            if !self.eat(TokenKind::Comma) || matches!(self.peek(), TokenKind::LBrace | TokenKind::Semi) {
+                break;
+            }
+        }
+        Ok(self.list(&params))
+    }
+
     /// `<T: A + B, U>`; empty when the next token is not `<`.
     fn parse_generic_params(&mut self) -> PResult<NodeList> {
         if !self.eat(TokenKind::Lt) {
@@ -132,6 +182,7 @@ impl Parser<'_> {
             break;
         }
         let ret = if self.eat(TokenKind::Arrow) { Some(self.parse_type()?) } else { None };
+        let generics = self.parse_where(generics)?;
         let body = if self.at(TokenKind::LBrace) {
             Some(self.parse_block()?)
         } else {
@@ -168,6 +219,7 @@ impl Parser<'_> {
         self.bump();
         let (name, name_span) = self.expect_ident()?;
         let generics = self.parse_generic_params()?;
+        let generics = self.parse_where(generics)?;
         if self.eat(TokenKind::Semi) {
             return Ok(self.node_n(name_span, NodeKind::StructDecl { name, generics, fields: NodeList::EMPTY }, lo));
         }
@@ -202,6 +254,7 @@ impl Parser<'_> {
         self.bump();
         let (name, name_span) = self.expect_ident()?;
         let generics = self.parse_generic_params()?;
+        let generics = self.parse_where(generics)?;
         let open = self.expect(TokenKind::LBrace)?;
         let mut variants = Vec::new();
         loop {
@@ -269,6 +322,7 @@ impl Parser<'_> {
         self.bump();
         let (name, name_span) = self.expect_ident()?;
         let generics = self.parse_generic_params()?;
+        let generics = self.parse_where(generics)?;
         let items = self.parse_methods()?;
         Ok(self.node_n(name_span, NodeKind::TraitDecl { name, generics, items }, lo))
     }
@@ -281,6 +335,7 @@ impl Parser<'_> {
         let first = self.parse_type()?;
         let (trait_ref, self_ty) =
             if self.eat_kw(Keyword::For) { (Some(first), self.parse_type()?) } else { (None, first) };
+        let generics = self.parse_where(generics)?;
         let items = self.parse_methods()?;
         Ok(self.node(NodeKind::ImplDecl { generics, trait_ref: self.opt(trait_ref), self_ty, items }, lo))
     }

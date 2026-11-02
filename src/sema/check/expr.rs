@@ -5,6 +5,7 @@ use crate::diag::Span;
 use crate::sema::infer::VarKind;
 use crate::sema::program::*;
 use crate::sema::types::{Prim, Ty, TyKind};
+use crate::sema::{solve_bound, Solved};
 use crate::syntax::{FloatSuffix, IntSuffix, NodeId, NodeKind};
 
 fn prim_of_int_suffix(s: IntSuffix) -> Prim {
@@ -390,6 +391,25 @@ impl Checker<'_> {
                 self.info().iter_kinds.insert(id, IterKind::Lazy);
                 return self.finish_for(id, pat, body, e);
             }
+            // a type of your own that implements `Iterator<T>`
+            if matches!(self.kind(t), TyKind::Adt(..) | TyKind::Param(_)) {
+                if let Some(trait_id) = self.prog.lang.get(LangTrait::Iterator) {
+                    let elem = self.fresh(ast.span(iter));
+                    let env = self.generics.clone();
+                    let bound = TraitRef { trait_id, args: vec![elem] };
+                    if matches!(solve_bound(self.prog, &mut self.infer, &env, t, &bound, 0), Solved::Yes(_)) {
+                        if matches!(
+                            ast.kind(iter),
+                            NodeKind::Ident(_) | NodeKind::Field { .. } | NodeKind::Index { .. }
+                        ) {
+                            // the loop advances it
+                            self.check_mutable_place(iter);
+                        }
+                        self.info().iter_kinds.insert(id, IterKind::User);
+                        return self.finish_for(id, pat, body, elem);
+                    }
+                }
+            }
             match self.kind(t) {
                 TyKind::Array(e) => (e, IterKind::Array),
                 TyKind::Set(e) => (e, IterKind::Set),
@@ -402,7 +422,7 @@ impl Checker<'_> {
                         span,
                         "E0231",
                         format!("cannot iterate over a value of type `{shown}`"),
-                        "not iterable (try `.chars()`, `.keys()` or a range)",
+                        "not iterable (try `.chars()`, `.keys()`, a range, or `impl Iterator<T>` for the type)",
                     );
                     (self.error_ty(), IterKind::Array)
                 }

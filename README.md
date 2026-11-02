@@ -83,7 +83,18 @@ Diagnostics (with source snippets) go to stderr, program output to stdout.
   shared and mutable; each loop iteration captures its own variables.
 * **Traits**: `trait`/`impl`, default methods, operator traits (`Add`, `Mul`,
   `Neg`, `Eq`, `Ord`, ...), `Display` used by `println`. Resolution is static
-  (monomorphization), there are no trait objects.
+  (monomorphization), there are no trait objects. Bounds go in `<T: A + B>` or in a `where` clause
+  (`fn f<T>(x: T) where T: A + B`); both work on functions, impls, traits, structs and enums.
+* **Choosing an impl**: of several impls that apply, the *narrower* one wins whatever the order they are
+  written in — `impl<T> Show for T` next to `impl Show for bool`, or `impl<T> W<T> { fn get }` next to
+  `impl W<i64> { fn get }`. Two impls that cannot be told apart are an error where the second is written
+  (E0272), and so are two that overlap with neither inside the other (E0273).
+* **Your own iterables**: implement `Iterator<T>` (`fn next(var self) -> Option<T>`) and `for x in value`
+  calls `next` until it answers `None`; `value` must be a `var` when it is a variable, since the loop
+  advances it. It also works through a bound: `fn total<I: Iterator<i64>>(var it: I)`.
+* **Limits of generics**: a generic function that calls itself with a bigger type each time
+  (`f<T>` calling `f<[T]>`) is stopped after 64 levels of nesting with an error instead of
+  instantiating for ever; the solver follows impl bounds 64 levels deep.
 * **Modules**: `import { f } from "dir/file"`, `import "dir/file" as m` (then `m::f()`),
   `export`. A module DAG is built through the virtual file system. A bare name that belongs to the
   standard library (`"sys"`, `"fs"`, `"term"`) is a [standard module](#the-standard-modules).

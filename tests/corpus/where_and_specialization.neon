@@ -1,0 +1,56 @@
+// `where` clauses, and the narrower impl winning whatever the order of the impls
+
+trait Show {
+    fn show(self) -> string;
+}
+
+impl<T> Show for T where T: Display {
+    fn show(self) -> string {
+        f"<{self}>"
+    }
+}
+
+impl Show for bool {
+    fn show(self) -> string {
+        if self { "yes" } else { "no" }
+    }
+}
+
+impl<T> Show for [T] where T: Show {
+    fn show(self) -> string {
+        "[" + self.map(|x| => x.show()).join(", ") + "]"
+    }
+}
+
+struct Wrap<T> where T: Display { v: T }
+
+impl<T> Wrap<T> where T: Display {
+    fn get(self) -> string {
+        f"wrap {self.v}"
+    }
+}
+
+impl Wrap<i64> {
+    fn get(self) -> string {
+        f"int wrap {self.v}"
+    }
+}
+
+fn longest<A, B>(a: A, b: B) -> string where A: Display, B: Display + Ord, {
+    let x = a.to_string();
+    let y = b.to_string();
+    if x.len() >= y.len() { x } else { y }
+}
+
+fn main() {
+    println(5.show());
+    println(true.show());
+    println("s".show());
+    println([1, 2].show());
+    println([true, false].show());
+    println([[1], [2, 3]].show());
+    println(Wrap { v: 7 }.get());
+    println(Wrap { v: "text" }.get());
+    println(longest(1234, 5));
+    println(longest("ab", "cde"));
+}

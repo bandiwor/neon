@@ -1,0 +1,51 @@
+struct Countdown { n: i64 }
+impl Iterator<i64> for Countdown {
+    fn next(var self) -> Option<i64> {
+        if self.n == 0 {
+            Option::None
+        } else {
+            self.n -= 1;
+            Option::Some(self.n + 1)
+        }
+    }
+}
+struct Words { text: [string], at: i64 }
+impl Iterator<string> for Words {
+    fn next(var self) -> Option<string> {
+        if self.at >= self.text.len() { return Option::None; }
+        self.at += 1;
+        Option::Some(self.text[self.at - 1])
+    }
+}
+struct Bytes { left: u8 }
+impl Iterator<u8> for Bytes {
+    fn next(var self) -> Option<u8> {
+        if self.left == 0 {
+            Option::None
+        } else {
+            self.left -= 1;
+            Option::Some(self.left)
+        }
+    }
+}
+fn total<I: Iterator<i64>>(var it: I) -> i64 {
+    var s = 0;
+    for x in it { s += x; }
+    s
+}
+
+fn main() {
+    var c = Countdown { n: 3 };
+    for x in c { println(x); }
+    var ws = Words { text: ["a", "bb"], at: 0 };
+    for w in ws { println(w); }
+    var bs = Bytes { left: 3 };
+    for b in bs { println(b); }
+    println(total(Countdown { n: 4 }));
+    var d = Countdown { n: 10 };
+    for x in d {
+        if x < 8 { break; }
+        println(x);
+    }
+    println(d.n);
+}

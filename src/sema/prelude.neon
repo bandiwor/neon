@@ -44,6 +44,17 @@ export trait Display {
     fn to_string(self) -> string;
 }
 
+// `for x in value` over a type of your own: implement `Iterator<T>` and the loop calls `next` until it
+// answers `None`. `next` takes `var self`: the iteration changes the value, so it must be a `var`.
+//
+//     struct Countdown { n: i64 }
+//     impl Iterator<i64> for Countdown {
+//         fn next(var self) -> Option<i64> {
+//             if self.n == 0 { Option::None } else { self.n -= 1; Option::Some(self.n + 1) }
+//         }
+//     }
+export trait Iterator<T> { fn next(var self) -> Option<T>; }
+
 // ---- tuples -------------------------------------------------------------------------
 //
 // `(a, b)` is `Tuple2::T(a, b)`, the type `(A, B)` is `Tuple2<A, B>`, `(x, y)` in a pattern is

@@ -92,6 +92,7 @@ impl FnLower<'_, '_> {
         match kind {
             IterKind::Range => self.for_range(pat, iter, body),
             IterKind::Lazy => self.for_lazy(pat, iter, body),
+            IterKind::User => self.for_user(pat, iter, body),
             IterKind::Array => {
                 let arr = self.expr(iter);
                 let ty = self.node_ty(iter);
@@ -112,6 +113,49 @@ impl FnLower<'_, '_> {
                 self.for_array(pat, arr, arr_ty, body)
             }
         }
+    }
+
+    /// `for x in value` over a type with an `Iterator<T>` impl: call `next` until it answers `None`.
+    fn for_user(&mut self, pat: NodeId, iter: NodeId, body: NodeId) -> VReg {
+        use crate::runtime::value::SOME_TAG;
+        let value = self.expr(iter);
+        let value_ty = self.node_ty(iter);
+        let elem_ty = self.node_ty(pat);
+        let Some(trait_id) = self.cx.prog.lang.get(crate::sema::LangTrait::Iterator) else {
+            self.cx.error("internal error: no `Iterator` trait");
+            return self.unit();
+        };
+        let next = self.cx.prog.traits[trait_id.index()].methods[0];
+        let Some(option) = self.cx.prog.lang_adts.option else {
+            self.cx.error("internal error: no `Option`");
+            return self.unit();
+        };
+        let option_ty = self.cx.prog.types.adt(option, vec![elem_ty]);
+        let option_desc = self.cx.desc(option_ty);
+
+        let head = self.new_block();
+        let body_b = self.new_block();
+        let end = self.new_block();
+        self.jump(head);
+
+        self.switch_to(head);
+        let callee = crate::sema::Callee::Trait(next, vec![value_ty, elem_ty]);
+        let step = self.emit_callee(pat, &callee, vec![value], None);
+        self.enum_branch_tag(step, SOME_TAG, body_b, end);
+
+        self.switch_to(body_b);
+        self.push_scope();
+        let elem_ir = self.ir_ty_of_node(pat);
+        let elem = self.enum_get(option_desc, step, SOME_TAG, 0, elem_ir);
+        self.bind_irrefutable(pat, elem);
+        self.loops.push(LoopCtx { break_to: end, continue_to: head, scope_depth: self.scopes.len() - 1, result: None });
+        self.expr(body);
+        self.loops.pop();
+        self.pop_scope();
+        self.jump(head);
+
+        self.switch_to(end);
+        self.unit()
     }
 
     fn for_array(&mut self, pat: NodeId, arr: VReg, arr_ty: crate::sema::Ty, body: NodeId) -> VReg {

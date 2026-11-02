@@ -1697,3 +1697,33 @@ fn private_small_enums_vanish_before_they_become_words() {
     }
     assert_eq!(run(src), "5\n3\n-1\n");
 }
+
+#[test]
+fn polymorphic_recursion_is_cut_off_instead_of_instantiating_for_ever() {
+    // `f<T>` calls `f<[T]>`, which calls `f<[[T]]>`, ...: every instance needs another one
+    let src =
+        "fn f<T>(x: T, n: i64) -> i64 { if n == 0 { 0 } else { f([x], n - 1) + 1 } }\nfn main() { println(f(1, 3)); }";
+    let started = std::time::Instant::now();
+    let c = compile_ir_source("main.neon", src, &MemVfs::new());
+    assert!(c.diags.has_errors());
+    let text = c.render_diagnostics();
+    assert!(
+        text.contains("`f` is instantiated with types nested more than") && text.contains("polymorphic recursion"),
+        "{text}"
+    );
+    assert!(started.elapsed().as_secs() < 5, "took {:?}", started.elapsed());
+    // recursion at the same type is no problem at all
+    let ok = "fn g<T>(x: T, n: i64) -> i64 { if n == 0 { 0 } else { g(x, n - 1) + 1 } }\nfn main() { println(g(1, 3)); println(g(\"s\", 2)); }";
+    let ir = compile(ok);
+    assert_eq!(run_ir(&ir, &[]).output, "3\n2\n");
+}
+
+#[test]
+fn the_nested_flatten_impls_do_not_depend_on_the_order_they_are_listed_in() {
+    let src = "fn main() {\n\
+        let a: Option<Option<Option<Option<i64>>>> = Option::Some(Option::Some(Option::Some(Option::Some(4))));\n\
+        let b: Option<Option<i64>> = Option::Some(Option::None);\n\
+        println(a.flatten()); println(b.flatten()); }";
+    let ir = compile(src);
+    assert_eq!(run_ir(&ir, &[]).output, "Option::Some(4)\nOption::None\n");
+}

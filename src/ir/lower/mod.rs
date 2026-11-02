@@ -28,6 +28,10 @@ use crate::syntax::{Interner, NodeId};
 /// Instances beyond this many indicate runaway polymorphic recursion.
 const MAX_INSTANCES: usize = 20_000;
 
+/// How deeply a type argument of an instance may nest. Real programs stay in the single digits; a function
+/// that calls itself with a bigger type (`f([x])` inside `f<T>(x: T)`) would need infinitely many instances.
+const MAX_TYPE_DEPTH: u32 = 64;
+
 #[derive(Debug, Clone, PartialEq, Eq, Hash)]
 pub(super) enum FuncKey {
     Fn(FnId, Vec<Ty>),
@@ -332,6 +336,21 @@ impl Lowerer<'_> {
     pub fn func_for(&mut self, key: FuncKey) -> FuncId {
         if let Some(&id) = self.funcs_by_key.get(&key) {
             return id;
+        }
+        let targs = match &key {
+            FuncKey::Fn(_, targs) | FuncKey::Closure(_, _, targs) => targs,
+        };
+        if let Some(&deep) = targs.iter().find(|&&t| self.prog.types.depth(t) > MAX_TYPE_DEPTH) {
+            let name = match &key {
+                FuncKey::Fn(f, _) => self.interner.resolve(self.prog.fns[f.index()].name).to_string(),
+                FuncKey::Closure(..) => "a closure".to_string(),
+            };
+            let _ = deep;
+            self.error(format!(
+                "`{name}` is instantiated with types nested more than {MAX_TYPE_DEPTH} deep: it calls itself with a \
+                 larger type each time (polymorphic recursion), which would need endless instances"
+            ));
+            return FuncId(0);
         }
         if self.out.funcs.len() >= MAX_INSTANCES {
             self.error("too many generic instantiations (runaway polymorphic recursion?)");

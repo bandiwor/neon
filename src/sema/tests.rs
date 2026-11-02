@@ -894,3 +894,112 @@ fn question_mark_rejects_the_wrong_operand_and_the_wrong_function() {
     let o = run("let n = \"1\".try_parse_i64()?;");
     assert_eq!(error_codes(&o), ["E0262"], "{}", o.rendered());
 }
+
+// ---- impl selection: specificity and coherence ----------------------------------------------------
+
+#[test]
+fn the_narrower_impl_wins_whatever_the_order() {
+    let blanket_first = "trait Show { fn show(self) -> string; }\n\
+        impl<T> Show for T { fn show(self) -> string { \"any\" } }\n\
+        impl Show for i64 { fn show(self) -> string { \"int\" } }\n\
+        let a = 1.show();\nlet b = \"x\".show();";
+    ok(blanket_first);
+    let narrow_first = "trait Show { fn show(self) -> string; }\n\
+        impl Show for i64 { fn show(self) -> string { \"int\" } }\n\
+        impl<T> Show for T { fn show(self) -> string { \"any\" } }\n\
+        let a = 1.show();";
+    ok(narrow_first);
+    // inherent methods too: `W<i64>` is narrower than `W<T>`, in either order
+    for (first, second) in [("W<T>", "W<i64>"), ("W<i64>", "W<T>")] {
+        let impl_for = |t: &str| {
+            format!("impl{} {t} {{ fn get(self) -> i64 {{ 1 }} }}\n", if t.contains('T') { "<T>" } else { "" })
+        };
+        let src = format!(
+            "struct W<T> {{ v: T }}\n{}{}let w = W {{ v: 1 }};\nlet g = w.get();",
+            impl_for(first),
+            impl_for(second)
+        );
+        ok(&src);
+    }
+}
+
+#[test]
+fn conflicting_impls_are_reported_where_they_are_written() {
+    let out = fails(
+        "trait Show { fn show(self) -> string; }\nimpl Show for i64 { fn show(self) -> string { \"a\" } }\nimpl Show for i64 { fn show(self) -> string { \"b\" } }",
+        "E0272",
+        "conflicting implementations of trait `Show` for `i64`",
+    );
+    assert!(out.rendered().contains("is the same as this one"), "{}", out.rendered());
+    // two blanket impls cover the same types
+    fails(
+        "trait T { fn f(self) -> i64; }\nimpl<A> T for A { fn f(self) -> i64 { 1 } }\nimpl<B> T for B { fn f(self) -> i64 { 2 } }",
+        "E0272",
+        "conflicting implementations",
+    );
+    // the same method twice for the same type
+    fails(
+        "struct S { a: i64 }\nimpl S { fn get(self) -> i64 { 1 } }\nimpl S { fn get(self) -> i64 { 2 } }",
+        "E0272",
+        "conflicting implementations of method `get`",
+    );
+    // different methods of one type are fine, and so are different trait arguments
+    ok("struct S { a: i64 }\nimpl S { fn one(self) -> i64 { 1 } }\nimpl S { fn two(self) -> i64 { 2 } }");
+    ok("trait From2<T> { fn from2(x: T) -> Self; }\nimpl From2<i64> for string { fn from2(x: i64) -> string { \"i\" } }\nimpl From2<bool> for string { fn from2(x: bool) -> string { \"b\" } }");
+}
+
+#[test]
+fn impls_that_overlap_without_a_narrower_one_are_reported() {
+    // `Pair<i64, B>` and `Pair<A, i64>` both cover `Pair<i64, i64>`, and neither is inside the other
+    fails(
+        "struct Pair<A, B> { a: A, b: B }\ntrait T { fn f(self) -> i64; }\nimpl<B> T for Pair<i64, B> { fn f(self) -> i64 { 1 } }\nimpl<A> T for Pair<A, i64> { fn f(self) -> i64 { 2 } }",
+        "E0273",
+        "neither is more specific",
+    );
+}
+
+#[test]
+fn deeply_nested_types_still_solve() {
+    let mut ty = "i64".to_string();
+    let mut value = "1".to_string();
+    for _ in 0..30 {
+        ty = format!("Option<[{ty}]>");
+        value = format!("Option::Some([{value}])");
+    }
+    let src = format!(
+        "trait Show {{ fn show(self) -> string; }}\nimpl Show for i64 {{ fn show(self) -> string {{ \"i\" }} }}\n\
+         impl<T: Show> Show for [T] {{ fn show(self) -> string {{ \"[\" }} }}\nimpl<T: Show> Show for Option<T> {{ fn show(self) -> string {{ \"o\" }} }}\n\
+         let v: {ty} = {value};\nlet s = v.show();"
+    );
+    ok(&src);
+}
+
+#[test]
+fn a_type_knows_its_shape_without_walking_it() {
+    let mut t = TypeTable::new();
+    let i = t.prim(Prim::I64);
+    let p = t.param(0);
+    let inner = t.array(p);
+    let nested = t.array(inner);
+    assert!(t.has_param(nested) && !t.has_infer(nested) && !t.is_ground(nested));
+    assert_eq!(t.depth(nested), 2);
+    assert!(t.is_ground(i) && t.depth(i) == 0);
+    // closed types are returned untouched, open ones are rebuilt
+    let closed = t.array(i);
+    assert_eq!(t.subst(closed, &[i]), closed);
+    let widened = t.subst(nested, &[closed]);
+    assert_eq!(t.depth(widened), 3);
+}
+
+#[test]
+fn where_clauses_add_bounds_like_the_angle_brackets_do() {
+    ok("fn show_all<T>(xs: [T]) -> string where T: Display { var s = \"\"; for x in xs { s = s + x.to_string(); } s }\nlet a = show_all([1, 2]);");
+    ok("struct Wrap<T> where T: Display { v: T }\nimpl<T> Wrap<T> where T: Display { fn show(self) -> string { self.v.to_string() } }\nlet s = Wrap { v: 3 }.show();");
+    // several bounds, several predicates, a trailing comma, and bounds from both places
+    ok("fn f<A: Display, B>(a: A, b: B) -> string where A: Ord, B: Display + Ord, { b.to_string() }\nlet s = f(1, 2);");
+    // the bound is enforced
+    fails("fn f<T>(x: T) -> bool where T: Ord { x.lt(x) }\nstruct S {}\nlet b = f(S {});", "E0237", "");
+    // a predicate about something that is not a parameter of the item
+    let out = run("fn f<T>(x: T) where U: Ord { }");
+    assert!(out.diags.iter().any(|d| d.code == Some("E0111")), "{}", out.rendered());
+}
